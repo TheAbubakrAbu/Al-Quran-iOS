@@ -78,6 +78,9 @@ struct AlQuranApp: App {
                 .appReviewPrompt()
                 //.statusBarHidden()
         }
+        .onChange(of: settings.accentColor) { _ in
+            WidgetCenter.shared.reloadAllTimelines()
+        }
         .onChange(of: scenePhase) { phase in
             quranPlayer.saveLastListenedSurah()
             quranPlayer.saveLastListenedAyah()
@@ -103,6 +106,12 @@ struct AlQuranApp: App {
                 // Always opaque underneath the covers. The launch/splash screens are opaque and simply fade
                 // themselves out (below) to reveal it — a clean single-layer dissolve, no mid-transition dip.
                 .zIndex(1)
+
+            // Above the tabs but below the covers: a letter / surah / name blown up to fill the screen. It
+            // lives here (rather than on the row that opened it) so it can sit over the tab bar and fade in
+            // as a plain overlay instead of a system sheet.
+            FocusOverlayHost()
+                .zIndex(1.5)
 
             if rootStage == .launch {
                 LaunchScreen(isLaunching: $isLaunching)

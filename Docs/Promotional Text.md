@@ -1,1 +1,1 @@
-Everything you need to practice Islam: the full Quran with audio and tajweed, accurate prayer times, Qibla, and Arabic learning. Free, no ads, and fully private.
+The full Quran with color-coded tajweed, over 20 reciters, Arabic Beginner Mode, and ayah sharing. Free, no ads, and fully private.

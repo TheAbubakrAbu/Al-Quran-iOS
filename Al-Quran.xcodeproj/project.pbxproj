@@ -102,6 +102,8 @@
 		72574CD22E49F33800BFF138 /* AppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72574CD02E49F33800BFF138 /* AppIntents.swift */; };
 		726705CC2FB82B07000A62A6 /* Quran.json in Resources */ = {isa = PBXBuildFile; fileRef = 726705CB2FB82B07000A62A6 /* Quran.json */; };
 		726705CD2FB82B07000A62A6 /* Quran.json in Resources */ = {isa = PBXBuildFile; fileRef = 726705CB2FB82B07000A62A6 /* Quran.json */; };
+		726CDCA72FFFB028004B77C5 /* FocusOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 726CDCA62FFFB028004B77C5 /* FocusOverlay.swift */; };
+		726CDCA82FFFB028004B77C5 /* FocusOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 726CDCA62FFFB028004B77C5 /* FocusOverlay.swift */; };
 		72827EB72E3D71BB00EBA534 /* SettingsQuranView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72827EB62E3D71BB00EBA534 /* SettingsQuranView.swift */; };
 		72827EB82E3D71BB00EBA534 /* SettingsQuranView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72827EB62E3D71BB00EBA534 /* SettingsQuranView.swift */; };
 		728D75A92F79C53600502B8A /* ArabicLetters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 728D75A82F79C53600502B8A /* ArabicLetters.swift */; };
@@ -252,6 +254,7 @@
 		72537C242F04361900829F59 /* AppReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppReview.swift; sourceTree = "<group>"; };
 		72574CD02E49F33800BFF138 /* AppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntents.swift; sourceTree = "<group>"; };
 		726705CB2FB82B07000A62A6 /* Quran.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Quran.json; sourceTree = "<group>"; };
+		726CDCA62FFFB028004B77C5 /* FocusOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusOverlay.swift; sourceTree = "<group>"; };
 		72827EB62E3D71BB00EBA534 /* SettingsQuranView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsQuranView.swift; sourceTree = "<group>"; };
 		728D75A82F79C53600502B8A /* ArabicLetters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArabicLetters.swift; sourceTree = "<group>"; };
 		728D764E2F79E9D700502B8A /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -393,6 +396,7 @@
 				724D099D2FEFAD20002C32AB /* SearchBar.swift */,
 				724D099E2FEFAD20002C32AB /* Highlighted.swift */,
 				724D099F2FEFAD20002C32AB /* GlassEffect.swift */,
+				726CDCA62FFFB028004B77C5 /* FocusOverlay.swift */,
 			);
 			path = Helpers;
 			sourceTree = "<group>";
@@ -714,6 +718,7 @@
 				724D098B2FEFAD02002C32AB /* AdhkarView.swift in Sources */,
 				724D096E2FEFACF2002C32AB /* QuranData.swift in Sources */,
 				724D096F2FEFACF2002C32AB /* ShareAyah.swift in Sources */,
+				726CDCA82FFFB028004B77C5 /* FocusOverlay.swift in Sources */,
 				724D09702FEFACF2002C32AB /* CustomRangeSheet.swift in Sources */,
 				724D09712FEFACF2002C32AB /* AyahRow.swift in Sources */,
 				724D09722FEFACF2002C32AB /* QuranShortcuts.swift in Sources */,
@@ -768,6 +773,7 @@
 				724D09962FEFAD02002C32AB /* AdhkarView.swift in Sources */,
 				724D095D2FEFACF2002C32AB /* QuranData.swift in Sources */,
 				724D095E2FEFACF2002C32AB /* ShareAyah.swift in Sources */,
+				726CDCA72FFFB028004B77C5 /* FocusOverlay.swift in Sources */,
 				724D095F2FEFACF2002C32AB /* CustomRangeSheet.swift in Sources */,
 				724D09602FEFACF2002C32AB /* AyahRow.swift in Sources */,
 				724D09612FEFACF2002C32AB /* QuranShortcuts.swift in Sources */,
