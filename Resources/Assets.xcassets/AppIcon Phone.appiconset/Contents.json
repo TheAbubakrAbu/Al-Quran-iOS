@@ -1,7 +1,7 @@
 {
   "images" : [
     {
-      "filename" : "Al-Quran App.png",
+      "filename" : "Al-Quran.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
@@ -13,7 +13,7 @@
           "value" : "dark"
         }
       ],
-      "filename" : "Al-Quran App 1.png",
+      "filename" : "Al-Quran 1.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
@@ -25,7 +25,7 @@
           "value" : "tinted"
         }
       ],
-      "filename" : "Al-Quran App 2.png",
+      "filename" : "Al-Quran 2.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"

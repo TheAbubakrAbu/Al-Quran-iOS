@@ -30,7 +30,6 @@ Swift Student Challenge 2024 source: <https://github.com/TheAbubakrAbu/Al-Quran-
 - [Al-Adhan | Prayer Times](https://apps.apple.com/us/app/al-adhan-prayer-times/id6475015493)
 - [Al-Islam | Islamic Pillars](https://apps.apple.com/us/app/al-islam-islamic-pillars/id6449729655)
 - [Al-Quran | Beginner Quran](https://apps.apple.com/us/app/al-quran-beginner-quran/id6474894373)
-- [Islamic Center of Irvine (ICOI)](https://apps.apple.com/us/app/islamic-center-of-irvine/id6463835936)
 - [Aurebesh Translator](https://apps.apple.com/us/app/aurebesh-translator/id6670201513)
 - [Datapad | Aurebesh Translator](https://apps.apple.com/us/app/datapad-aurebesh-translator/id6450498054)
 
