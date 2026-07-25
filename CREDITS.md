@@ -4,26 +4,33 @@
 
 Website: <https://abubakrelmallah.com/>
 
-<a href="https://apps.apple.com/us/app/al-adhan-prayer-times/id6475015493?platform=iphone">
+<a href="https://apps.apple.com/us/app/al-quran-beginner-quran/id6474894373?platform=iphone">
   <img src="Logo.jpg" alt="Logo" width="120" style="border-radius:10px;"/>
 </a>
 
 ## The story
 
-This app was inspired by my desire to help new reverts and non-Muslims learn about Islam and easily access the Quran and prayer times. I'm deeply grateful to my parents for instilling in me a love for the faith (may Allah reward them).
+This app was inspired by my desire to help new reverts and non-Muslims learn about Islam and easily access the Quran. I'm deeply grateful to my parents for instilling in me a love for the faith (may Allah reward them).
 
 App Store: <https://apps.apple.com/us/app/al-quran-beginner-quran/id6474894373>
 Swift Student Challenge 2024 source: <https://github.com/TheAbubakrAbu/Al-Quran-Swift-Student-Challenge-2024>
 
 ## Credits
 
-- **English transliteration of the Quran** — **Risan Bagja Pradana** — <https://github.com/risan/quran-json>
-- **English Saheeh International translation** — **Global Quran** — <https://globalquran.com/download/data/>
-- **All Quranic Arabic text and all qiraat/riwayaat data** — **quran-data-kfgqpc (KFGQPC)** — <https://github.com/thetruetruth/quran-data-kfgqpc>
-- **Uthmani Quran font** — **quran-data-kfgqpc (KFGQPC)** — <https://github.com/thetruetruth/quran-data-kfgqpc/tree/main/qumbul/font>
-- **Indopak Quran font** — **Urdu Nigar** — <https://urdunigaar.com/download/al-mushaf-arabic-font-ttf-font-download/>
-- **Surah (full) Quran recitations** — **MP3 Quran** — <https://mp3quran.net/eng>
-- **Ayah-by-ayah Quran recitations** — **Al Quran** — <https://alquran.cloud/cdn>
+- **English transliteration of the Quran** - **Risan Bagja Pradana** - <https://github.com/risan/quran-json>
+- **English Saheeh International translation** - **Global Quran** - <https://globalquran.com/download/data/>
+- **All Quranic Arabic text and all qiraat/riwayaat data** - **quran-data-kfgqpc (KFGQPC)** - <https://github.com/thetruetruth/quran-data-kfgqpc>
+- **Uthmani Quran font** - **King Fahad Complex (KFGQPC)** - <https://qul.tarteel.ai/resources/font/245>
+- **Indopak Nastaleeq Quran font** - **Ayman Siddiqui and R. Siddiqua** - <https://qul.tarteel.ai/resources/font/242>
+- **Surah (full) Quran recitations** - **MP3 Quran** - <https://mp3quran.net/eng>
+- **Ayah-by-ayah Quran recitations** - **Al Quran** - <https://alquran.cloud/cdn>
+- **Additional ayah-by-ayah Quran recitations** - **EveryAyah** - <https://everyayah.com/>
+- **Ayah audio timings (offline ayah playback)** - **QDC audio API by Quran.com (Quran Foundation)** - <https://api-docs.quran.foundation/>
+- **English Quran translation comparison API** - **Al Quran Cloud** - <https://alquran.cloud/api>
+- **English Tafsir API (Ibn Kathir, Maarif Ul Quran, Tazkirul Quran)** - **Quran API Pages** - <https://quranapi.pages.dev/>
+- **Arabic Tafsirs (Ibn Kathir, al-Tabari, as-Sa'di)** - **Tafsir API by spa5k (data from QUL / Tarteel)** - <https://github.com/spa5k/tafsir_api>
+- **Surah Info** - **Quran.com (Quran Foundation)** - <https://api-docs.quran.foundation/docs/content_apis_versioned/4.0.0/get-chapter-info/>
+- **99 Names of Allah** - **MyIslam** - <https://myislam.org/99-names-of-allah/>
 
 ## Apps by Abubakr Elmallah
 
@@ -35,4 +42,4 @@ Swift Student Challenge 2024 source: <https://github.com/TheAbubakrAbu/Al-Quran-
 
 ## A Note on Intent
 
-This app is offered as *sadaqah jariyah* — a contribution for the benefit of the Muslim community and anyone building tools to pray on time and learn about Islam, and access the Quran. If it helps you, please keep the chain of attribution intact and consider contributing improvements back.
+This app is offered as *sadaqah jariyah* - a contribution for the benefit of the Muslim community and anyone building tools to read, learn, and listen to the Quran. If it helps you, please keep the chain of attribution intact and consider contributing improvements back.

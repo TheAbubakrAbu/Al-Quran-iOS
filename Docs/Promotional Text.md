@@ -1,1 +1,1 @@
-The full Quran with color-coded tajweed, over 20 reciters, Arabic Beginner Mode, and ayah sharing. Free, no ads, and fully private.
+Now with on-device AI search, tafsir in Arabic and English, a Quran planner with streaks, and a faster mushaf. Free, ad free, and fully private.

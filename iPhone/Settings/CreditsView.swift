@@ -30,7 +30,7 @@ struct CreditsView: View {
 
     private var headerSection: some View {
         VStack(alignment: .center) {
-            Text("Al-Islam was created by Abubakr Elmallah (أبوبكر الملاح), who was a 17-year-old high school student when this app was published on July 26, 2023.")
+            Text("Al-Quran was created by Abubakr Elmallah (أبوبكر الملاح), who was a 17-year-old high school student when this app was published on December 26, 2023.")
                 .font(.headline)
                 .padding(.vertical, 4)
                 .multilineTextAlignment(.center)
@@ -67,7 +67,7 @@ struct CreditsView: View {
     private var storySection: some View {
         Section {
             Text("""
-            This app was inspired by my desire to help new reverts and non-Muslims learn about Islam and easily access the Quran and prayer times. I’m deeply grateful to my parents for instilling in me a love for the faith (may Allah reward them).
+            This app was inspired by my desire to help new reverts and non-Muslims learn about Islam and easily access the Quran. I’m deeply grateful to my parents for instilling in me a love for the faith (may Allah reward them).
 
             I also want to express my gratitude to my high school teacher, Mr. Joe Silvey, who, despite not being Muslim, stood with our Muslim Student Association and helped us organize weekly Jumuah prayers.
             """)
@@ -130,13 +130,7 @@ struct CreditsView: View {
     private var creditsLinksSection: some View {
         Section(header: Text("CREDITS")) {
             Group {
-                // Al-Adhan
-                creditLink("Credit for the Adhan calculations, which does everything offline on the device, goes to Batoul Apps", url: "https://github.com/batoulapps/adhan-swift")
-                
-                creditLink("Credit for the Adhan sounds goes to Omar Al-Ejel", url: "https://github.com/oalejel/Athan-Utility")
-                
                 // Al-Quran
-                
                 creditLink("Credit for the English transliteration of the Quran data goes to Risan Bagja Pradana", url: "https://github.com/risan/quran-json")
                 
                 creditLink("Credit for the English Saheeh International translation of the Quran data goes to Global Quran", url: "https://globalquran.com/download/data/")
@@ -162,9 +156,6 @@ struct CreditsView: View {
                 creditLink("Credit for the Arabic Tafsirs (Ibn Kathir, al-Tabari, as-Sa'di) goes to the Tafsir API by spa5k, built from QUL (Tarteel) data", url: "https://github.com/spa5k/tafsir_api")
 
                 creditLink("Credit for the Surah Info goes to Quran.com (Quran Foundation)", url: "https://api-docs.quran.foundation/docs/content_apis_versioned/4.0.0/get-chapter-info/#get-chapter-info")
-                
-                // Al-Hadith
-                creditLink("Credit for the Hadith collections goes to hadith-json by Ahmed Baset", url: "https://github.com/AhmedBaset/hadith-json")
 
                 // All Apps
                 creditLink("Credit for the 99 Names of Allah goes to MyIslam", url: "https://myislam.org/99-names-of-allah/")
