@@ -31,7 +31,7 @@ struct AppShortcutsRoot: AppShortcutsProvider {
             shortTitle: "Play Surah",
             systemImageName: "book"
         )
-
+        
         AppShortcut(
             intent: PlayRandomSurahAppIntent(),
             phrases: [
@@ -51,7 +51,7 @@ struct AppShortcutsRoot: AppShortcutsProvider {
             shortTitle: "Random Surah",
             systemImageName: "shuffle"
         )
-
+        
         AppShortcut(
             intent: PlayLastListenedSurahAppIntent(),
             phrases: [

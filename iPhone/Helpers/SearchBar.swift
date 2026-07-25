@@ -4,15 +4,20 @@ import SwiftUI
 struct SearchBar: View {
     @Binding var text: String
 
+    /// Bump this to put the keyboard in the search bar. A token rather than a `Bool` so the same request can be
+    /// made twice in a row (search, dismiss the keyboard, search again) and still be seen as a new one.
+    var focusRequestID: Int = 0
     var onSearchButtonClicked: (() -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
 
     init(
         text: Binding<String>,
+        focusRequestID: Int = 0,
         onSearchButtonClicked: (() -> Void)? = nil,
         onFocusChanged: ((Bool) -> Void)? = nil
     ) {
         _text = text
+        self.focusRequestID = focusRequestID
         self.onSearchButtonClicked = onSearchButtonClicked
         self.onFocusChanged = onFocusChanged
     }
@@ -22,12 +27,14 @@ struct SearchBar: View {
             if #available(iOS 26.0, *) {
                 SearchBarUIKit(
                     text: $text,
+                    focusRequestID: focusRequestID,
                     onSearchButtonClicked: onSearchButtonClicked,
                     onFocusChanged: onFocusChanged
                 )
             } else {
                 SearchBarUIKit(
                     text: $text,
+                    focusRequestID: focusRequestID,
                     onSearchButtonClicked: onSearchButtonClicked,
                     onFocusChanged: onFocusChanged
                 )
@@ -46,6 +53,7 @@ struct SearchBar: View {
 struct SearchBarUIKit: UIViewRepresentable {
     @Binding var text: String
 
+    var focusRequestID: Int = 0
     var onSearchButtonClicked: (() -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
 
@@ -71,8 +79,17 @@ struct SearchBarUIKit: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UISearchBar, context: Context) {
+        // Push SwiftUI's text into UIKit ONLY when it's a value the user didn't just type (a programmatic
+        // set: the global-search handoff, a cleared query). While the field is being edited, UIKit is the
+        // source of truth and SwiftUI runs a beat behind - fast typing (worse under Low Power Mode, where
+        // every update is slower) delivered STALE values here, and writing them back into the actively
+        // edited field corrupted its text system mid-composition. That was the type-delete-retype search
+        // crash. The coordinator remembers what it recently sent; any of those values arriving back is an
+        // echo, never a programmatic set, so it must not be written into the field.
         if uiView.text != text {
-            uiView.text = text
+            if !uiView.isFirstResponder || !context.coordinator.recentlySentTexts.contains(text) {
+                uiView.text = text
+            }
         }
 
         uiView.searchTextField.rightViewMode = .always
@@ -82,6 +99,16 @@ struct SearchBarUIKit: UIViewRepresentable {
         )
         context.coordinator.onSearchButtonClicked = onSearchButtonClicked
         context.coordinator.onFocusChanged = onFocusChanged
+
+        // A new focus request (0 is "never asked"). Deferred: this runs inside a SwiftUI update, and taking
+        // first responder synchronously from there fights the in-flight navigation that usually caused the ask.
+        if focusRequestID > 0, focusRequestID != context.coordinator.lastFocusRequestID {
+            context.coordinator.lastFocusRequestID = focusRequestID
+            DispatchQueue.main.async {
+                guard !uiView.isFirstResponder else { return }
+                uiView.becomeFirstResponder()
+            }
+        }
     }
 
     private func configure(searchTextField: UITextField, coordinator: Coordinator) {
@@ -100,6 +127,19 @@ struct SearchBarUIKit: UIViewRepresentable {
 
         var onSearchButtonClicked: (() -> Void)?
         var onFocusChanged: ((Bool) -> Void)?
+        /// The last focus request honoured, so a re-render can't keep re-taking first responder.
+        var lastFocusRequestID = 0
+        /// The last few values `textDidChange` pushed INTO SwiftUI. When one of them comes back through
+        /// `updateUIView` it's an echo of the user's own typing (possibly stale by a beat), not a
+        /// programmatic set - see the guard there.
+        private(set) var recentlySentTexts: [String] = []
+
+        func rememberSentText(_ value: String) {
+            recentlySentTexts.append(value)
+            if recentlySentTexts.count > 8 {
+                recentlySentTexts.removeFirst(recentlySentTexts.count - 8)
+            }
+        }
 
         init(
             text: Binding<String>,
@@ -112,6 +152,7 @@ struct SearchBarUIKit: UIViewRepresentable {
         }
 
         func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+            rememberSentText(searchText)
             text = searchText
         }
 
@@ -130,6 +171,7 @@ struct SearchBarUIKit: UIViewRepresentable {
             searchBar.text = ""
             searchBar.resignFirstResponder()
 
+            rememberSentText("")
             text = ""
             onFocusChanged?(false)
         }
@@ -141,6 +183,7 @@ struct SearchBarUIKit: UIViewRepresentable {
         }
 
         @objc func clearSearchText(_ sender: UIButton) {
+            rememberSentText("")
             guard let textField = resolvedTextField(from: sender) else {
                 text = ""
                 return

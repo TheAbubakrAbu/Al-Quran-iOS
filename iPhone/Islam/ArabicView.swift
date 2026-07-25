@@ -1,9 +1,12 @@
 import SwiftUI
 
 struct ArabicView: View {
-    @EnvironmentObject private var settings: Settings
+    @ObservedObject private var settings = Settings.shared
     @State private var searchText = ""
+    /// Apple Music-style bar minimization: true while scrolling down.
+    @State private var barsCollapsed = false
     @AppStorage("arabicFilterMode") private var filterModeRaw: String = ArabicFilterMode.normal.rawValue
+    /// List of rows, or a grid of tiles - the same choice the 99 Names screen offers. Watch is always a list.
 
     private enum ArabicFilterMode: String, CaseIterable, Identifiable {
         case normal
@@ -39,6 +42,27 @@ struct ArabicView: View {
         ["ر", "ز"], ["س", "ش"], ["ص", "ض"], ["ط", "ظ"], ["ع", "غ"],
         ["ف", "ق"], ["ك", "ل"], ["م", "ن"], ["ه", "ة"]
     ]
+
+    /// What the letters in a similarity group have in COMMON - the shared skeleton, with the dots stripped off.
+    /// The letters themselves are right there in the section, so listing them again in the header ("ب - ت - ث")
+    /// said nothing; the dotless form is the actual point of the grouping. Where the letters don't merely differ
+    /// by dots (kaaf/laam, meem/nuun), there's no shared skeleton to show, so the group falls back to naming them.
+    private static let dotlessSkeletons: [String: String] = [
+        "بتث": "\u{066E}",   // dotless beh
+        "جحخ": "ح",          // the letters are haa + a dot above / below
+        "دذ": "د",
+        "رز": "ر",
+        "سش": "س",
+        "صض": "ص",
+        "طظ": "ط",
+        "عغ": "ع",
+        "فق": "\u{066F}",    // dotless qaf
+        "هة": "ه",           // taa marbuutah is a haa with two dots
+    ]
+
+    private static func similarityHeader(for group: [String]) -> String {
+        dotlessSkeletons[group.joined()] ?? group.joined(separator: " - ")
+    }
 
     private var filteredStandard: [LetterData] {
         guard !searchText.isEmpty else { return standardArabicLetters }
@@ -93,37 +117,314 @@ struct ArabicView: View {
         }
     }
 
+    #if os(iOS)
+    // AI (semantic) letter search - the hadith book search's exact grammar, over the alphabet:
+    // on-device meaning matching over each letter's English facts (name, sound, weight rule),
+    // shown automatically above the keyword matches. No mode to enter; the section appears (with
+    // one-time build progress the first time) whenever it can help.
+    @ObservedObject private var semanticEngine = SemanticSearchEngine.shared
+    @State private var aiHits: [LetterData] = []
+    @State private var aiSearchTask: Task<Void, Never>?
+
+    private static let semanticCorpusID = "letters-en"
+    /// Every letter the keyword search covers, in one stable order - the corpus rows.
+    private static let semanticCorpusItems: [LetterData] =
+        standardArabicLetters + otherArabicLetters + nonArabicArabicScriptLetters
+
+    /// One English sentence per letter - the corpus text AND the Ask passage (letters carry no
+    /// long-form description, so the searchable facts are the name, sound, and weight rule).
+    private static func letterEnglishText(_ letter: LetterData) -> String {
+        var parts = ["The Arabic letter \(letter.transliteration), pronounced with the sound \"\(letter.sound)\"."]
+        switch letter.weight {
+        case .heavy: parts.append("A heavy (tafkhim, isti'la) letter.")
+        case .light: parts.append("A light (tarqiq) letter.")
+        case .conditional: parts.append("Its weight is conditional.")
+        case .followsPrevious: parts.append("It follows the previous letter's weight.")
+        case nil: break
+        }
+        if let rule = letter.weightRule { parts.append(rule) }
+        return parts.joined(separator: " ")
+    }
+
+    /// True when the live query is one the semantic engine can answer (English text, long enough).
+    private var aiQueryEligible: Bool {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return SemanticSearchEngine.isSupported
+            && trimmed.count >= 3
+            && !trimmed.containsArabicScript
+    }
+
+    private func prepareSemanticCorpus() {
+        guard SemanticSearchEngine.isSupported, !semanticEngine.isReady(Self.semanticCorpusID) else { return }
+        let texts = Self.semanticCorpusItems.map { Self.letterEnglishText($0) }
+        // Keyed by the letter's id, so index -> letter resolution survives any reorder of the source.
+        let keys = Self.semanticCorpusItems.map { String($0.id) }
+        semanticEngine.prepare(corpusID: Self.semanticCorpusID, version: "v1-\(texts.count)", texts: texts, keys: keys)
+    }
+
+    private func runAISearch(query: String) {
+        aiSearchTask?.cancel()
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard SemanticSearchEngine.isSupported, trimmed.count >= 3, !trimmed.containsArabicScript else {
+            if !aiHits.isEmpty { aiHits = [] }
+            return
+        }
+        prepareSemanticCorpus()
+
+        aiSearchTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            let results = await semanticEngine.search(corpusID: Self.semanticCorpusID, query: trimmed, limit: 10)
+            guard !Task.isCancelled else { return }
+            // Resolve through the corpus KEYS (the letter's id), falling back to position only for
+            // a corpus persisted before keys existed.
+            let keys = await MainActor.run { semanticEngine.corpus(Self.semanticCorpusID)?.itemKeys }
+            await MainActor.run {
+                guard trimmed == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+                // Plain apply: an animated section insert racing another async apply is the
+                // collection-view assertion crash the Quran search hit.
+                aiHits = results.compactMap { result in
+                    if let keys, keys.indices.contains(result.index), let id = Int(keys[result.index]) {
+                        return Self.semanticCorpusItems.first(where: { $0.id == id })
+                    }
+                    return Self.semanticCorpusItems.indices.contains(result.index) ? Self.semanticCorpusItems[result.index] : nil
+                }
+            }
+        }
+    }
+
+    // Ask (the on-device LLM, grounded RAG): question-shaped queries stream an answer card above
+    // the matches, drawn strictly from the retrieved letters - the hadith book search's exact feature.
+    @State private var askAnswer = ""
+    @State private var askIsStreaming = false
+    @State private var askRanForQuery = ""
+    /// A MANUAL ask that found nothing to ground on or errored - the tapped row must answer with
+    /// SOMETHING instead of silently restoring the prompt.
+    @State private var askNoAnswer = false
+    /// The AI-vs-keyword segmented switch, shown only when BOTH result kinds exist. Reset to the
+    /// AI list on every new query.
+    @State private var showKeywordResults = false
+    @State private var askTask: Task<Void, Never>?
+
+    /// Auto mode runs only for QUESTION-shaped queries; `manual` (the tapped "Ask AI" row) runs
+    /// for anything - the user explicitly asked.
+    private func runAsk(query: String, manual: Bool) {
+        askTask?.cancel()
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Any new run (or keystroke) clears a previous dead-end notice. Plain writes throughout:
+        // the Ask card is a List section, and animated section churn racing the async result
+        // applies is the collection-view assertion crash the Quran search hit.
+        askNoAnswer = false
+        guard OnDeviceAsk.isAvailable, trimmed.count >= 3,
+              manual || OnDeviceAsk.looksLikeQuestion(trimmed) else {
+            if !askRanForQuery.isEmpty {
+                askAnswer = ""; askIsStreaming = false; askRanForQuery = ""
+            }
+            return
+        }
+
+        askTask = Task {
+            // Auto waits out the search debounce; a manual tap goes immediately.
+            try? await Task.sleep(nanoseconds: manual ? 100_000_000 : 900_000_000)
+            guard !Task.isCancelled else { return }
+
+            var sources: [OnDeviceAsk.Source] = []
+            var seen = Set<Int>()
+            for letter in aiHits.prefix(6) where seen.insert(letter.id).inserted {
+                sources.append(.init(reference: letter.transliteration, text: Self.letterEnglishText(letter)))
+            }
+            for letter in (filteredStandardForMode + filteredOther).prefix(6) where seen.insert(letter.id).inserted {
+                sources.append(.init(reference: letter.transliteration, text: Self.letterEnglishText(letter)))
+            }
+            guard !sources.isEmpty else {
+                askAnswer = ""; askIsStreaming = false; askRanForQuery = ""
+                // A tapped ask MUST respond: with nothing retrieved to ground on, say so instead
+                // of silently restoring the prompt row.
+                if manual { askNoAnswer = true }
+                return
+            }
+
+            askAnswer = ""; askIsStreaming = true; askRanForQuery = trimmed
+            guard #available(iOS 26.0, *) else { return }
+            do {
+                for try await text in OnDeviceAsk.streamAnswer(question: trimmed, sources: sources) {
+                    guard !Task.isCancelled else { return }
+                    askAnswer = text
+                }
+                guard !Task.isCancelled else { return }
+                askIsStreaming = false
+            } catch {
+                guard !Task.isCancelled else { return }
+                askAnswer = ""; askIsStreaming = false; askRanForQuery = ""
+                if manual { askNoAnswer = true }
+            }
+        }
+    }
+
+    /// "ASK AI" with the sparkles glyph, accent-tinted - the Quran search's `askAIHeader`.
+    private var askAIHeader: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "sparkles")
+            Text("ASK AI")
+
+            Spacer()
+        }
+        .foregroundStyle(settings.accentColor.color)
+    }
+
+    /// Shown when a manual ask dead-ends: nothing retrieved matched the query, so there was
+    /// nothing to answer from. Editing the query clears it (`runAsk` resets the flag on every run).
+    private var askNoAnswerRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "questionmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("AI couldn't find anything matching \u{201C}\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D}. Try different wording.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .conditionalGlassEffect(clear: true, rectangle: true)
+    }
+
+    private var askPromptRow: some View {
+        Button {
+            settings.hapticFeedback()
+            runAsk(query: searchText, manual: true)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.caption)
+
+                Text("Ask AI about \u{201C}\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D}")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundColor(settings.accentColor.color)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .conditionalGlassEffect(clear: true, rectangle: true)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The ASK AI section: the dead-end notice, the streaming answer card, or the one-tap prompt -
+    /// the hadith book search's exact grammar. The prompt row shows only once there are results
+    /// to ground an answer on.
+    @ViewBuilder
+    private func askAISection(hasResults: Bool) -> some View {
+        if OnDeviceAsk.isAvailable {
+            if askNoAnswer {
+                Section(header: askAIHeader) { askNoAnswerRow }
+            } else if !askRanForQuery.isEmpty {
+                Section(header: askAIHeader) { AskAnswerCard(answer: askAnswer, isStreaming: askIsStreaming) }
+            } else if hasResults {
+                Section(header: askAIHeader) { askPromptRow }
+            }
+        }
+    }
+
+    private var resultsPickerSection: some View {
+        Section {
+            Picker("Results", selection: $showKeywordResults) {
+                Text("AI Results").tag(false)
+                Text("Keyword Results").tag(true)
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    /// The AI (semantic) matches for the live query, shown automatically: build progress the first
+    /// time, then the ranked matches - the same rows/tiles the keyword results use. Deliberately
+    /// SILENT otherwise (Arabic query, build failed, no semantic matches): an automatic section
+    /// must never nag.
+    @ViewBuilder
+    private var aiMatchesSection: some View {
+        if aiQueryEligible {
+            if semanticEngine.isReady(Self.semanticCorpusID) {
+                if !aiHits.isEmpty {
+                    Section(header: SectionPillHeader(title: "AI MATCHES", count: aiHits.count, icon: "sparkles", accentTitle: true)) {
+                        letterCollection(aiHits)
+                    }
+                }
+            } else if !semanticEngine.failedCorpora.contains(Self.semanticCorpusID) {
+                Section { AISearchStatusRow(progress: semanticEngine.progress(Self.semanticCorpusID), failed: false) }
+            }
+        }
+    }
+    #endif
+
     var body: some View {
-        List {
+        // Both result kinds landed: ONE segmented switch decides which list fills the page (the
+        // hadith book search's rule). With only one kind present, no picker - it just shows.
+        #if os(iOS)
+        let keywordResults = searchText.isEmpty ? [] : filteredStandardForMode + filteredOther
+        let showResultsPicker = !searchText.isEmpty && !aiHits.isEmpty && !keywordResults.isEmpty
+        let keywordVisible = !showResultsPicker || showKeywordResults
+        #else
+        let keywordVisible = true
+        #endif
+
+        return List {
             Group {
                 #if os(watchOS)
                 arabicFontPickerSection
                 #endif
                 favoriteLettersSection
+                #if os(iOS)
+                if !searchText.isEmpty {
+                    askAISection(hasResults: !aiHits.isEmpty || !keywordResults.isEmpty)
+                    if showResultsPicker { resultsPickerSection }
+                    // AI matches appear AUTOMATICALLY above the keyword results - no mode to enter.
+                    if !showResultsPicker || !showKeywordResults { aiMatchesSection }
+                }
+                #endif
                 mainLetterSections
-                searchResultsSection
+                if keywordVisible {
+                    searchResultsSection
+                }
             }
             .themedListRowBackground()
-            // Size slider raises the Dynamic-Type *floor* for the alphabet content (custom Arabic glyphs
-            // included — they now use `relativeTo:`), so everything only ever grows from the device size.
-            .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
         }
         #if os(watchOS)
-        .searchable(text: $searchText.animation(.easeInOut))
+        .searchable(text: (AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut)))
         #else
+        .background(gridNavigationLink)
+        // Apple Music-style: the bottom bar minimizes while scrolling down, restores on scroll-up.
+        .collapseBarsOnScroll($barsCollapsed)
         .adaptiveSafeArea(edge: .bottom) {
             VStack(spacing: SafeAreaInsetVStackSpacing.standard) {
-                ArabicSizeSlider()
-
-                arabicFontPicker
+                // No size slider here. It lives on the per-letter detail screen (`ArabicLetterView`), which is
+                // where you are actually looking at a letter big enough to want it resized. The size it sets is
+                // global (`settings.arabicLetterSizeIndex`), and these rows and tiles already honour it through
+                // `arabicLetterDynamicTypeSize`, so the alphabet list still resizes - it just doesn't carry the
+                // control, which was crowding the bottom bar alongside the font picker and the search field.
+                // The font picker above the search bar is OFF for now (it was the row that vanished when
+                // scrolling down) - uncomment to bring it back. The picker still lives in the letter
+                // detail screens' ARABIC FONT section.
+                // arabicFontPicker
+                //     // Stays mounted while minimized (height 0) - inserting/removing glass renders black boxes.
+                //     .collapsibleBarRow(barsCollapsed)
 
                 HStack(spacing: 0) {
-                    SearchBar(text: $searchText.animation(.easeInOut))
+                    SearchBar(text: (AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut)))
 
                     Menu {
                         Text("Arabic Sort")
                             .foregroundStyle(.secondary)
-                        
+
                         ForEach(ArabicFilterMode.allCases) { mode in
                             Button {
                                 settings.hapticFeedback()
@@ -137,6 +438,25 @@ struct ArabicView: View {
                                 )
                             }
                         }
+
+                        Divider()
+
+                        Text("Display")
+                            .foregroundStyle(.secondary)
+
+                        // Lets the marks be practised from the Arabic alone, without reading the answer off the
+                        // transliteration underneath.
+                        Button {
+                            settings.hapticFeedback()
+                            withAnimation(.easeInOut) {
+                                settings.hideEnglishInArabicLetters.toggle()
+                            }
+                        } label: {
+                            Label(
+                                settings.hideEnglishInArabicLetters ? "Show English" : "Hide English",
+                                systemImage: settings.hideEnglishInArabicLetters ? "eye" : "eye.slash"
+                            )
+                        }
                     } label: {
                         adaptiveMenuButtonLabel {
                             Image(systemName: filterMode.icon)
@@ -149,7 +469,9 @@ struct ArabicView: View {
                     .padding(.bottom, 2)
                 }
                 .padding([.leading, .top], -8)
+                .minimizedBarStyle(barsCollapsed)
             }
+            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: barsCollapsed)
             .padding(.horizontal, 24)
             .padding(.bottom, 8)
             .background(Color.white.opacity(0.00001))
@@ -157,6 +479,34 @@ struct ArabicView: View {
         #endif
         .applyConditionalListStyle()
         .navigationTitle("Arabic Alphabet")
+        .onDisappear { ArabicSpeech.shared.stop() }
+        #if os(iOS)
+        .onChange(of: searchText) { text in
+            // A new query starts back on the AI list, with any dead-end ask notice cleared.
+            showKeywordResults = false
+            askNoAnswer = false
+            runAISearch(query: text)
+            runAsk(query: text, manual: false)
+        }
+        // The one-time vector build finishing mid-query: surface the results without another keystroke.
+        .onChange(of: semanticEngine.readyCorpora) { ready in
+            guard ready.contains(Self.semanticCorpusID) else { return }
+            runAISearch(query: searchText)
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                // The one app-wide grid toggle - flipping it here flips Quran, Names, and Islam too.
+                Button {
+                    settings.hapticFeedback()
+                    withAnimation { settings.arabicGridMode.toggle() }
+                } label: {
+                    Image(systemName: isGridMode ? "list.bullet" : "square.grid.2x2")
+                }
+                .accessibilityLabel(isGridMode ? "Show list" : "Show grid")
+                .tint(settings.accentColor.accent2)
+            }
+        }
+        #endif
     }
 
     private func adaptiveMenuButtonLabel<Content: View>(
@@ -170,14 +520,47 @@ struct ArabicView: View {
             .conditionalGlassEffect()
     }
 
+    /// A letter section with the shared counted header. `shuffle` adds the random button (iOS only -
+    /// it pushes through the grid's hidden navigation link, which the watch list doesn't have).
+    @ViewBuilder
+    private func countedLetterSection(_ title: String, _ letters: [LetterData], shuffle: Bool = false) -> some View {
+        #if os(iOS)
+        Section(header: SectionPillHeader(
+            title: title,
+            count: letters.count,
+            onShuffle: shuffle ? { if let letter = letters.randomElement() { gridSelection = letter } } : nil
+        )) {
+            letterCollection(letters)
+        }
+        #else
+        Section(header: SectionPillHeader(title: title, count: letters.count)) {
+            letterCollection(letters)
+        }
+        #endif
+    }
+
     @ViewBuilder
     private var favoriteLettersSection: some View {
         if searchText.isEmpty, !settings.favoriteLetters.isEmpty {
-            Section("FAVORITE LETTERS") {
-                ForEach(settings.favoriteLetters.sorted(), id: \.id) {
-                    letterRow(for: $0)
+            let favorites = settings.favoriteLetters.sorted()
+            #if os(iOS)
+            Section(header: SectionPillHeader(
+                title: "FAVORITES",
+                count: favorites.count,
+                icon: "star.fill",
+                accentTitle: true,
+                isExpanded: $showFavoriteLetters,
+                onShuffle: { if let letter = favorites.randomElement() { gridSelection = letter } }
+            )) {
+                if showFavoriteLetters {
+                    letterCollection(favorites)
                 }
             }
+            #else
+            Section(header: SectionPillHeader(title: "FAVORITES", count: favorites.count)) {
+                letterCollection(favorites)
+            }
+            #endif
         }
     }
 
@@ -192,16 +575,100 @@ struct ArabicView: View {
 
     @ViewBuilder
     private var arabicFontPicker: some View {
+        #if os(watchOS)
+        // The watch keeps the simple two-way choice; the richer three-way face picker is a phone thing.
         Picker("Arabic Font", selection: $settings.useFontArabic.animation(.easeInOut)) {
             Text("Quranic Font").tag(true)
             Text("Basic Font").tag(false)
         }
-        #if !os(watchOS)
-        .pickerStyle(.segmented)
-        #endif
-        // Non-interactive glass: interactive Liquid Glass steals per-segment taps on real iOS 26 hardware.
         .conditionalGlassEffect(interactive: false)
         .onChange(of: settings.useFontArabic) { _ in settings.hapticFeedback() }
+        #else
+        IslamArabicFontPicker()
+            // Non-interactive glass: interactive Liquid Glass steals per-segment taps on real iOS 26 hardware.
+            .conditionalGlassEffect(interactive: false)
+        #endif
+    }
+
+    private var isGridMode: Bool {
+        #if os(iOS)
+        return settings.arabicGridMode
+        #else
+        return false
+        #endif
+    }
+
+    #if os(iOS)
+    /// The letter a grid tile asked to open. Every grid section shares the one link below, so exactly one
+    /// letter is ever pushed.
+    @State private var gridSelection: LetterData?
+
+    /// Collapse state for the favorites section, same as the Quran tab's Favorite Surahs.
+    @AppStorage("showFavoriteLetters") private var showFavoriteLetters = true
+
+    @ViewBuilder
+    private var gridNavigationLink: some View {
+        NavigationLink(
+            isActive: Binding(
+                get: { gridSelection != nil },
+                set: { if !$0 { gridSelection = nil } }
+            )
+        ) {
+            if let gridSelection {
+                ArabicLetterView(letterData: gridSelection)
+            }
+        } label: {
+            EmptyView()
+        }
+        .opacity(0)
+    }
+    #endif
+
+    /// Every letter section renders through here, so list and grid can never fall out of sync on *which*
+    /// letters a section contains - only on how they're drawn.
+    @ViewBuilder
+    private func letterCollection(_ letters: [LetterData]) -> some View {
+        #if os(iOS)
+        if isGridMode {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
+                ForEach(letters) { letter in
+                    ArabicLetterGridTile(
+                        letterData: letter,
+                        isFavorite: settings.isLetterFavorite(letterData: letter),
+                        accentColor: settings.accentColor,
+                        useFontArabic: settings.useFontArabic,
+                        fontArabic: settings.nonQuranArabicFontName,
+                        onTap: { gridSelection = letter }
+                    )
+                    .equatable()
+                }
+            }
+            .padding(.horizontal, -8)
+            .padding(.vertical, 2)
+        } else {
+            ForEach(letters) { letterRow(for: $0) }
+        }
+        #else
+        ForEach(letters) { letterRow(for: $0) }
+        #endif
+    }
+
+    /// The numbers follow the letters' display mode, so the screen is either all rows or all tiles.
+    @ViewBuilder
+    private var numberCollection: some View {
+        #if os(iOS)
+        if isGridMode {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
+                ForEach(numbers, id: \.number) { ArabicNumberGridTile(numberData: $0) }
+            }
+            .padding(.horizontal, -8)
+            .padding(.vertical, 2)
+        } else {
+            ForEach(numbers, id: \.number) { ArabicNumberRow(numberData: $0) }
+        }
+        #else
+        ForEach(numbers, id: \.number) { ArabicNumberRow(numberData: $0) }
+        #endif
     }
 
     private func letterRow(for letterData: LetterData) -> some View {
@@ -210,7 +677,7 @@ struct ArabicView: View {
             isFavorite: settings.isLetterFavorite(letterData: letterData),
             accentColor: settings.accentColor,
             useFontArabic: settings.useFontArabic,
-            fontArabic: settings.fontArabic,
+            fontArabic: settings.nonQuranArabicFontName,
             searchQuery: searchText
         )
         .equatable()
@@ -221,23 +688,36 @@ struct ArabicView: View {
         if searchText.isEmpty {
             standardLetterSections
 
-            Section("SPECIAL ARABIC LETTERS") {
-                ForEach(otherArabicLetters, id: \.letter) {
-                    letterRow(for: $0)
+            Section("TASHKEEL") {
+                NavigationLink {
+                    TashkeelLettersView()
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Letters with Tashkeel")
+                                .foregroundColor(.primary)
+
+                            Text("Every letter carrying one harakah at a time")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    } icon: {
+                        Text("\u{0640}\u{064E}")
+                            .foregroundColor(settings.accentColor.color)
+                    }
+                    .padding(.vertical, 4)
                 }
             }
 
-            Section("ARABIC NUMBERS") {
-                ForEach(numbers, id: \.number) { ArabicNumberRow(numberData: $0) }
+            countedLetterSection("SPECIAL ARABIC LETTERS", otherArabicLetters)
+
+            Section(header: SectionPillHeader(title: "ARABIC NUMBERS", count: numbers.count)) {
+                numberCollection
             }
 
             tajweedSection
 
-            Section("NON-ARABIC LETTERS") {
-                ForEach(nonArabicArabicScriptLetters, id: \.letter) {
-                    letterRow(for: $0)
-                }
-            }
+            countedLetterSection("NON-ARABIC LETTERS", nonArabicArabicScriptLetters)
         }
     }
 
@@ -245,62 +725,49 @@ struct ArabicView: View {
     private var standardLetterSections: some View {
         switch filterMode {
         case .normal:
-            Section("STANDARD ARABIC LETTERS") {
-                ForEach(standardArabicLetters, id: \.letter) {
-                    letterRow(for: $0)
-                }
-            }
+            countedLetterSection("STANDARD ARABIC LETTERS", standardArabicLetters, shuffle: true)
         case .similarity:
             ForEach(similarityGroups.indices, id: \.self) { idx in
                 let group = similarityGroups[idx]
-                let header = idx == 0 ? "VOWEL LETTERS" : group.joined(separator: " - ")
-                Section(header) {
-                    ForEach(group, id: \.self) { ch in
-                        letterData(for: ch).map { letterRow(for: $0) }
-                    }
-                }
+                let header = idx == 0 ? "VOWEL LETTERS" : Self.similarityHeader(for: group)
+                countedLetterSection(header, group.compactMap { letterData(for: $0) })
             }
         case .heavyLight:
-            Section("FOLLOWS PREVIOUS") {
-                ForEach(standardArabicLetters.filter { $0.weight == .followsPrevious }, id: \.letter) {
-                    letterRow(for: $0)
-                }
-            }
-            
-            Section("CONDITIONAL") {
-                ForEach(standardArabicLetters.filter { $0.weight == .conditional }, id: \.letter) {
-                    letterRow(for: $0)
-                }
-            }
-            
-            Section("HEAVY LETTERS") {
-                ForEach(standardArabicLetters.filter { $0.weight == .heavy }, id: \.letter) {
-                    letterRow(for: $0)
-                }
-            }
+            countedLetterSection("FOLLOWS PREVIOUS", standardArabicLetters.filter { $0.weight == .followsPrevious })
 
-            Section("LIGHT LETTERS") {
-                ForEach((standardArabicLetters + otherArabicLetters).filter {
-                    $0.weight == .light
-                        || $0.transliteration == "taa marbuuTah"
-                        || $0.transliteration.lowercased().contains("hamza")
-                }, id: \.id) {
-                    letterRow(for: $0)
-                }
-            }
+            countedLetterSection("CONDITIONAL", standardArabicLetters.filter { $0.weight == .conditional })
+
+            countedLetterSection("HEAVY LETTERS", standardArabicLetters.filter { $0.weight == .heavy })
+
+            countedLetterSection("LIGHT LETTERS", (standardArabicLetters + otherArabicLetters).filter {
+                $0.weight == .light
+                    || $0.transliteration == "taa marbuuTah"
+                    || $0.transliteration.lowercased().contains("hamza")
+            })
         }
     }
 
     @ViewBuilder
     private var searchResultsSection: some View {
         if !searchText.isEmpty {
+            // ONE scan per pass: the rows and the count pill share the same merged result list -
+            // as two separate accesses each computed property re-filtered every letter per keystroke.
+            let results = filteredStandardForMode + filteredOther
             Section {
-                ForEach(filteredStandardForMode) {
-                    letterRow(for: $0)
-                }
-
-                ForEach(filteredOther) {
-                    letterRow(for: $0)
+                if results.isEmpty {
+                    #if os(iOS)
+                    Text(aiHits.isEmpty
+                         ? "No letters match your search."
+                         : "No keyword matches - see the AI results above.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    #else
+                    Text("No letters match your search.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    #endif
+                } else {
+                    letterCollection(results)
                 }
             } header: {
                 HStack {
@@ -308,12 +775,7 @@ struct ArabicView: View {
 
                     Spacer()
 
-                    Text("\(filteredStandardForMode.count + filteredOther.count)")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(settings.accentColor.color)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .conditionalGlassEffect()
+                    CountPill(count: results.count)
                         .opacity(searchText.isEmpty ? 0 : 1)
                 }
             }
@@ -336,9 +798,9 @@ struct ArabicView: View {
 
 /// Bottom size control shared by the Arabic Alphabet list and the per-letter detail. Drives
 /// `settings.arabicLetterSizeIndex`, which both screens apply as a Dynamic-Type floor. Position 0 is
-/// `.xSmall`, i.e. no floor at all — the alphabet then renders at whatever size the device is set to.
+/// `.xSmall`, i.e. no floor at all - the alphabet then renders at whatever size the device is set to.
 struct ArabicSizeSlider: View {
-    @EnvironmentObject var settings: Settings
+    @ObservedObject var settings = Settings.shared
 
     private var maxIndex: Int { Settings.arabicLetterDynamicTypeSizes.count - 1 }
 
@@ -391,782 +853,9 @@ struct ArabicSizeSlider: View {
     }
 }
 
-struct LetterSectionHeader: View {
-    @EnvironmentObject var settings: Settings
-    let letterData: LetterData
-
-    var body: some View {
-        HStack {
-            Text("LETTER")
-                .font(.subheadline)
-
-            Spacer()
-
-            Image(systemName: settings.isLetterFavorite(letterData: letterData) ? "star.fill" : "star")
-                .foregroundColor(settings.accentColor.color)
-                .onTapGesture {
-                    settings.hapticFeedback()
-                    settings.toggleLetterFavorite(letterData: letterData)
-                }
-        }
-    }
-}
-
-struct ArabicLetterView: View {
-    @EnvironmentObject var settings: Settings
-
-    let letterData: LetterData
-
-    private var useQuranicFontForLetter: Bool {
-        settings.useFontArabic && !letterData.isNonArabicScriptLetter
-    }
-
-    private var nonArabicBaseSound: String {
-        switch letterData.transliteration {
-        case "pe": return "p"
-        case "che": return "ch"
-        case "ve": return "v"
-        case "gaaf (gaa)": return "g"
-        case "ngaf": return "ng"
-        case "zhe": return "zh"
-        default: return letterData.transliteration
-        }
-    }
-
-    var body: some View {
-        List {
-            Group {
-            #if os(watchOS)
-            arabicFontPickerSection
-            #endif
-            Section(header: LetterSectionHeader(letterData: letterData)) {
-                VStack {
-                    HStack(alignment: .center) {
-                        Text(letterData.transliteration)
-                            .font(.subheadline)
-
-                        Spacer()
-                        
-                        Text(letterData.letter)
-                            .font(
-                                useQuranicFontForLetter
-                                    ? settings.scalableArabicFont(base: 34, relativeTo: .largeTitle)
-                                    : .title
-                            )
-                        
-                        Spacer()
-
-                        Text(letterData.name)
-                            .font(
-                                useQuranicFontForLetter
-                                    ? settings.scalableArabicFont(base: 28, relativeTo: .title)
-                                    : .title2
-                            )
-                    }
-                }
-                .padding(.vertical, useQuranicFontForLetter ? 0 : 2)
-            }
-
-            if let weight = letterData.weight {
-                Section(header: Text("LIGHT / HEAVY PRONUNCIATION")) {
-                    VStack(alignment: .leading, spacing: 8) {
-                            Text(weight == .heavy ? "Heavy letter (Tafkhim)"
-                                : weight == .light ? "Light letter (Tarqiq)"
-                             : weight == .conditional ? "Conditional letter"
-                             : "Follows previous letter")
-                            .font(.headline)
-
-                        if let weightRule = letterData.weightRule {
-                            Text(weightRule)
-                                .font(.body)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-            }
-
-            Section(header: Text("DIFFERENT FORMS")) {
-                VStack {
-                    HStack(alignment: .center) {
-                        ForEach(0..<min(3, letterData.forms.count), id: \.self) { index in
-                            Spacer()
-
-                            Text(letterData.forms[index])
-                                .font(
-                                    useQuranicFontForLetter
-                                        ? settings.scalableArabicFont(base: 28, relativeTo: .title)
-                                        : .title2
-                                )
-
-                            Spacer()
-                        }
-                    }
-                }
-                .padding(.vertical, useQuranicFontForLetter ? 0 : 2)
-            }
-
-            if ["alif", "waw", "yaa"].contains(letterData.transliteration) {
-                Section(header: Text("SPECIAL ROLE OF VOWEL LETTERS")) {
-                    Text("In Arabic, three letters (Alif, Waw, and Yaa) have a special dual role:")
-                        .font(.body)
-
-                    if letterData.transliteration == "alif" {
-                        Text("- **Alif (ا)**: Functions as a long vowel \"aa\" when used after a letter with a fatha. For example, كِتَاب (kitaab - book). Alif itself is always a vowel letter, never a consonant. Do not confuse it with Hamza on Alif (أ or إ), which is a consonant hamzah.")
-                            .font(.body)
-                    }
-
-                    if letterData.transliteration == "waw" {
-                        Text("- **Waw (و)**: Functions as a long vowel \"uu\" when used after a letter with a damma, like in رَسُول (rasool - messenger). Otherwise, Waw is usually a consonant and makes the \"w\" sound, like in وَقَفَ (waqafa - stood).")
-                            .font(.body)
-                    }
-
-                    if letterData.transliteration == "yaa" {
-                        Text("- **Yaa (ي)**: Functions as a long vowel \"ii\" when used after a letter with a kasra, like in كِتَابِي (kitaabi - my book). Otherwise, Yaa is usually a consonant and makes the \"y\" sound, like in يَد (yad - hand).")
-                            .font(.body)
-                    }
-
-                    Text("When these letters have no tashkeel, or have sukoon, and the letter before them has the matching harakah, they are treated as Madd Tabee (مَدّ طَبِيعِيّ), or natural Madd: Alif after fatha, Waw after damma, and Yaa after kasra. This is held for 2 harakaat (2 counts).")
-                        .font(.body)
-
-                    Text("If a hamzah comes after the vowel letter, or if a shaddah/permanent sukoon comes after it, the natural Madd can turn into one of the special mudood (مُدُود), such as Madd Muttassil, Madd Mufassil, or Madd Lazim. Then the length may become 4, 5, or 6 counts instead of 2.")
-                        .font(.body)
-                }
-            }
-
-            if letterData.showTashkeel {
-                Section(header: Text("DIFFERENT HARAKAAT (VOWELS)")) {
-                    let chunks = tashkeels.chunked(into: 3)
-                    ForEach(chunks.indices, id: \.self) { idx in
-                        VStack {
-                            #if os(iOS)
-                            if idx > 0 {
-                                Divider().padding(.trailing, -100)
-                            }
-                            #endif
-
-                            TashkeelRow(
-                                letterData: letterData,
-                                tashkeels: chunks[idx],
-                                useQuranicFontForLetter: useQuranicFontForLetter
-                            )
-                            .padding(.top, 14)
-                        }
-                        #if os(iOS)
-                        .listRowSeparator(.hidden, edges: .bottom)
-                        #endif
-                    }
-                }
-
-                Section(header: Text("WITH HAMZA")) {
-                    HamzaPracticeRow(
-                        letterData: letterData,
-                        useQuranicFontForLetter: useQuranicFontForLetter
-                    )
-                }
-            }
-
-            if letterData.isNonArabicScriptLetter {
-                Section(header: Text("SOUND WITH HARAKAAT")) {
-                    NonArabicVowelPracticeRow(
-                        letterData: letterData,
-                        baseSound: nonArabicBaseSound,
-                        useQuranicFontForLetter: useQuranicFontForLetter
-                    )
-                }
-            }
-
-            if (!letterData.showTashkeel && letterData.transliteration != "alif")
-                || letterData.transliteration == "yaa" {
-                Section(header: Text("PURPOSE")) {
-                    purposeSection(for: letterData)
-                }
-            }
-
-            if letterData.transliteration == "alif madd" {
-                Section(header: Text("OUTSIDE OF THE QURAN")) {
-                    Text("In modern Arabic outside of the Quran, Alif Madd usually does not mean a 4, 5, or 6 count Tajweed elongation by itself. It normally represents ءا, so آ is a shortened spelling of ءا.")
-                        .font(.body)
-
-                    Text("For example, قرءان is how it is spelled in the Quran, while outside the Quran it is commonly shortened to قرآن. Likewise, ءامين is commonly written آمين.")
-                        .font(.body)
-                }
-            }
-            }
-            .themedListRowBackground()
-            // Same size slider as the alphabet list: a Dynamic-Type floor so the letter, its forms, and the
-            // explanatory text all grow together (the Arabic glyphs use `relativeTo:` so they scale too).
-            .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
-        }
-        #if !os(watchOS)
-        .adaptiveSafeArea(edge: .bottom) {
-            VStack(spacing: SafeAreaInsetVStackSpacing.standard) {
-                ArabicSizeSlider()
-
-                arabicFontPicker
-            }
-            .padding(.horizontal, 24)
-            .padding(.bottom)
-            .background(Color.white.opacity(0.00001))
-        }
-        #endif
-        .applyConditionalListStyle()
-        .navigationTitle(letterData.letter)
-    }
-
-    @ViewBuilder
-    private var arabicFontPickerSection: some View {
-        Section {
-            arabicFontPicker
-        } header: {
-            Text("ARABIC FONT")
-        }
-    }
-
-    @ViewBuilder
-    private var arabicFontPicker: some View {
-        Picker("Arabic Font", selection: $settings.useFontArabic.animation(.easeInOut)) {
-            Text("Quranic Font").tag(true)
-            Text("Basic Font").tag(false)
-        }
-        #if !os(watchOS)
-        .pickerStyle(.segmented)
-        #endif
-        // Non-interactive glass: interactive Liquid Glass steals per-segment taps on real iOS 26 hardware.
-        .conditionalGlassEffect(interactive: false)
-        .onChange(of: settings.useFontArabic) { _ in settings.hapticFeedback() }
-    }
-
-    @ViewBuilder
-    private func purposeSection(for data: LetterData) -> some View {
-        if data.isNonArabicScriptLetter {
-            Group {
-                Text("This letter is used in non-Arabic languages that use Arabic script.")
-                Text("It is not one of the 28 standard Arabic alphabet letters.")
-            }
-            .font(.body)
-        } else {
-            switch data.transliteration {
-            case "yaa":
-                Text("In the Uthmani script of the Quran, when 'yaa' is written at the end of a word (or by itself), it is usually written without the two dots underneath.")
-                    .font(.body)
-            case "taa marbuuTah":
-                Group {
-                    Text("\"Taa marbuuTah\" means \"tied/knotted taa\" and is used to indicate the feminine gender in Arabic.")
-                    Text("It is typically added to the end of a noun to show that the noun is feminine. For example, the Arabic word for teacher is \"معلم\" (mu'allim) for a male and \"معلمة\" (mu'allima) for a female.")
-                    Text("Taa marbuuTah is pronounced as a \"t\" sound in certain cases, such as when the word is in the construct state or has a suffix. Otherwise, it is often silent but affects the preceding vowel, usually creating a short \"ah\" sound, similar to 'ه' (as in \"mu'allimah\").")
-                }
-                .font(.body)
-            case "hamzatul waSl":
-                Group {
-                    Text("The term \"hamzatul waSl\" translates to \"connecting hamza\" or \"hamza of connection.\"")
-                    Text("Hamzatul waSl is always written as an Alif (ا) and is pronounced only if it begins a word at the start of speech. When the word follows another in a sentence, the hamzatul waSl is not pronounced, creating a smooth connection between words.")
-                    Text("If a word starts with hamzatul waSl, its pronunciation depends on the third letter of the word. For verbs: if the third letter has a damma, pronounce it with a damma (أُ); if it has a kasra or fatha, pronounce it with a kasra (إِ).")
-                    Text("In the Quran, there are seven nouns that start with hamzatul waSl. These nouns always begin with a kasra when pronounced in isolation.")
-                    Text("Hamzatul waSl is usually not written with diacritics, but in learner texts or the Quran, it may be marked with a small ص above the Alif, indicating waSl.")
-                }
-                .font(.body)
-            default:
-                if data.transliteration.contains("hamza") {
-                    Group {
-                        Text("The letter Hamza has multiple forms, depending on its position and the surrounding vowels or diacritics (tashkeel):")
-                        Text("Hamza on its own (ء): Used when Hamza appears in the middle or end of a word without a preceding vowel.")
-                        Text("Hamza on an Alif (أ or إ): When Hamza begins a word, it is written on an Alif. A fatha or damma places it above (أ), while a kasra places it below (إ).")
-                        Text("Hamza on a Waw (ؤ): Appears after a damma or following a Waw.")
-                        Text("Hamza on a Yaa (ئ): Appears after a kasra or following a Yaa.")
-                        Text("Although Hamza takes different forms, it represents the same sound ('ah'). These forms are based on Arabic orthography (spelling conventions) rather than phonetics.")
-                    }
-                    .font(.body)
-                } else if data.transliteration.contains("mad") {
-                    Group {
-                        Text("The wavy line above a vowel letter is called \"Madd.\" In Arabic, Madd (مَدّ) means stretching or elongation. In Quranic recitation, it marks a measured elongation, not just a decorative spelling mark.")
-                        Text("In the Quran, this Madd can fall under 3 main long-Madd cases from Tajweed: Madd Muttassil, Madd Mufassil, and Madd Lazim.")
-                        Text("Madd Muttassil (مَدّ مُتَّصِل) means \"connected Madd.\" Muttassil means connected because the Madd letter is followed by a hamzah in the same word, so it is lengthened 4 or 5 counts.")
-                        Text("Madd Mufassil (مَدّ مُنْفَصِل) means \"separated Madd.\" Mufassil means separated because the Madd letter comes at the end of one word and the next word begins with hamzah, so it may be read 2, 4, or 5 counts depending on the recitation style.")
-                        Text("Madd Lazim (مَدّ لَازِم) means \"necessary Madd.\" Lazim means necessary or required because the Madd letter is followed by a permanent sukoon or shaddah, so it is lengthened 6 counts.")
-                        Text("These are special mudood (مُدُود), the plural of Madd. They happen when natural Madd is no longer just 2 counts because hamzah, sukoon, or shaddah changes the rule.")
-                    }
-                    .font(.body)
-                } else if data.transliteration == "alif maqSoorah" {
-                    Text("Alif maqSoorah resembles a Yaa without dots and usually replaces a regular Alif at the end of a word. It is used in certain cases, including some Quranic words and non-Arabic proper nouns. It is the exact same and sounds the same as alif.")
-                        .font(.body)
-                } else if data.transliteration == "laa" {
-                    Text("The combination of ل and ا forms a unique shape: لا.")
-                        .font(.body)
-                }
-            }
-        }
-    }
-}
-
-extension Array {
-    func chunked(into size: Int) -> [[Element]] {
-        stride(from: 0, to: count, by: size).map {
-            Array(self[$0 ..< Swift.min($0 + size, count)])
-        }
-    }
-}
-
-struct TashkeelRow: View {
-    @EnvironmentObject var settings: Settings
-
-    let letterData: LetterData
-    let tashkeels: [Tashkeel]
-    let useQuranicFontForLetter: Bool
-
-    private var baseSound: String {
-        letterData.sound
-    }
-
-    var body: some View {
-        HStack(spacing: 20) {
-            ForEach(tashkeels, id: \.english) { tk in
-                VStack(spacing: useQuranicFontForLetter ? 4 : 8) {
-                    Group {
-                        if !tk.transliteration.isEmpty {
-                            Text(baseSound + tk.transliteration)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        } else if tk.english == "Shaddah" {
-                            Text(baseSound + baseSound)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        } else if tk.english.contains("Sukoon") {
-                            Text(baseSound)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
-
-                    Text(letterData.letter + tk.tashkeelMark)
-                        .font(
-                            useQuranicFontForLetter
-                                ? settings.scalableArabicFont(base: 28, relativeTo: .title)
-                                : .title
-                        )
-                        .frame(maxWidth: .infinity)
-
-                    #if os(iOS)
-                    Text(tk.english)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.5)
-                    #endif
-                }
-            }
-        }
-    }
-}
-
-struct HamzaPracticeRow: View {
-    @EnvironmentObject var settings: Settings
-
-    let letterData: LetterData
-    let useQuranicFontForLetter: Bool
-
-    private var hamzaShortSyllables: [(latin: String, arabic: String)] {
-        let s = letterData.sound
-        let l = letterData.letter
-        return [
-            ("a" + s, "أَ" + l),
-            ("i" + s, "إِ" + l),
-            ("u" + s, "أُ" + l)
-        ]
-    }
-
-    private var hamzaLongSyllablesBasic: [(latin: String, arabic: String)] {
-        let s = letterData.sound
-        let l = letterData.letter
-        return [
-            ("aa" + s, "ءَ" + "ا" + l),
-            ("ii" + s, "إِ" + "ي" + l),
-            ("uu" + s, "أُ" + "و" + l)
-        ]
-    }
-
-    private var hamzaLongSyllables: [(latin: String, arabic: String)] {
-        let s = letterData.sound
-        let l = letterData.letter
-        return [
-            ("a" + s + "aa", "أَ" + l + "َا"),
-            ("a" + s + "ii", "أَ" + l + "ِي"),
-            ("a" + s + "uu", "أَ" + l + "ُو")
-        ]
-    }
-
-    private var hamzaShaddahA: [(latin: String, arabic: String)] {
-        let s = letterData.sound
-        let l = letterData.letter
-        return [
-            ("a" + s + s + "aa", "أَ" + l + "َّا"),
-            ("a" + s + s + "ii", "أَ" + l + "ِّي"),
-            ("a" + s + s + "uu", "أَ" + l + "ُّو")
-        ]
-    }
-
-    private var hamzaShaddahI: [(latin: String, arabic: String)] {
-        let s = letterData.sound
-        let l = letterData.letter
-        return [
-            ("i" + s + s + "aa", "إِ" + l + "َّا"),
-            ("i" + s + s + "ii", "إِ" + l + "ِّي"),
-            ("i" + s + s + "uu", "إِ" + l + "ُّو")
-        ]
-    }
-
-    private var hamzaShaddahU: [(latin: String, arabic: String)] {
-        let s = letterData.sound
-        let l = letterData.letter
-        return [
-            ("u" + s + s + "aa", "أُ" + l + "َّا"),
-            ("u" + s + s + "ii", "أُ" + l + "ِّي"),
-            ("u" + s + s + "uu", "أُ" + l + "ُّو")
-        ]
-    }
-
-    private var rows: [[(latin: String, arabic: String)]] {
-        [
-            hamzaShortSyllables,
-            hamzaLongSyllablesBasic,
-            hamzaLongSyllables,
-            hamzaShaddahA,
-            hamzaShaddahI,
-            hamzaShaddahU
-        ]
-    }
-
-    @ViewBuilder
-    private func practiceTriplet(_ syllables: [(latin: String, arabic: String)]) -> some View {
-        HStack(spacing: 20) {
-            ForEach(syllables, id: \.latin) { syllable in
-                VStack {
-                    Text(syllable.latin)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    Text(syllable.arabic)
-                        .font(
-                            useQuranicFontForLetter
-                                ? settings.scalableArabicFont(base: 28, relativeTo: .title)
-                                : .title
-                        )
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, useQuranicFontForLetter ? 0 : 8)
-                }
-            }
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(rows.indices, id: \.self) { idx in
-                #if os(iOS)
-                if idx > 0 {
-                    Divider().padding(.trailing, -100)
-                }
-                #endif
-
-                practiceTriplet(rows[idx])
-            }
-        }
-        .padding(.top, 6)
-    }
-}
-
-struct NonArabicVowelPracticeRow: View {
-    @EnvironmentObject var settings: Settings
-
-    let letterData: LetterData
-    let baseSound: String
-    let useQuranicFontForLetter: Bool
-
-    private var syllables: [(latin: String, arabic: String)] {
-        [
-            (baseSound + "a", letterData.letter + "َ"),
-            (baseSound + "i", letterData.letter + "ِ"),
-            (baseSound + "u", letterData.letter + "ُ")
-        ]
-    }
-
-    var body: some View {
-        HStack(spacing: 20) {
-            ForEach(syllables, id: \.latin) { syllable in
-                VStack {
-                    Text(syllable.latin)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    Text(syllable.arabic)
-                        .font(
-                            useQuranicFontForLetter
-                                ? settings.scalableArabicFont(base: 28, relativeTo: .title)
-                                : .title
-                        )
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, useQuranicFontForLetter ? 0 : 8)
-                }
-            }
-        }
-    }
-}
-
-struct ArabicLetterRow: View, Equatable {
-    @EnvironmentObject private var settings: Settings
-    let letterData: LetterData
-    let isFavorite: Bool
-    let accentColor: AccentColor
-    let useFontArabic: Bool
-    let fontArabic: String
-    let searchQuery: String
-
-    init(
-        letterData: LetterData,
-        isFavorite: Bool? = nil,
-        accentColor: AccentColor = Settings.shared.accentColor,
-        useFontArabic: Bool = Settings.shared.useFontArabic,
-        fontArabic: String = Settings.shared.fontArabic,
-        searchQuery: String = ""
-    ) {
-        self.letterData = letterData
-        self.isFavorite = isFavorite ?? Settings.shared.isLetterFavorite(letterData: letterData)
-        self.accentColor = accentColor
-        self.useFontArabic = useFontArabic
-        self.fontArabic = fontArabic
-        self.searchQuery = searchQuery
-    }
-
-    var body: some View {
-        // A letter can also match on its hidden `name` / weight keywords / rule, so only guarantee a
-        // highlight on a displayed field (transliteration or the letter glyph) when that field itself
-        // contains the query — otherwise leave it un-highlighted rather than force-color an unrelated field.
-        let query = searchQuery.lowercased()
-        let matchedTransliteration = !query.isEmpty && letterData.transliteration.lowercased().contains(query)
-        let matchedLetter = !query.isEmpty && letterData.letter.lowercased().contains(query)
-        return NavigationLink(destination: ArabicLetterView(letterData: letterData)) {
-            HStack {
-                HighlightedSnippet(
-                    source: letterData.transliteration,
-                    term: searchQuery,
-                    font: .subheadline,
-                    accent: accentColor.color,
-                    fg: .primary,
-                    guaranteeMatch: matchedTransliteration
-                )
-
-                Spacer()
-
-                HighlightedSnippet(
-                    source: letterData.letter,
-                    term: searchQuery,
-                    font: (useFontArabic && !letterData.isNonArabicScriptLetter)
-                        ? .custom(fontArabic, size: 22, relativeTo: .title2)
-                        : .title2,
-                    accent: accentColor.color,
-                    fg: accentColor.color,
-                    guaranteeMatch: matchedLetter
-                )
-            }
-            .padding(.vertical, -2)
-        }
-        #if os(iOS)
-        .swipeActions(edge: .leading) { favButton() }
-        .swipeActions(edge: .trailing) { favButton() }
-        .contextMenu { contextItems() }
-        #endif
-    }
-
-    @ViewBuilder
-    private func favButton() -> some View {
-        Button {
-            settings.hapticFeedback()
-            withAnimation(.easeInOut) {
-                settings.toggleLetterFavorite(letterData: letterData)
-            }
-        } label: {
-            Image(systemName: isFavorite ? "star.fill" : "star")
-        }
-        .tint(accentColor.color)
-    }
-
-    @ViewBuilder
-    private func contextItems() -> some View {
-        #if os(iOS)
-        Text("Letter Actions")
-            .foregroundStyle(.secondary)
-
-        Button {
-            settings.hapticFeedback()
-            FocusOverlayPresenter.shared.present(.letter(letterData))
-        } label: {
-            Label("View Fullscreen", systemImage: "arrow.up.left.and.arrow.down.right")
-        }
-
-        Button {
-            settings.hapticFeedback()
-            presentSystemShareSheet(items: [FocusItem.letter(letterData).shareText])
-        } label: {
-            Label("Share Letter", systemImage: "square.and.arrow.up")
-        }
-
-        Divider()
-
-        Button(role: isFavorite ? .destructive : nil) {
-            settings.hapticFeedback()
-            withAnimation(.easeInOut) {
-                settings.toggleLetterFavorite(letterData: letterData)
-            }
-        } label: {
-            Label(isFavorite ? "Unfavorite Letter" : "Favorite Letter",
-                  systemImage: isFavorite ? "star.fill" : "star")
-        }
-
-        Button {
-            settings.hapticFeedback()
-            UIPasteboard.general.string = letterData.letter
-        } label: {
-            Label("Copy Letter", systemImage: "doc.on.doc")
-        }
-
-        Button {
-            settings.hapticFeedback()
-            UIPasteboard.general.string = letterData.transliteration
-        } label: {
-            Label("Copy Transliteration", systemImage: "doc.on.doc")
-        }
-        #endif
-    }
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.letterData == rhs.letterData &&
-        lhs.isFavorite == rhs.isFavorite &&
-        lhs.accentColor == rhs.accentColor &&
-        lhs.useFontArabic == rhs.useFontArabic &&
-        lhs.fontArabic == rhs.fontArabic &&
-        lhs.searchQuery == rhs.searchQuery
-    }
-}
-
-struct ArabicNumberRow: View {
-    @EnvironmentObject private var settings: Settings
-    let numberData: (number: String, name: String, transliteration: String, englishNumber: String)
-
-    var body: some View {
-        HStack {
-            Text(numberData.englishNumber)
-                .font(.title3)
-
-            Spacer()
-
-            VStack(alignment: .center) {
-                Text(numberData.name)
-                    .font(
-                        settings.useFontArabic
-                            ? settings.scalableArabicFont(base: 15, relativeTo: .subheadline)
-                            : .subheadline
-                    )
-                    .foregroundColor(settings.accentColor.color)
-
-                Text(numberData.transliteration)
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-
-            Spacer()
-
-            Text(numberData.number)
-                .font(.title2)
-                .foregroundColor(settings.accentColor.color)
-        }
-    }
-}
-
-struct StopSignInfo: Identifiable {
-    let title: String
-    let symbol: String
-
-    var id: String { symbol + title }
-}
-
-struct StopInfoRow: View {
-    let title: String
-    let symbol: String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text(symbol)
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(color)
-                .frame(width: 42, height: 42)
-                .background(color.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-            Text(title)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.8)
-
-            Spacer(minLength: 0)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
-        .background(Color.secondary.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-}
-
-struct QuranSignsSectionContent: View {
-    let accentColor: Color
-    var includeLearnMoreLink: Bool = true
-
-    private let signs: [StopSignInfo] = [
-        StopSignInfo(title: "Make Sujood", symbol: "۩"),
-        StopSignInfo(title: "Hizb Marker", symbol: "۞"),
-        StopSignInfo(title: "Mandatory Stop", symbol: "مـ"),
-        StopSignInfo(title: "Preferred Stop", symbol: "قلى"),
-        StopSignInfo(title: "Permissible Stop", symbol: "ج"),
-        StopSignInfo(title: "Short Pause", symbol: "س"),
-        StopSignInfo(title: "Stop at One", symbol: "∴ ∴"),
-        StopSignInfo(title: "Prefer Continue", symbol: "صلى"),
-        StopSignInfo(title: "Must Continue", symbol: "لا")
-    ]
-
-    private var columns: [GridItem] {
-        [
-            GridItem(.flexible(), spacing: 8, alignment: .top),
-            GridItem(.flexible(), spacing: 8, alignment: .top)
-        ]
-    }
-
-    var body: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-            ForEach(signs) { sign in
-                StopInfoRow(title: sign.title, symbol: sign.symbol, color: accentColor)
-            }
-
-            if includeLearnMoreLink,
-               let url = URL(string: "https://studioarabiya.com/blog/tajweed-rules-stopping-pausing-signs/") {
-                Link(destination: url) {
-                    HStack(spacing: 8) {
-                        Text("View More")
-                        Image(systemName: "arrow.up.right")
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundColor(accentColor)
-                    .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
-                    .offset(y: -1)
-                    .contentShape(Rectangle())
-                }
-            }
-        }
-    }
-}
-
-#Preview {
-    AlIslamPreviewContainer(embedInNavigation: true) {
-        ArabicView()
-    }
-}
+/// The alphabet seen through one harakah at a time - the transpose of the per-letter detail, which shows one
+/// letter carrying every harakah. Pick a mark and all 28 letters (plus the hamza) are rendered with it.
+///
+/// Shaddah is the exception: on its own it only says "double this letter", and in real words it always carries
+/// a vowel with it, so selecting it reveals the four readings (bare, then with fatha / damma / kasra) and every
+/// letter becomes tappable to see its own three side by side.

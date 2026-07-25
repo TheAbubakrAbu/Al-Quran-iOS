@@ -3,13 +3,6 @@ import Combine
 import WidgetKit
 
 extension Settings {
-    // MARK: - Quran types and constants
-
-    static let randomReciterName = "Random Reciter"
-    static let hafsUthmaniFontName = "KFGQPCHAFSUthmanicScript-Regula"
-    static let qiraatUthmaniFontName = "KFGQPCQUMBULUthmanicScript-Regu"
-    static let indopakFontName = "Al_Mushaf"
-
     enum QuranSortMode: String, CaseIterable, Identifiable {
         case surah
         case juz
@@ -287,6 +280,103 @@ extension Settings {
         Riwayah.canonicalTag(stored)
     }
 
+    /// One string folding every Settings field that changes how an ayah row draws. Rows that conform to
+    /// `Equatable` but read these fields in their bodies include this signature in `==`, so a settings change
+    /// still re-renders them (the whole point of the user-visible appearance staying live) while unchanged
+    /// data keeps skipping body evaluation.
+    var ayahRenderSettingsSignature: String {
+        [
+            showArabicText ? "1" : "0",
+            highlightAllahNames ? "1" : "0",
+            showTajweedColors ? "1" : "0",
+            cleanArabicText ? "1" : "0",
+            removeArabicDots ? "1" : "0",
+            beginnerMode ? "1" : "0",
+            showTransliteration ? "1" : "0",
+            showEnglishSaheeh ? "1" : "0",
+            showEnglishMustafa ? "1" : "0",
+            displayQiraah,
+            fontArabic,
+            "\(fontArabicSize)",
+            "\(englishFontSize)",
+            // Was missing: per-category tajweed visibility and the accent color. Equatable rows skipped
+            // their bodies when these changed, so toggling one legend category (or the app accent) left
+            // every VISIBLE row on its old colors until it scrolled off screen and back.
+            tajweedCategoryVisibilitySignature,
+            accentColor.rawValue,
+            customAccentColorHex
+        ].joined(separator: "|")
+    }
+
+    /// One character per legend category, "1"/"0" for visible/hidden - the per-category slice of the
+    /// tajweed configuration, shared by every render-invalidation signature that bakes colors in.
+    var tajweedCategoryVisibilitySignature: String {
+        TajweedLegendCategory.allCases
+            .map { isTajweedCategoryVisible($0) ? "1" : "0" }
+            .joined()
+    }
+
+    // MARK: - Last listened (typed accessors)
+    // Moved here from Settings.swift: they name Quran model types, and the core file stays free of
+    // Quran types so it ports to sibling apps without the Quran module. The raw `Data` @AppStorage
+    // backing remains in the class body (stored properties can't live in extensions).
+
+    var lastListenedAyah: LastListenedAyah? {
+        get {
+            // Fall back to the App Group suite so Siri/AppIntents can resolve this even when they run
+            // outside the main app's standard UserDefaults domain (which caused "no last listened").
+            guard let data = lastListenedAyahData ?? appGroupUserDefaults?.data(forKey: "lastListenedAyahData") else { return nil }
+            do {
+                return try Self.decoder.decode(LastListenedAyah.self, from: data)
+            } catch {
+                //logger.debug("Failed to decode last listened ayah: \(error)")
+                return nil
+            }
+        }
+        set {
+            if let newValue = newValue {
+                do {
+                    let encoded = try Self.encoder.encode(newValue)
+                    lastListenedAyahData = encoded
+                    appGroupUserDefaults?.set(encoded, forKey: "lastListenedAyahData")
+                } catch {
+                    //logger.debug("Failed to encode last listened ayah: \(error)")
+                }
+            } else {
+                lastListenedAyahData = nil
+                appGroupUserDefaults?.removeObject(forKey: "lastListenedAyahData")
+            }
+        }
+    }
+
+    var lastListenedSurah: LastListenedSurah? {
+        get {
+            // Fall back to the App Group suite so Siri/AppIntents can resolve this even when they run
+            // outside the main app's standard UserDefaults domain (which caused "no last listened").
+            guard let data = lastListenedSurahData ?? appGroupUserDefaults?.data(forKey: "lastListenedSurahData") else { return nil }
+            do {
+                return try Self.decoder.decode(LastListenedSurah.self, from: data)
+            } catch {
+                //logger.debug("Failed to decode last listened surah: \(error)")
+                return nil
+            }
+        }
+        set {
+            if let newValue = newValue {
+                do {
+                    let encoded = try Self.encoder.encode(newValue)
+                    lastListenedSurahData = encoded
+                    appGroupUserDefaults?.set(encoded, forKey: "lastListenedSurahData")
+                } catch {
+                    //logger.debug("Failed to encode last listened surah: \(error)")
+                }
+            } else {
+                lastListenedSurahData = nil
+                appGroupUserDefaults?.removeObject(forKey: "lastListenedSurahData")
+            }
+        }
+    }
+
     static func normalizedArabicFontName(_ fontName: String) -> String {
         fontName == qiraatUthmaniFontName ? hafsUthmaniFontName : fontName
     }
@@ -310,6 +400,31 @@ extension Settings {
 
     var normalizedArabicFontName: String {
         Self.normalizedArabicFontName(fontArabic)
+    }
+
+    // MARK: Quran Arabic display cleaning (Hide Tashkeel / Hide Dots, applied app-wide)
+
+    /// The reader's Hide-Tashkeel / Hide-Dots choices applied to ANY Quranic Arabic string - surah
+    /// names, the title picker, share headers - so every corner of the app matches the reading view.
+    /// Hafs-only, exactly like the reading text itself.
+    func cleanedQuranArabic(_ text: String) -> String {
+        guard isHafsDisplay else { return text }
+        var out = text
+        if cleanArabicText { out = out.removingArabicDiacriticsAndSigns }
+        if removeArabicDots { out = out.removingArabicDots }
+        return out
+    }
+
+    /// The face for Quran Arabic outside the main reader (summary tiles, bookmarks, surah names):
+    /// "Hide Arabic Dots" forces the system face, because the bundled faces carry no glyphs for the
+    /// dotless skeleton letters (U+066E ...). Mirrors what the reading view already does.
+    var quranDisplayFontName: String {
+        removeArabicDots && isHafsDisplay ? Settings.systemArabicFontName : fontArabic
+    }
+
+    /// Whether `quranDisplayFontName` resolves to a real bundled face (for `arabicFontDesign(custom:)`).
+    var quranDisplayUsesCustomArabicFace: Bool {
+        quranDisplayFontName != Settings.systemArabicFontName
     }
 
     var usesUthmaniArabicFont: Bool {
@@ -368,6 +483,22 @@ extension Settings {
         "\(surah):\(ayah)"
     }
 
+    /// The Int mirror's key: surah * 1000 + ayah (max ayah 286, so no collisions).
+    private static func khatmIntKey(surah: Int, ayah: Int) -> Int {
+        surah &* 1000 &+ ayah
+    }
+
+    private static func khatmIntKeys(from keys: Set<String>) -> Set<Int> {
+        var result = Set<Int>(minimumCapacity: keys.count)
+        for key in keys {
+            guard let separator = key.firstIndex(of: ":"),
+                  let surah = Int(key[..<separator]),
+                  let ayah = Int(key[key.index(after: separator)...]) else { continue }
+            result.insert(khatmIntKey(surah: surah, ayah: ayah))
+        }
+        return result
+    }
+
     func loadKhatmProgressCacheFromStorage() {
         let savedKeys = (try? Self.decoder.decode([String].self, from: khatmCompletedAyahsData)) ?? []
         applyKhatmCompletedAyahKeys(savedKeys, persistImmediately: false)
@@ -378,6 +509,7 @@ extension Settings {
         khatmProgressSaveTask = nil
         khatmProgressRefreshPending = false
         khatmCompletedAyahSetCache = Set(keys)
+        khatmCompletedAyahIntCache = Self.khatmIntKeys(from: khatmCompletedAyahSetCache)
         khatmCompletedSurahCountsCache = Self.khatmSurahCounts(from: khatmCompletedAyahSetCache)
 
         if persistImmediately {
@@ -405,7 +537,7 @@ extension Settings {
     }
 
     /// Debounces the expensive work of a khatm mark. The disk write (encode + UserDefaults) is always
-    /// coalesced onto a 250ms trailing timer so rapid marks — e.g. auto-marking while scrolling — never
+    /// coalesced onto a 250ms trailing timer so rapid marks - e.g. auto-marking while scrolling - never
     /// hit storage per ayah. `refresh` controls whether this task is also responsible for the UI update:
     /// auto-marking passes `true` so the checkmark/progress snap in once scrolling settles; a manual tap
     /// passes `false` because it already fired `objectWillChange` synchronously for instant feedback.
@@ -421,7 +553,7 @@ extension Settings {
             while true {
                 guard let self else { return }
                 // Cancellation only comes from applyKhatmCompletedAyahKeys, which frees the slot itself,
-                // so just bail — don't touch the shared task handle (it may already hold a newer task).
+                // so just bail - don't touch the shared task handle (it may already hold a newer task).
                 if Task.isCancelled { return }
                 if self.khatmSaveGeneration == lastSeen { break }   // no new marks in the last window
                 lastSeen = self.khatmSaveGeneration
@@ -439,9 +571,23 @@ extension Settings {
         }
     }
 
+    /// Writes any debounced khatm marks to storage right now. The 250ms debounce means a mark made just
+    /// before the app is backgrounded (or killed by the system) would otherwise never reach disk - the
+    /// same failure `flushPendingLastRead` exists for. Call this from the scenePhase background handler.
+    func flushPendingKhatmProgress() {
+        guard khatmProgressSaveTask != nil else { return }
+        khatmProgressSaveTask?.cancel()
+        khatmProgressSaveTask = nil
+        persistKhatmProgressNow()
+        if khatmProgressRefreshPending {
+            khatmProgressRefreshPending = false
+            objectWillChange.send()
+        }
+    }
+
     func isKhatmAyahComplete(surah: Int, ayah: Int) -> Bool {
         guard isHafsDisplay else { return false }
-        return khatmCompletedAyahSetCache.contains(khatmKey(surah: surah, ayah: ayah))
+        return khatmCompletedAyahIntCache.contains(Self.khatmIntKey(surah: surah, ayah: ayah))
     }
 
     /// - Parameter immediate: pass `true` for a deliberate user tap so the checkmark appears at once;
@@ -451,6 +597,7 @@ extension Settings {
         guard isHafsDisplay else { return }
         let key = khatmKey(surah: surah, ayah: ayah)
         guard khatmCompletedAyahSetCache.insert(key).inserted else { return }
+        khatmCompletedAyahIntCache.insert(Self.khatmIntKey(surah: surah, ayah: ayah))
         khatmCompletedSurahCountsCache[surah, default: 0] += 1
         if immediate { objectWillChange.send() }
         scheduleKhatmProgressSaveAndRefresh(refresh: !immediate)
@@ -464,6 +611,7 @@ extension Settings {
     func resetKhatmProgress(for surah: Surah) {
         let keys = Set(surah.ayahs.map { khatmKey(surah: surah.id, ayah: $0.id) })
         khatmCompletedAyahSetCache.subtract(keys)
+        khatmCompletedAyahIntCache.subtract(surah.ayahs.map { Self.khatmIntKey(surah: surah.id, ayah: $0.id) })
         khatmCompletedSurahCountsCache[surah.id] = nil
         persistKhatmProgressNow()
         objectWillChange.send()
@@ -471,6 +619,7 @@ extension Settings {
 
     func resetAllKhatmProgress() {
         khatmCompletedAyahSetCache.removeAll(keepingCapacity: true)
+        khatmCompletedAyahIntCache.removeAll(keepingCapacity: true)
         khatmCompletedSurahCountsCache.removeAll(keepingCapacity: true)
         persistKhatmProgressNow()
         objectWillChange.send()
@@ -642,8 +791,8 @@ extension Settings {
 // MARK: - Quran logic moved out of Settings.swift
 //
 // Behavior that operates on Quran data lives here so Settings.swift holds (mostly) just the stored
-// settings. Only the @AppStorage/@Published *storage* must stay in the main class — Swift forbids stored
-// property wrappers in extensions — but methods and `static` caches are free to live here.
+// settings. Only the @AppStorage/@Published *storage* must stay in the main class - Swift forbids stored
+// property wrappers in extensions - but methods and `static` caches are free to live here.
 extension Settings {
 
     // MARK: Saved sajdah / muqatta'at ayahs
@@ -678,20 +827,43 @@ extension Settings {
         ayahOfTheDayHiddenDate == Self.dayKey()
     }
 
-    /// Words that keep an ayah out of the Ayah of the Day rotation — not because anything is wrong with
-    /// them, just to keep the daily card gentle/uplifting (matches the widget's safe-pool filter).
-    private static let ayahOfTheDayBlockedWords = [
-        "kill", "killing", "fight", "fighting", "violence", "violent",
-        "murder", "slay", "slaughter", "battle", "war"
+    /// Words that keep an ayah/hadith out of the daily rotations - not because anything is wrong with
+    /// them, just to keep the daily cards gentle/uplifting. ONE canonical list, shared with the Hadith
+    /// of the Day filter. Explicit word FORMS matched as whole tokens, never substrings: "hit" as a
+    /// substring would block every "white", "war" every "warner".
+    static let dailyCardBlockedWords: Set<String> = [
+        "kill", "killed", "killing", "kills", "killer",
+        "fight", "fights", "fighting", "fought",
+        "violence", "violent", "violently",
+        "murder", "murdered", "murderer", "murders",
+        "slay", "slays", "slain", "slaying", "slew",
+        "slaughter", "slaughtered", "slaughtering",
+        "battle", "battles", "war", "wars", "warfare",
+        "slave", "slaves", "slavery", "enslave", "enslaved", "slavegirl", "slavegirls",
+        "captive", "captives",
+        "hit", "hits", "hitting",
+        "beat", "beats", "beaten", "beating",
+        "strike", "strikes", "struck", "striking",
+        "smite", "smote", "smitten",
+        "whip", "whips", "whipped", "lash", "lashes", "lashed",
+        "stoned", "stoning", "flog", "flogged", "flogging",
+        "wounded", "bloodshed",
     ]
 
-    private static func isAyahGentle(_ ayah: Ayah) -> Bool {
-        let combined = [ayah.textEnglishSaheeh, ayah.textEnglishMustafa, ayah.textTransliteration]
-            .joined(separator: " ").lowercased()
-        return !ayahOfTheDayBlockedWords.contains { !$0.isEmpty && combined.contains($0) }
+    /// Whole-word check against `dailyCardBlockedWords` - tokens, not substrings.
+    static func containsDailyBlockedWord(_ text: String) -> Bool {
+        text.lowercased()
+            .split(whereSeparator: { !$0.isLetter })
+            .contains { dailyCardBlockedWords.contains(String($0)) }
     }
 
-    /// Keeps the daily card to roughly two lines by skipping long ayahs. Caps are approximate — tuned so
+    private static func isAyahGentle(_ ayah: Ayah) -> Bool {
+        let combined = [ayah.textEnglishSaheeh, ayah.textEnglishMustafa]
+            .joined(separator: " ")
+        return !containsDailyBlockedWord(combined)
+    }
+
+    /// Keeps the daily card to roughly two lines by skipping long ayahs. Caps are approximate - tuned so
     /// both the Arabic and the English translation fit a compact card without overflowing.
     private static func isAyahShort(_ ayah: Ayah) -> Bool {
         ayah.textHafs.count <= 120 && ayah.textEnglishSaheeh.count <= 150
@@ -715,8 +887,11 @@ extension Settings {
 
     /// Deterministic (surahID, ayahID) for the Ayah of the Day on the given day. Same input day always
     /// yields the same ayah, so the in-app card and the widget agree. Picks from the gentle-ayah pool
-    /// using a day-seeded multiplicative hash.
+    /// using a day-seeded multiplicative hash - unless the user shuffled today, in which case the
+    /// stored override wins for that day only.
     func ayahOfTheDayReference(for date: Date = Date(), data: QuranData = .shared) -> (surahID: Int, ayahID: Int)? {
+        if let override = ayahOfTheDayOverrideRef(for: date) { return override }
+
         let refs = Self.gentleAyahRefs(data)
         guard !refs.isEmpty else { return nil }
 
@@ -726,10 +901,40 @@ extension Settings {
         return refs[index]
     }
 
+    /// The stored shuffle override, if it belongs to `date`'s day. Any other day's override is stale
+    /// and ignored.
+    private func ayahOfTheDayOverrideRef(for date: Date) -> (surahID: Int, ayahID: Int)? {
+        let parts = ayahOfTheDayOverride.split(separator: "|")
+        guard parts.count == 3, String(parts[0]) == Self.dayKey(date),
+              let surahID = Int(parts[1]), let ayahID = Int(parts[2]) else { return nil }
+        return (surahID, ayahID)
+    }
+
+    /// Replaces TODAY's Ayah of the Day with a fresh random pick from the same gentle pool - the shuffle
+    /// button on the daily card. Everything that reads `ayahOfTheDayReference` (the card, the summary
+    /// tile, the history's "Today" row, the widget snapshot) follows automatically.
+    func shuffleAyahOfTheDay(data: QuranData = .shared) {
+        let refs = Self.gentleAyahRefs(data)
+        guard refs.count > 1 else { return }
+
+        let current = ayahOfTheDayReference(data: data)
+        var pick = refs.randomElement()
+        // A same-as-current pick would make the button feel broken; retry a few times.
+        var attempts = 0
+        while let p = pick, let c = current, p.surahID == c.surahID, p.ayahID == c.ayahID, attempts < 8 {
+            pick = refs.randomElement()
+            attempts += 1
+        }
+        guard let pick else { return }
+
+        ayahOfTheDayOverride = "\(Self.dayKey())|\(pick.surahID)|\(pick.ayahID)"
+        refreshQuranWidgets()
+    }
+
     // MARK: Quran widgets
 
     /// Rebuilds the App Group payload the Quran widgets read (last read ayah, last listened surah, and a
-    /// pool of safe random ayahs) and reloads their timelines. Runs only in the main app — the widget
+    /// pool of safe random ayahs) and reloads their timelines. Runs only in the main app - the widget
     /// extension just consumes the snapshot. Cheap to call from lifecycle/save hooks.
     func refreshQuranWidgets() {
         guard Bundle.main.bundleIdentifier?.contains("Widget") != true else { return }
@@ -737,7 +942,7 @@ extension Settings {
         guard !data.quran.isEmpty else { return }
 
         // Preserve the existing random pool so this stays cheap when called frequently (e.g. on every
-        // surah navigation) — the widget rotates through the pool over time for variety.
+        // surah navigation) - the widget rotates through the pool over time for variety.
         var snapshot = QuranWidgetStore.load() ?? QuranWidgetSnapshot()
         snapshot.lastRead = nil
 
@@ -765,11 +970,15 @@ extension Settings {
         }
 
         snapshot.ayahOfTheDay = nil
+        snapshot.ayahOfTheDayDay = nil
         if showAyahOfTheDay,
            let ref = ayahOfTheDayReference(data: data),
            let surah = data.quran.first(where: { $0.id == ref.surahID }),
            let ayah = surah.ayahs.first(where: { $0.id == ref.ayahID }) {
             snapshot.ayahOfTheDay = quranWidgetAyahCard(surah: surah, ayah: ayah)
+            // Stamp which day this card is for, so the widget stops showing it once the day rolls over
+            // and falls back to its own daily rotation instead of a days-old "Ayah of the Day".
+            snapshot.ayahOfTheDayDay = QuranWidgetSnapshot.dayBucket()
         }
 
         // Rebuild the pool when it's empty or built by an older app version (cards missing the font tag),
@@ -779,7 +988,11 @@ extension Settings {
         }
 
         QuranWidgetStore.save(snapshot)
-        WidgetCenter.shared.reloadAllTimelines()
+        // Only the four Quran kinds: this runs on every settled page flip, and reloading the Adhan
+        // widgets too (reloadAllTimelines) burned their WidgetKit refresh budget on reading sessions.
+        for kind in ["LastReadSurahWidget", "LastListenedSurahWidget", "LastListenedAyahWidget", "RandomAyahWidget"] {
+            WidgetCenter.shared.reloadTimelines(ofKind: kind)
+        }
     }
 
     /// Builds a widget ayah card with the Arabic rendered per the user's display settings (clean text /
@@ -810,7 +1023,7 @@ extension Settings {
         ) else { return nil }
 
         let ns = NSAttributedString(attributed)
-        // Resolve the adaptive base label color so it can be skipped — only the tajweed hues are stored;
+        // Resolve the adaptive base label color so it can be skipped - only the tajweed hues are stored;
         // the widget keeps un-colored text in its own primary color.
         let label = UIColor.label.resolvedColor(with: .current)
         var lr: CGFloat = 0, lg: CGFloat = 0, lb: CGFloat = 0, la: CGFloat = 0

@@ -16,11 +16,39 @@ enum LaunchScreenLayout {
     }
 }
 
+/// Coordinates the "warm the main UI behind the launch screen, then reveal" hand-off.
+///
+/// The launch screen already has a quiet "hold on the logo and wait for init" phase; it now also waits for
+/// `isWarm` before it plays its finale and hands off. `MainTabView` sets `isWarm` once it has built + retained
+/// the heavy Quran tab (and the other tabs) and settled back on the Adhan landing tab - all behind the launch cover. Net effect: the
+/// reveal happens only when everything is already built and on the right tab, so there's no tab flip and no
+/// first-tap stall the user can see.
+@MainActor
+final class LaunchWarmup: ObservableObject {
+    static let shared = LaunchWarmup()
+    private init() {}
+
+    @Published private(set) var isWarm = false
+
+    func markWarm() { isWarm = true }
+
+    /// Await `isWarm`, but never block the launch longer than `maxWaitNanos` (a safety cap so a failed warm can
+    /// never strand the user on the launch screen).
+    func waitUntilWarm(maxWaitNanos: UInt64) async {
+        var waited: UInt64 = 0
+        let step: UInt64 = 20_000_000
+        while !isWarm && waited < maxWaitNanos {
+            try? await Task.sleep(nanoseconds: step)
+            waited += step
+        }
+    }
+}
+
 struct LaunchScreen: View {
-    @EnvironmentObject var settings: Settings
+    @ObservedObject var settings = Settings.shared
     // Note: QuranData / QuranPlayer / NamesViewModel are intentionally NOT observed here. They publish
     // frequently while loading (load-state changes, the 6k-entry verse index, player/names state), and
-    // observing them would re-render the launch screen mid-animation — the source of the startup chop.
+    // observing them would re-render the launch screen mid-animation - the source of the startup chop.
     // Readiness is awaited via the `.shared` singletons below, which doesn't subscribe to their changes.
     @Environment(\.colorScheme) private var systemColorScheme
     @Environment(\.customColorScheme) private var customColorScheme
@@ -29,7 +57,7 @@ struct LaunchScreen: View {
 
     // Initial state = a plain background with the Al-Islam icon already at rest: no gradient, no glow, no
     // motion. Everything heavy loads during the quiet "hold" below; the gradient / rings / companion apps are
-    // only brought in for the finale once the app is fully ready — so nothing animates while the CPU is busy.
+    // only brought in for the finale once the app is fully ready - so nothing animates while the CPU is busy.
     @State private var size = 0.9
     @State private var opacity = 1.0
     @State private var gradientSize: CGFloat = 0.6
@@ -181,9 +209,13 @@ struct LaunchScreen: View {
         #endif
 
         // 3) Everything is ready and the CPU is free, so the finale plays smoothly on top of the resting icon:
-        //    the gradient/glow blooms in, the rings expand, the shimmer sweeps the logo, and — a beat later —
+        //    the gradient/glow blooms in, the rings expand, the shimmer sweeps the logo, and - a beat later -
         //    the Quran/Adhan companion apps are released outward.
         triggerHapticFeedback(.soft)
+        // The finale is SACRED: these three animation blocks (springs, shimmer, companion release) play
+        // exactly like this on every device, every mode - no Reduce Motion branch, no Low Power branch,
+        // no alternate curves. The user has been explicit, repeatedly: optimize the loading and caching
+        // around it all you like, but never change what this looks like.
         withAnimation(.spring(response: 0.6, dampingFraction: 0.82)) {
             size = 0.94
             gradientSize = 3.4

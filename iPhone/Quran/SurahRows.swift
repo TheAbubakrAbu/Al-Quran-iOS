@@ -1,5 +1,22 @@
 import SwiftUI
 
+/// Measured widths for the fixed-format number badges ("100", "10:100"), keyed by template + text style
+/// + the resolved font's point size (which tracks Dynamic Type). The measurement - `UIFont.preferredFont`
+/// plus an `NSString.size` layout pass - used to run in every row body; the answer only changes when the
+/// user's text size does. Main-thread only, like every row body that reads it.
+enum BadgeWidthCache {
+    private static var cache: [String: CGFloat] = [:]
+
+    static func width(template: String, style: UIFont.TextStyle = .headline) -> CGFloat {
+        let font = UIFont.preferredFont(forTextStyle: style)
+        let key = "\(template)|\(style.rawValue)|\(font.pointSize)"
+        if let cached = cache[key] { return cached }
+        let width = (template as NSString).size(withAttributes: [.font: font]).width + 8
+        cache[key] = width
+        return width
+    }
+}
+
 /// A slim, unobtrusive progress bar used under the last-read / last-listened rows.
 struct TinyProgressBar: View {
     let fraction: Double
@@ -24,7 +41,7 @@ struct TinyProgressBar: View {
 }
 
 struct SurahRow: View, Equatable {
-    @EnvironmentObject var settings: Settings
+    @ObservedObject var settings = Settings.shared
     
     let surah: Surah
     var ayah: Int?
@@ -39,6 +56,10 @@ struct SurahRow: View, Equatable {
     let searchQuery: String
     /// When true, renders the same row content wrapped as a grid card (so grid == list look).
     let grid: Bool
+    // Snapshotted at init so `==` can see them: the body reads these through `settings`, and an Equatable view
+    // that reads state its `==` ignores renders stale when that state changes.
+    let sortModeKey: String
+    let displayQiraahKey: String
 
     init(
         surah: Surah,
@@ -48,7 +69,7 @@ struct SurahRow: View, Equatable {
         hideInfo: Bool? = nil,
         accentColor: AccentColor = Settings.shared.accentColor,
         useFontArabic: Bool = Settings.shared.useFontArabic,
-        fontArabic: String = Settings.shared.fontArabic,
+        fontArabic: String = Settings.shared.quranDisplayFontName,
         khatmCompletedAyahs: Int? = nil,
         khatmTotalAyahs: Int? = nil,
         searchQuery: String = "",
@@ -66,6 +87,8 @@ struct SurahRow: View, Equatable {
         self.khatmTotalAyahs = khatmTotalAyahs
         self.searchQuery = searchQuery
         self.grid = grid
+        self.sortModeKey = Settings.shared.quranSortMode.rawValue
+        self.displayQiraahKey = Settings.shared.displayQiraahForArabic ?? ""
     }
 
     private var revelationEmoji: String {
@@ -120,10 +143,7 @@ struct SurahRow: View, Equatable {
     }
 
     private var badgeWidth: CGFloat {
-        let font = UIFont.preferredFont(forTextStyle: .headline)
-        let text = "100" as NSString
-        let size = text.size(withAttributes: [.font: font])
-        return size.width + 8
+        BadgeWidthCache.width(template: "100")
     }
 
     private var isKhatmComplete: Bool {
@@ -206,7 +226,7 @@ struct SurahRow: View, Equatable {
                     .font(.subheadline)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text("\(surah.nameArabic) - \(surah.idArabic)")
+                Text("\(Settings.shared.cleanedQuranArabic(surah.nameArabic)) - \(surah.idArabic)")
                     .font(.headline)
                     .foregroundColor(settings.accentColor.color)
                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -233,7 +253,7 @@ struct SurahRow: View, Equatable {
                 .padding(.trailing, 2)
 
             // Khatm progress lives INSIDE this content column so the column (and therefore the full-height
-            // number pill beside it, plus the vertically-centered Arabic name) grows to include it — rather
+            // number pill beside it, plus the vertically-centered Arabic name) grows to include it - rather
             // than hanging below the row where the pill wouldn't reach it.
             VStack(alignment: .leading, spacing: 2) {
                 if let context = positionContextLine {
@@ -291,9 +311,9 @@ struct SurahRow: View, Equatable {
 
             HStack {
                 HighlightedSnippet(
-                    source: surah.nameArabic,
+                    source: Settings.shared.cleanedQuranArabic(surah.nameArabic),
                     term: searchQuery,
-                    font: .custom(fontArabic, size: UIFont.preferredFont(forTextStyle: .title3).pointSize),
+                    font: Font.arabic(fontArabic, size: UIFont.preferredFont(forTextStyle: .title3).pointSize),
                     accent: accentColor.color,
                     fg: .primary,
                     // HighlightedSnippet applies its own `.lineLimit` to the inner Text, which would otherwise
@@ -301,9 +321,11 @@ struct SurahRow: View, Equatable {
                     // names like آل عمران wrap to two lines.
                     lineLimit: 1
                 )
+                .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
 
                 Text(surah.idArabic)
                     .font(.custom(Settings.hafsUthmaniFontName, size: UIFont.preferredFont(forTextStyle: .title1).pointSize))
+                    .arabicFontDesign(custom: true)
                     .foregroundColor(accentColor.color)
             }
             .minimumScaleFactor(0.5)
@@ -319,30 +341,28 @@ struct SurahRow: View, Equatable {
     /// well in a narrow 2-column grid cell.
     private var gridBody: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // Arabic id ornament + name on the top row, with the favorite star pinned to the trailing end of
-            // that same row (pushed over by a Spacer) instead of sitting alone above. The id now prefixes the
-            // transliteration below (e.g. "1: Al-Fatihah").
+            // Arabic id ornament + name on the top row. The favorite star is the tappable corner overlay
+            // (`.gridFavoriteStar`) applied by the enclosing grid tile - NOT a second inline star here, which
+            // is what produced the double star on a favorited surah. The trailing Spacer leaves the corner
+            // clear for that overlay. The id now prefixes the transliteration below (e.g. "1: Al-Fatihah").
             HStack(spacing: 4) {
                 Text(surah.idArabic)
                     .font(.custom(Settings.hafsUthmaniFontName, size: UIFont.preferredFont(forTextStyle: .title3).pointSize))
+                    .arabicFontDesign(custom: true)
                     .foregroundColor(accentColor.color)
 
                 HighlightedSnippet(
-                    source: surah.nameArabic,
+                    source: Settings.shared.cleanedQuranArabic(surah.nameArabic),
                     term: searchQuery,
-                    font: .custom(fontArabic, size: UIFont.preferredFont(forTextStyle: .title3).pointSize),
+                    font: Font.arabic(fontArabic, size: UIFont.preferredFont(forTextStyle: .title3).pointSize),
                     accent: accentColor.color,
                     fg: .primary,
                     lineLimit: 1
                 )
+                .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
 
-                Spacer(minLength: 4)
-
-                if favoriteState {
-                    Image(systemName: "star.fill")
-                        .font(.caption2)
-                        .foregroundStyle(accentColor.color)
-                }
+                // Leaves room at the trailing edge for the corner star overlay.
+                Spacer(minLength: 20)
             }
             .lineLimit(1)
             .minimumScaleFactor(0.5)
@@ -415,8 +435,15 @@ struct SurahRow: View, Equatable {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.06)))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        // Favorites are tinted, everything else is clear - see the 99 Names grid for the same reasoning.
+        .conditionalGlassEffect(
+            clear: !favoriteState,
+            rectangle: true,
+            useColor: favoriteState ? 0.25 : nil,
+            customTint: favoriteState ? accentColor.color : nil
+        )
         .contentShape(Rectangle())
     }
     #endif
@@ -433,14 +460,16 @@ struct SurahRow: View, Equatable {
         lhs.khatmCompletedAyahs == rhs.khatmCompletedAyahs &&
         lhs.khatmTotalAyahs == rhs.khatmTotalAyahs &&
         lhs.searchQuery == rhs.searchQuery &&
-        lhs.grid == rhs.grid
+        lhs.grid == rhs.grid &&
+        lhs.sortModeKey == rhs.sortModeKey &&
+        lhs.displayQiraahKey == rhs.displayQiraahKey
     }
 }
 
-struct SurahAyahRow: View {
-    @EnvironmentObject var settings: Settings
+struct SurahAyahRow: View, Equatable {
+    @ObservedObject var settings = Settings.shared
     @State private var confirmRemoveNote = false
-    
+
     var surah: Surah
     var ayah: Ayah
     var note: String? = nil
@@ -450,6 +479,23 @@ struct SurahAyahRow: View {
     /// Multiplier on the Arabic line's font size (default matches the normal row). Pass a smaller value
     /// for compact contexts such as the page/juz starting-ayah lists.
     var arabicScale: CGFloat = 1.1
+    /// Folds every settings field the body reads (fonts, tajweed, translation toggles) so `==` stays correct
+    /// when the user changes appearance - see `Settings.ayahRenderSettingsSignature`. Captured at
+    /// construction, so the parent re-rendering on a settings change delivers a fresh signature.
+    var renderSettingsSignature: String = Settings.shared.ayahRenderSettingsSignature
+
+    /// This row builds tajweed AttributedStrings and beginner-mode spaced Arabic in its body, and it sits
+    /// in lists (last read, bookmarks, histories) whose parents re-render on every playback tick. The
+    /// bookmark state is deliberately NOT compared: it lives in observed `Settings`, whose publish
+    /// invalidates this row directly - bypassing `==` - so a toggle always redraws.
+    static func == (l: Self, r: Self) -> Bool {
+        l.surah.id == r.surah.id && l.ayah.id == r.ayah.id &&
+        l.note == r.note &&
+        l.disableTajweedColors == r.disableTajweedColors &&
+        l.grid == r.grid &&
+        l.arabicScale == r.arabicScale &&
+        l.renderSettingsSignature == r.renderSettingsSignature
+    }
 
     private var isBookmarked: Bool {
         settings.bookmarkedAyahs.contains { $0.surah == surah.id && $0.ayah == ayah.id }
@@ -503,12 +549,9 @@ struct SurahAyahRow: View {
     }
     
     private var badgeWidth: CGFloat {
-        let font = UIFont.preferredFont(forTextStyle: .headline)
-        let text = "10:100" as NSString
-        let size = text.size(withAttributes: [.font: font])
-        return size.width + 8
+        BadgeWidthCache.width(template: "10:100")
     }
-    
+
     private var listBody: some View {
         HStack {
             VStack {
@@ -581,13 +624,14 @@ struct SurahAyahRow: View {
                     HighlightedSnippet(
                         source: arabicDisplayText(),
                         term: "",
-                        font: .custom(settings.fontArabic, size: UIFont.preferredFont(forTextStyle: .subheadline).pointSize * arabicScale),
+                        font: Font.arabic(settings.quranDisplayFontName, size: UIFont.preferredFont(forTextStyle: .subheadline).pointSize * arabicScale),
                         accent: settings.accentColor.color,
                         fg: .primary,
                         preStyledSource: arabicTajweedText(),
                         beginnerMode: settings.beginnerMode,
                         lineLimit: 1
                     )
+                        .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
 
@@ -616,6 +660,8 @@ struct SurahAyahRow: View {
 
     #if os(iOS)
     /// Custom grid tile: the same ayah information as the list row, laid out vertically for a 2-column cell.
+    /// Styled to match a favorited `SurahRow` grid tile - accent-tinted conditional glass when bookmarked -
+    /// with a tappable bookmark in the corner (the counterpart of SurahRow's corner favorite star).
     private var gridBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
@@ -624,18 +670,9 @@ struct SurahAyahRow: View {
                     .foregroundColor(settings.accentColor.color)
                     .lineLimit(1)
                     .minimumScaleFactor(0.5)
-                    .onTapGesture {
-                        settings.hapticFeedback()
-                        toggleBookmarkWithNoteGuard()
-                    }
 
-                Spacer(minLength: 0)
-
-                if isBookmarked {
-                    Image(systemName: "bookmark.fill")
-                        .font(.caption2)
-                        .foregroundStyle(settings.accentColor.color)
-                }
+                // Leaves the corner clear for the tappable bookmark overlay below.
+                Spacer(minLength: 20)
             }
 
             ayahContent
@@ -644,7 +681,26 @@ struct SurahAyahRow: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.06)))
+        // Always CLEAR glass, even when bookmarked - the accent-filled bookmark icon in the corner carries
+        // the state; a tinted card here read as too loud next to the surah grid.
+        .conditionalGlassEffect(clear: true, rectangle: true)
+        .overlay(alignment: .topTrailing) {
+            Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(isBookmarked ? settings.accentColor.color : .secondary)
+                // Same fix as `gridFavoriteStar`: the target is a 30pt square centered on the GLYPH.
+                // The old shape came after the corner paddings and inflated by 10 more, hit-testing a
+                // ~40pt+ zone that swallowed the tile's right side (taps opened the bookmark, not the ayah).
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    settings.hapticFeedback()
+                    withAnimation(.easeInOut) { toggleBookmarkWithNoteGuard() }
+                }
+                .padding(.top, 1)
+                .padding(.trailing, 2)
+                .accessibilityLabel(isBookmarked ? "Remove bookmark" : "Add bookmark")
+        }
         .contentShape(Rectangle())
     }
     #endif
@@ -672,1049 +728,28 @@ struct SurahAyahRow: View {
     }
 }
 
-/// Formats a duration as H:MM:SS once it reaches an hour, otherwise MM:SS.
-@inline(__always)
-func formatMMSS(_ seconds: Double) -> String {
-    let total = max(0, Int(seconds.rounded()))
-    let h = total / 3600
-    let m = (total % 3600) / 60
-    let s = total % 60
-    if h > 0 {
-        return String(format: "%d:%02d:%02d", h, m, s)
-    }
-    return String(format: "%02d:%02d", m, s)
-}
-
-#if os(iOS)
-struct LastListenedSurahRow: View {
-    @EnvironmentObject private var settings: Settings
-    @EnvironmentObject private var quranData: QuranData
-    @EnvironmentObject private var quranPlayer: QuranPlayer
-
-    let lastListenedSurah: LastListenedSurah
-    let favoriteSurahs: Set<Int>
-    
-    @Binding var searchText: String
-    @Binding var scrollToSurahID: Int
-    var qiraahRefreshKey: String = ""
-    @Binding var showListeningHistory: Bool
-    var onSelectSurah: ((Int) -> Void)? = nil
-
-    @State private var confirmDeleteForever = false
-
-    var body: some View {
-        guard let surah = quranData.quran.first(where: { $0.id == lastListenedSurah.surahNumber })
-        else { return AnyView(EmptyView()) }
-
-        return AnyView(
-            Section(header:
-                HStack {
-                    Text("LAST LISTENED SURAH")
-
-                    Spacer()
-
-                    if !quranPlayer.listeningHistory.isEmpty {
-                        Image(systemName: showListeningHistory ? "minus.circle" : "plus.circle")
-                            .foregroundColor(settings.accentColor.color)
-                            .padding(4)
-                            .conditionalGlassEffect()
-                            .onTapGesture {
-                                settings.hapticFeedback()
-                                
-                                withAnimation {
-                                    showListeningHistory.toggle()
-                                }
-                            }
-                    }
-                }
-            ) {
-                VStack {
-                    Group {
-                        if let onSelectSurah {
-                            Button {
-                                settings.hapticFeedback()
-                                onSelectSurah(surah.id)
-                            } label: {
-                                lastListenedTitleRow(surah: surah)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .contentShape(Rectangle())
-                        } else {
-                            NavigationLink(destination:
-                                SurahView(surah: surah)
-                                    .transition(.opacity)
-                                    .animation(.easeInOut, value: lastListenedSurah.surahName)
-                            ) {
-                                lastListenedTitleRow(surah: surah)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                            }
-                            .contentShape(Rectangle())
-                        }
-                    }
-                    .padding(.bottom, 1)
-
-                    HStack {
-                        Text(lastListenedSurah.reciter.displayNameWithEnglishQiraah)
-                            .font(.caption)
-                            .foregroundColor(.primary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.5)
-
-                        Spacer()
-
-                        Text("\(formatMMSS(lastListenedSurah.currentDuration)) / \(formatMMSS(lastListenedSurah.fullDuration))")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .padding(.leading, 4)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.5)
-                    }
-
-                    TinyProgressBar(
-                        fraction: lastListenedSurah.fullDuration > 0 ? lastListenedSurah.currentDuration / lastListenedSurah.fullDuration : 0,
-                        color: settings.accentColor.color
-                    )
-                    .padding(.top, 3)
-                    .opacity(quranPlayer.isPlaying || quranPlayer.isPaused ? 0.35 : 1)
-                    .animation(.easeInOut, value: quranPlayer.isPlaying || quranPlayer.isPaused)
-                }
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
-
-                if showListeningHistory && !quranPlayer.listeningHistory.isEmpty {
-                    ForEach(quranPlayer.listeningHistory) { item in
-                        if let historySurah = quranData.quran.first(where: { $0.id == item.surahNumber }) {
-                            if let onSelectSurah {
-                                Button {
-                                    settings.hapticFeedback()
-                                    onSelectSurah(historySurah.id)
-                                } label: {
-                                    listeningHistoryLabel(item)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .contentShape(Rectangle())
-                            } else {
-                                NavigationLink(destination: SurahView(surah: historySurah)) {
-                                    listeningHistoryLabel(item)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .contentShape(Rectangle())
-                                }
-                                .contentShape(Rectangle())
-                            }
-                        }
-                    }
-                }
-            }
-            .rightSwipeActions(
-                surahID: surah.id,
-                surahName: surah.nameTransliteration,
-                certainReciter: true,
-                searchText: $searchText,
-                scrollToSurahID: $scrollToSurahID
-            )
-            .leftSwipeActions(surah: surah.id, favoriteSurahs: favoriteSurahs)
-            #if os(iOS)
-            .contextMenu {
-                Text("Surah Actions")
-                    .foregroundStyle(.secondary)
-
-                Button(role: .destructive) {
-                    settings.hapticFeedback()
-                    withAnimation {
-                        settings.lastListenedSurah = nil
-                    }
-                } label: {
-                    Label("Remove", systemImage: "minus.circle")
-                }
-
-                Button(role: .destructive) {
-                    settings.hapticFeedback()
-                    confirmDeleteForever = true
-                } label: {
-                    Label("Delete Forever", systemImage: "trash")
-                }
-
-                Divider()
-
-                Button {
-                    settings.hapticFeedback()
-                    quranPlayer.playSurah(
-                        surahNumber: lastListenedSurah.surahNumber,
-                        surahName: lastListenedSurah.surahName,
-                        certainReciter: true
-                    )
-                } label: {
-                    Label("Play Last Listened", systemImage: "play.fill")
-                }
-
-                Button {
-                    settings.hapticFeedback()
-                    quranPlayer.playSurah(
-                        surahNumber: lastListenedSurah.surahNumber,
-                        surahName: surah.nameTransliteration
-                    )
-                } label: {
-                    Label("Play from Beginning", systemImage: "memories")
-                }
-
-                Divider()
-
-                SurahContextMenu(
-                    surahID: surah.id,
-                    surahName: surah.nameTransliteration,
-                    favoriteSurahs: favoriteSurahs,
-                    searchText: $searchText,
-                    scrollToSurahID: $scrollToSurahID,
-                    lastListened: true
-                )
-            }
-            .confirmationDialog("Are you sure?", isPresented: $confirmDeleteForever, titleVisibility: .visible) {
-                Button("Remove Permanently", role: .destructive) {
-                    settings.hapticFeedback()
-                    withAnimation {
-                        settings.lastListenedSurah = nil
-                        settings.saveLastListenedSurah = false
-                    }
-                }
-                Button("Cancel") {}
-            } message: {
-                Text("You can re-enable Last Listened Surah later in Quran Settings.")
-            }
-            #endif
-            .animation(.easeInOut, value: quranPlayer.isPlaying || quranPlayer.isPaused)
-        )
-    }
-
-    private func lastListenedTitleRow(surah: Surah) -> some View {
-        HStack {
-            Text("Surah \(lastListenedSurah.surahNumber): \(lastListenedSurah.surahName)")
-                .font(.title2.bold())
-                .foregroundColor(settings.accentColor.color)
-                .lineLimit(1)
-                .minimumScaleFactor(0.5)
-
-            Spacer()
-
-            Menu {
-                Text("Last Listened")
-                    .foregroundStyle(.secondary)
-
-                Button {
-                    settings.hapticFeedback()
-                    quranPlayer.playSurah(
-                        surahNumber: lastListenedSurah.surahNumber,
-                        surahName: lastListenedSurah.surahName,
-                        certainReciter: true)
-                } label: {
-                    Label("Play Last Listened", systemImage: "play.fill")
-                }
-
-                Button {
-                    settings.hapticFeedback()
-                    quranPlayer.playSurah(
-                        surahNumber: lastListenedSurah.surahNumber,
-                        surahName: surah.nameTransliteration)
-                } label: {
-                    Label("Play from Beginning", systemImage: "memories")
-                }
-            } label: {
-                Image(systemName: "play.fill")
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 22, height: 22)
-                    .foregroundColor(settings.accentColor.color)
-                    .minimumScaleFactor(0.75)
-                    .transition(.opacity)
-                    .opacity(!quranPlayer.isPlaying && !quranPlayer.isPaused ? 1 : 0.35)
-                    // The opacity only depends on whether playback is active, so animate on that one value.
-                    .animation(.easeInOut, value: quranPlayer.isPlaying || quranPlayer.isPaused)
-                    .contentShape(Rectangle())
-            }
-            .disabled(quranPlayer.isPlaying || quranPlayer.isPaused)
-        }
-    }
-
-    private func listeningHistoryLabel(_ item: ListeningHistoryItem) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Surah \(item.surahNumber): \(item.surahName)")
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(settings.accentColor.color.opacity(0.75))
-                .lineLimit(1)
-                .minimumScaleFactor(0.5)
-
-            Text(item.reciter.name)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.5)
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-/// Compact summary-mode tile that previews a single ayah (Arabic / transliteration / English),
-/// each limited to two lines — like a normal AyahRow but trimmed to fit a tile.
-struct SummaryAyahTile: View {
-    @EnvironmentObject var settings: Settings
-
-    let title: String
-    let icon: String
-    let surah: Surah
-    let ayah: Ayah
-    var titleColor: Color = .secondary
-    let onTap: () -> Void
-
-    /// e.g. "Al-Fatiha 1:5"
-    private var detail: String { "\(surah.nameTransliteration) \(surah.id):\(ayah.id)" }
-
-    private func arabicDisplayText() -> String {
-        let text = ayah.displayArabicText(surahId: surah.id, clean: settings.cleanArabicText)
-        return settings.beginnerMode ? text.map { String($0) }.joined(separator: " ") : text
-    }
-
-    private var shouldShowTajweedColors: Bool {
-        settings.showTajweedColors && settings.showArabicText && settings.isHafsDisplay
-    }
-
-    private func arabicTajweedText() -> AttributedString? {
-        guard shouldShowTajweedColors else { return nil }
-        let text = ayah.displayArabicText(surahId: surah.id, clean: false)
-        let displayText = settings.cleanArabicText ? ayah.displayArabicText(surahId: surah.id, clean: true) : text
-        let renderedDisplayText = settings.beginnerMode ? displayText.map { String($0) }.joined(separator: " ") : displayText
-        return TajweedStore.shared.attributedText(
-            surah: surah.id,
-            ayah: ayah.id,
-            text: text,
-            displayText: renderedDisplayText,
-            cleanDisplayText: settings.cleanArabicText,
-            beginnerSpacing: settings.beginnerMode
-        )
-    }
-
-    var body: some View {
-        Button {
-            settings.hapticFeedback()
-            onTap()
-        } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                if !title.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: icon)
-                            .font(.caption)
-                            .foregroundColor(settings.accentColor.color)
-                        Text(title)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundColor(titleColor)
-                            .lineLimit(1)
-                    }
-                }
-
-                Text(detail)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundColor(settings.accentColor.color)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-
-                ayahPreview
-
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .padding(12)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.06)))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private var ayahPreview: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if settings.showArabicText {
-                HighlightedSnippet(
-                    source: arabicDisplayText(),
-                    term: "",
-                    font: .custom(settings.fontArabic, size: UIFont.preferredFont(forTextStyle: .subheadline).pointSize * 1.1),
-                    accent: settings.accentColor.color,
-                    fg: .primary,
-                    preStyledSource: arabicTajweedText(),
-                    beginnerMode: settings.beginnerMode,
-                    lineLimit: 1
-                )
-                .multilineTextAlignment(.trailing)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-
-            if settings.showTransliteration, settings.isHafsDisplay {
-                Text(ayah.textTransliteration)
-                    .font(.footnote)
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            if settings.showEnglishSaheeh, settings.isHafsDisplay {
-                Text(ayah.textEnglishSaheeh)
-                    .font(.footnote)
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else if settings.showEnglishMustafa, settings.isHafsDisplay {
-                Text(ayah.textEnglishMustafa)
-                    .font(.footnote)
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-}
-
-/// Compact summary-mode tile for the last-listened surah. There is no ayah, so it shows the reciter,
-/// duration, a play button, and a tiny progress bar instead — sized to match the ayah tile beside it.
-struct SummarySurahTile: View {
-    @EnvironmentObject var settings: Settings
-    @EnvironmentObject var quranPlayer: QuranPlayer
-
-    let title: String
-    let icon: String
-    let surah: Surah
-    let lastListenedSurah: LastListenedSurah
-    var titleColor: Color = .secondary
-    let onTap: () -> Void
-
-    /// e.g. "1 - Al-Fatiha"
-    private var detail: String { "\(surah.id) - \(surah.nameTransliteration)" }
-
-    var body: some View {
-        Button {
-            settings.hapticFeedback()
-            onTap()
-        } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: icon)
-                        .font(.caption)
-                        .foregroundColor(settings.accentColor.color)
-                    Text(title)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundColor(titleColor)
-                        .lineLimit(1)
-                }
-
-                Text(detail)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundColor(settings.accentColor.color)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-
-                Text(lastListenedSurah.reciter.displayNameWithEnglishQiraah)
-                    .font(.caption2)
-                    .foregroundColor(.primary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack(spacing: 6) {
-                    Text("\(formatMMSS(lastListenedSurah.currentDuration)) / \(formatMMSS(lastListenedSurah.fullDuration))")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-
-                    Spacer()
-
-                    Menu {
-                        Text("Last Listened")
-                            .foregroundStyle(.secondary)
-
-                        Button {
-                            settings.hapticFeedback()
-                            quranPlayer.playSurah(
-                                surahNumber: lastListenedSurah.surahNumber,
-                                surahName: lastListenedSurah.surahName,
-                                certainReciter: true
-                            )
-                        } label: {
-                            Label("Play Last Listened", systemImage: "play.fill")
-                        }
-
-                        Button {
-                            settings.hapticFeedback()
-                            quranPlayer.playSurah(
-                                surahNumber: lastListenedSurah.surahNumber,
-                                surahName: surah.nameTransliteration
-                            )
-                        } label: {
-                            Label("Play from Beginning", systemImage: "memories")
-                        }
-                    } label: {
-                        Image(systemName: "play.fill")
-                            .font(.subheadline)
-                            .foregroundColor(settings.accentColor.color)
-                            .opacity(!quranPlayer.isPlaying && !quranPlayer.isPaused ? 1 : 0.35)
-                            .contentShape(Rectangle())
-                    }
-                    .disabled(quranPlayer.isPlaying || quranPlayer.isPaused)
-                }
-
-                TinyProgressBar(
-                    fraction: lastListenedSurah.fullDuration > 0 ? lastListenedSurah.currentDuration / lastListenedSurah.fullDuration : 0,
-                    color: settings.accentColor.color
-                )
-                .padding(.top, 1)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .padding(12)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.06)))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-#endif
-
-struct LastReadAyahRow: View {
-    @EnvironmentObject private var settings: Settings
-    @EnvironmentObject private var quranPlayer: QuranPlayer
-    @EnvironmentObject private var quranData: QuranData
-
-    let surah: Surah
-    let ayah: Ayah
-
-    let favoriteSurahs: Set<Int>
-    let bookmarkedAyahs: Set<String>
-    
-    @Binding var searchText: String
-    @Binding var scrollToSurahID: Int
-    @Binding var showReadingHistory: Bool
-    var onSelectAyah: ((Int, Int) -> Void)? = nil
-
-    private var isBookmarked: Bool {
-        bookmarkedAyahs.contains("\(surah.id)-\(ayah.id)")
-    }
-    
-    private var noteToShow: String? {
-        noteText(surahID: surah.id, ayahID: ayah.id)
-    }
-
-    private func noteText(surahID: Int, ayahID: Int) -> String? {
-        guard let idx = settings.bookmarkedAyahs.firstIndex(where: { $0.surah == surahID && $0.ayah == ayahID }) else {
-            return nil
-        }
-        let t = settings.bookmarkedAyahs[idx].note?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (t?.isEmpty == false) ? t : nil
-    }
-
-    /// The ayah row plus its progress bar as a single tappable unit, so swipe/context actions cover both
-    /// and there is no stray standalone row (which left a large gap when the ayah had no note).
-    private var lastReadRowContent: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            SurahAyahRow(surah: surah, ayah: ayah, note: noteToShow)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            TinyProgressBar(
-                fraction: surah.numberOfAyahs > 0 ? Double(ayah.id) / Double(surah.numberOfAyahs) : 0,
-                color: settings.accentColor.color
-            )
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-    }
-
-    var body: some View {
-        Section(header:
-            HStack {
-                Text("LAST READ AYAH")
-
-                Spacer()
-
-                if !quranPlayer.readingHistory.isEmpty {
-                    Image(systemName: showReadingHistory ? "minus.circle" : "plus.circle")
-                        .foregroundColor(settings.accentColor.color)
-                        .padding(4)
-                        .conditionalGlassEffect()
-                        .onTapGesture {
-                            settings.hapticFeedback()
-                            
-                            withAnimation {
-                                showReadingHistory.toggle()
-                            }
-                        }
-                }
-            }
-        ) {
-            Group {
-                if let onSelectAyah {
-                    Button {
-                        settings.hapticFeedback()
-                        onSelectAyah(surah.id, ayah.id)
-                    } label: {
-                        lastReadRowContent
-                    }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
-                } else {
-                    NavigationLink(destination: SurahView(surah: surah, ayah: ayah.id)) {
-                        lastReadRowContent
-                    }
-                    .tag(surah.id)
-                    .contentShape(Rectangle())
-                }
-            }
-            .rightSwipeActions(
-                surahID: surah.id,
-                surahName: surah.nameTransliteration,
-                ayahID: ayah.id,
-                searchText: $searchText,
-                scrollToSurahID: $scrollToSurahID
-            )
-            .leftSwipeActions(
-                surah: surah.id,
-                favoriteSurahs: favoriteSurahs,
-                bookmarkedAyahs: bookmarkedAyahs,
-                bookmarkedSurah: surah.id,
-                bookmarkedAyah: ayah.id
-            )
-            .ayahContextMenuModifier(
-                surah: surah.id,
-                ayah: ayah.id,
-                favoriteSurahs: favoriteSurahs,
-                bookmarkedAyahs: bookmarkedAyahs,
-                searchText: $searchText,
-                scrollToSurahID: $scrollToSurahID,
-                lastRead: true
-            )
-
-            if showReadingHistory && !quranPlayer.readingHistory.isEmpty {
-                ForEach(quranPlayer.readingHistory) { item in
-                    let normalizedAyah = max(1, item.ayahNumber)
-                    if let surah = quranData.quran.first(where: { $0.id == item.surahNumber }), let ayah = surah.ayahs.first(where: { $0.id == normalizedAyah }) {
-                        Group {
-                            if let onSelectAyah {
-                                Button {
-                                    settings.hapticFeedback()
-                                    onSelectAyah(surah.id, ayah.id)
-                                } label: {
-                                    SurahAyahRow(
-                                        surah: surah,
-                                        ayah: ayah,
-                                        note: noteText(surahID: surah.id, ayahID: ayah.id)
-                                    )
-                                    .opacity(0.6)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .contentShape(Rectangle())
-                            } else {
-                                NavigationLink(destination: SurahView(surah: surah, ayah: ayah.id)) {
-                                    SurahAyahRow(
-                                        surah: surah,
-                                        ayah: ayah,
-                                        note: noteText(surahID: surah.id, ayahID: ayah.id)
-                                    )
-                                    .opacity(0.6)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                                }
-                                .tag(surah.id)
-                                .contentShape(Rectangle())
-                            }
-                        }
-                        .rightSwipeActions(
-                            surahID: surah.id,
-                            surahName: surah.nameTransliteration,
-                            ayahID: ayah.id,
-                            searchText: $searchText,
-                            scrollToSurahID: $scrollToSurahID
-                        )
-                        .leftSwipeActions(
-                            surah: surah.id,
-                            favoriteSurahs: favoriteSurahs,
-                            bookmarkedAyahs: bookmarkedAyahs,
-                            bookmarkedSurah: surah.id,
-                            bookmarkedAyah: ayah.id
-                        )
-                        .ayahContextMenuModifier(
-                            surah: surah.id,
-                            ayah: ayah.id,
-                            favoriteSurahs: favoriteSurahs,
-                            bookmarkedAyahs: bookmarkedAyahs,
-                            searchText: $searchText,
-                            scrollToSurahID: $scrollToSurahID,
-                            lastRead: true
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-#if os(iOS)
-/// The last individual ayah the user listened to (single ayah or custom range). Mirrors LastReadAyahRow.
-struct LastListenedAyahRow: View {
-    @EnvironmentObject private var settings: Settings
-    @EnvironmentObject private var quranPlayer: QuranPlayer
-    @EnvironmentObject private var quranData: QuranData
-
-    let surah: Surah
-    let ayah: Ayah
-    let favoriteSurahs: Set<Int>
-    let bookmarkedAyahs: Set<String>
-
-    @Binding var searchText: String
-    @Binding var scrollToSurahID: Int
-    @Binding var showAyahListeningHistory: Bool
-    var onSelectAyah: ((Int, Int) -> Void)? = nil
-
-    @State private var confirmDeleteForever = false
-
-    private var rowContent: some View {
-        SurahAyahRow(surah: surah, ayah: ayah)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-    }
-
-    @ViewBuilder
-    private func historyRow(_ item: AyahListeningHistoryItem) -> some View {
-        if let histSurah = quranData.surah(item.surahNumber),
-           let histAyah = histSurah.ayahs.first(where: { $0.id == item.ayahNumber }) {
-            Group {
-                if let onSelectAyah {
-                    Button {
-                        settings.hapticFeedback()
-                        onSelectAyah(histSurah.id, histAyah.id)
-                    } label: {
-                        SurahAyahRow(surah: histSurah, ayah: histAyah)
-                            .opacity(0.6)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
-                } else {
-                    NavigationLink(destination: SurahView(surah: histSurah, ayah: histAyah.id)) {
-                        SurahAyahRow(surah: histSurah, ayah: histAyah)
-                            .opacity(0.6)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .tag(histSurah.id)
-                    .contentShape(Rectangle())
-                }
-            }
-            .rightSwipeActions(
-                surahID: histSurah.id,
-                surahName: histSurah.nameTransliteration,
-                ayahID: histAyah.id,
-                searchText: $searchText,
-                scrollToSurahID: $scrollToSurahID
-            )
-            .leftSwipeActions(
-                surah: histSurah.id,
-                favoriteSurahs: favoriteSurahs,
-                bookmarkedAyahs: bookmarkedAyahs,
-                bookmarkedSurah: histSurah.id,
-                bookmarkedAyah: histAyah.id
-            )
-        }
-    }
-
-    var body: some View {
-        Section(header:
-            HStack {
-                Text("LAST LISTENED AYAH")
-
-                Spacer()
-
-                if !quranPlayer.ayahListeningHistory.isEmpty {
-                    Image(systemName: showAyahListeningHistory ? "minus.circle" : "plus.circle")
-                        .foregroundColor(settings.accentColor.color)
-                        .padding(4)
-                        .conditionalGlassEffect()
-                        .onTapGesture {
-                            settings.hapticFeedback()
-                            withAnimation {
-                                showAyahListeningHistory.toggle()
-                            }
-                        }
-                }
-            }
-        ) {
-            Group {
-                if let onSelectAyah {
-                    Button {
-                        settings.hapticFeedback()
-                        onSelectAyah(surah.id, ayah.id)
-                    } label: {
-                        rowContent
-                    }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
-                } else {
-                    NavigationLink(destination: SurahView(surah: surah, ayah: ayah.id)) {
-                        rowContent
-                    }
-                    .tag(surah.id)
-                    .contentShape(Rectangle())
-                }
-            }
-            .rightSwipeActions(
-                surahID: surah.id,
-                surahName: surah.nameTransliteration,
-                ayahID: ayah.id,
-                searchText: $searchText,
-                scrollToSurahID: $scrollToSurahID
-            )
-            .leftSwipeActions(
-                surah: surah.id,
-                favoriteSurahs: favoriteSurahs,
-                bookmarkedAyahs: bookmarkedAyahs,
-                bookmarkedSurah: surah.id,
-                bookmarkedAyah: ayah.id
-            )
-            .contextMenu {
-                Text("Last Listened Ayah")
-                    .foregroundStyle(.secondary)
-
-                Button(role: .destructive) {
-                    settings.hapticFeedback()
-                    withAnimation {
-                        settings.lastListenedAyah = nil
-                    }
-                } label: {
-                    Label("Remove", systemImage: "minus.circle")
-                }
-
-                Button(role: .destructive) {
-                    settings.hapticFeedback()
-                    confirmDeleteForever = true
-                } label: {
-                    Label("Delete Forever", systemImage: "trash")
-                }
-
-                Divider()
-
-                Button {
-                    settings.hapticFeedback()
-                    quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id)
-                } label: {
-                    Label("Play This Ayah", systemImage: "play.circle")
-                }
-
-                Button {
-                    settings.hapticFeedback()
-                    quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id, continueRecitation: true)
-                } label: {
-                    Label("Play From Ayah", systemImage: "play.circle.fill")
-                }
-            }
-            .confirmationDialog("Are you sure?", isPresented: $confirmDeleteForever, titleVisibility: .visible) {
-                Button("Remove Permanently", role: .destructive) {
-                    settings.hapticFeedback()
-                    withAnimation {
-                        settings.lastListenedAyah = nil
-                        settings.saveLastListenedAyah = false
-                    }
-                }
-                Button("Cancel") {}
-            } message: {
-                Text("You can re-enable Last Listened Ayah later in Quran Settings.")
-            }
-
-            if showAyahListeningHistory && !quranPlayer.ayahListeningHistory.isEmpty {
-                ForEach(quranPlayer.ayahListeningHistory) { item in
-                    historyRow(item)
-                }
-            }
-        }
-    }
-}
-
-/// The deterministic daily "Ayah of the Day" card shown at the top of the Quran tab.
-struct AyahOfTheDayRow: View {
-    @EnvironmentObject private var settings: Settings
-    @EnvironmentObject private var quranPlayer: QuranPlayer
-
-    let surah: Surah
-    let ayah: Ayah
-    let favoriteSurahs: Set<Int>
-    let bookmarkedAyahs: Set<String>
-
-    @Binding var searchText: String
-    @Binding var scrollToSurahID: Int
-    var onSelectAyah: ((Int, Int) -> Void)? = nil
-
-    /// A featured card (accent-tinted glass, larger centered Arabic + translation) so the daily ayah looks
-    /// distinct from the compact Last Read / Last Listened rows.
-    private var rowContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if settings.showArabicText {
-                Text(ayah.displayArabicText(surahId: surah.id, clean: settings.cleanArabicText, qiraahOverride: settings.displayQiraahForArabic))
-                    .font(.custom(settings.fontArabic, size: UIFont.preferredFont(forTextStyle: .title2).pointSize))
-                    .multilineTextAlignment(.trailing)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .lineSpacing(6)
-            }
-
-            Text("Surah \(surah.id):\(ayah.id) · \(surah.nameTransliteration)")
-                .font(.caption.weight(.semibold))
-                .foregroundColor(settings.accentColor.color)
-
-            Text(ayah.textEnglishSaheeh.isEmpty ? ayah.textEnglishMustafa : ayah.textEnglishSaheeh)
-                .font(.subheadline)
-                .foregroundColor(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .conditionalGlassEffect(rectangle: true, useColor: 0.18)
-        .contentShape(Rectangle())
-    }
-
-    var body: some View {
-        Section(header:
-            HStack(spacing: 6) {
-                Image(systemName: "sparkles")
-                Text("AYAH OF THE DAY")
-            }
-            .foregroundColor(settings.accentColor.color)
-        ) {
-            Group {
-                if let onSelectAyah {
-                    Button {
-                        settings.hapticFeedback()
-                        onSelectAyah(surah.id, ayah.id)
-                    } label: {
-                        rowContent
-                    }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
-                } else {
-                    NavigationLink(destination: SurahView(surah: surah, ayah: ayah.id)) {
-                        rowContent
-                    }
-                    .tag(surah.id)
-                    .contentShape(Rectangle())
-                }
-            }
-            .rightSwipeActions(
-                surahID: surah.id,
-                surahName: surah.nameTransliteration,
-                ayahID: ayah.id,
-                searchText: $searchText,
-                scrollToSurahID: $scrollToSurahID
-            )
-            .leftSwipeActions(
-                surah: surah.id,
-                favoriteSurahs: favoriteSurahs,
-                bookmarkedAyahs: bookmarkedAyahs,
-                bookmarkedSurah: surah.id,
-                bookmarkedAyah: ayah.id
-            )
-            .ayahContextMenuModifier(
-                surah: surah.id,
-                ayah: ayah.id,
-                favoriteSurahs: favoriteSurahs,
-                bookmarkedAyahs: bookmarkedAyahs,
-                searchText: $searchText,
-                scrollToSurahID: $scrollToSurahID,
-                ayahOfTheDay: true
-            )
-        }
-    }
-}
-#endif
-
-/// Compact, Arabic-only ayah row: the ayah reference (and an optional leading label like "Page 3")
-/// plus the Arabic text with tajweed + all reading settings applied, sized down to read nicely in
-/// page/juz search results and the Pages browse list.
-struct CompactAyahArabicRow: View {
-    @EnvironmentObject var settings: Settings
-
-    let surah: Surah
-    let ayah: Ayah
-    var leadingLabel: String? = nil
-
-    private var shouldShowTajweedColors: Bool {
-        settings.showTajweedColors && settings.showArabicText && settings.isHafsDisplay
-    }
-
-    private func arabicDisplayText() -> String {
-        let text = ayah.displayArabicText(surahId: surah.id, clean: settings.cleanArabicText)
-        return settings.beginnerMode ? text.map { String($0) }.joined(separator: " ") : text
-    }
-
-    private func arabicTajweedText() -> AttributedString? {
-        guard shouldShowTajweedColors else { return nil }
-        let text = ayah.displayArabicText(surahId: surah.id, clean: false)
-        let displayText = settings.cleanArabicText ? ayah.displayArabicText(surahId: surah.id, clean: true) : text
-        let renderedDisplayText = settings.beginnerMode ? displayText.map { String($0) }.joined(separator: " ") : displayText
-        return TajweedStore.shared.attributedText(
-            surah: surah.id,
-            ayah: ayah.id,
-            text: text,
-            displayText: renderedDisplayText,
-            cleanDisplayText: settings.cleanArabicText,
-            beginnerSpacing: settings.beginnerMode
-        )
-    }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                if let leadingLabel {
-                    Text(leadingLabel)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                }
-                Text("\(surah.id):\(ayah.id)")
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundColor(settings.accentColor.color)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-            }
-            .frame(width: 64, alignment: .leading)
-
-            if settings.showArabicText {
-                HighlightedSnippet(
-                    source: arabicDisplayText(),
-                    term: "",
-                    font: .custom(settings.fontArabic, size: settings.fontArabicSize * 0.8),
-                    accent: settings.accentColor.color,
-                    fg: .primary,
-                    preStyledSource: arabicTajweedText(),
-                    beginnerMode: settings.beginnerMode,
-                    lineLimit: nil
-                )
-                .multilineTextAlignment(.trailing)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-            } else {
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-}
-
-/// Just the Arabic text of an ayah, rendered through the same pipeline as the reading view — same font,
-/// tajweed colors, beginner-mode spacing, and Allah highlighting — sized by `scale`. Used for compact
+/// Just the Arabic text of an ayah, rendered through the same pipeline as the reading view - same font,
+/// tajweed colors, beginner-mode spacing, and Allah highlighting - sized by `scale`. Used for compact
 /// previews such as the page/juz dividers in SurahView.
-struct AyahArabicSnippet: View {
-    @EnvironmentObject var settings: Settings
+struct AyahArabicSnippet: View, Equatable {
+    @ObservedObject var settings = Settings.shared
 
     let surah: Surah
     let ayah: Ayah
     var scale: CGFloat = 0.8
     var lineLimit: Int? = 1
+    /// Same idiom as `SurahAyahRow`: every settings field the body reads, folded into one compared input
+    /// captured at construction, so appearance changes fail `==` while unchanged data skips the
+    /// tajweed-AttributedString rebuild. Matters in `SurahView`'s page/juz dividers, which re-render with
+    /// the reader on every playback tick.
+    var renderSettingsSignature: String = Settings.shared.ayahRenderSettingsSignature
+
+    static func == (l: Self, r: Self) -> Bool {
+        l.surah.id == r.surah.id && l.ayah.id == r.ayah.id &&
+        l.scale == r.scale &&
+        l.lineLimit == r.lineLimit &&
+        l.renderSettingsSignature == r.renderSettingsSignature
+    }
 
     private var shouldShowTajweedColors: Bool {
         settings.showTajweedColors && settings.showArabicText && settings.isHafsDisplay
@@ -1745,7 +780,7 @@ struct AyahArabicSnippet: View {
             HighlightedSnippet(
                 source: arabicDisplayText(),
                 term: "",
-                font: .custom(settings.fontArabic, size: settings.fontArabicSize * scale),
+                font: Font.arabic(settings.quranDisplayFontName, size: settings.fontArabicSize * scale),
                 accent: settings.accentColor.color,
                 fg: .primary,
                 preStyledSource: arabicTajweedText(),
@@ -1753,6 +788,7 @@ struct AyahArabicSnippet: View {
                 lineLimit: lineLimit,
                 highlightAllahNames: settings.highlightAllahNames
             )
+            .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
             .multilineTextAlignment(.trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
@@ -1760,7 +796,7 @@ struct AyahArabicSnippet: View {
 }
 
 struct AyahSearchResultRow: View {
-    @EnvironmentObject private var settings: Settings
+    @ObservedObject private var settings = Settings.shared
 
     let surah: Surah
     let ayah: Ayah
@@ -1795,6 +831,7 @@ struct AyahSearchResultRow: View {
     var body: some View {
         let row = VStack(alignment: .leading, spacing: 4) {
             SurahAyahRow(surah: surah, ayah: ayah, disableTajweedColors: disableTajweedColors, arabicScale: compactArabic ? 0.8 : 1.1)
+                .equatable()
 
             if settings.showFullSurahRow, let pageJuzLine {
                 Label(pageJuzLine, systemImage: "map")
@@ -1851,7 +888,7 @@ struct AyahSearchResultRow: View {
 }
 
 struct AyahSearchRow: View, Equatable {
-    @EnvironmentObject private var settings: Settings
+    @ObservedObject private var settings = Settings.shared
     @State private var confirmRemoveNote = false
 
     
@@ -1877,6 +914,9 @@ struct AyahSearchRow: View, Equatable {
     /// When true (Quran search grouped by surah): `surah:ayah` label + same Arabic / transliteration / English visibility rules as the full row, without the top surah name line.
     var compact: Bool = false
     var disableTajweedColors: Bool = false
+    /// Folds every settings field the body reads (fonts, tajweed, translation toggles) so `==` stays correct
+    /// when the user changes appearance - see `Settings.ayahRenderSettingsSignature`.
+    var renderSettingsSignature: String = Settings.shared.ayahRenderSettingsSignature
 
     private final class NormalizedSources {
         let arabic: String
@@ -1901,6 +941,10 @@ struct AyahSearchRow: View, Equatable {
         let showTrLine: Bool
         let showSaheehLine: Bool
         let showMustafaLine: Bool
+        /// When the verse-search index returned this ayah but none of the fields matched under THIS row's
+        /// normalization, force the Arabic line to show and guarantee at least one highlighted span - a
+        /// search result must never appear with nothing highlighted.
+        let forceArabicHighlight: Bool
     }
 
     private static let normalizedSourcesCache: NSCache<NSString, NormalizedSources> = {
@@ -1914,10 +958,7 @@ struct AyahSearchRow: View, Equatable {
     }
     
     private var badgeWidth: CGFloat {
-        let font = UIFont.preferredFont(forTextStyle: .headline)
-        let text = "10:100" as NSString
-        let size = text.size(withAttributes: [.font: font])
-        return size.width + 8
+        BadgeWidthCache.width(template: "10:100")
     }
 
     private var pageJuzLine: String? {
@@ -2036,7 +1077,7 @@ struct AyahSearchRow: View, Equatable {
     }
 
     /// A source "matches" the query when it contains the whole phrase contiguously OR matches it loosely as
-    /// a phrase-prefix (consecutive words, last is a prefix) — the same close-match rule the verse search
+    /// a phrase-prefix (consecutive words, last is a prefix) - the same close-match rule the verse search
     /// uses. Gating highlights on the strict `contains` alone meant close matches showed the row but never
     /// highlighted; this keeps the two in sync so the matched words always color.
     private func sourceMatchesQuery(_ source: String, normalizedQuery: String) -> Bool {
@@ -2073,7 +1114,10 @@ struct AyahSearchRow: View, Equatable {
         let mTr = sourceMatchesQuery(sources.transliteration, normalizedQuery: normalizedQuery)
         let mSaheeh = sourceMatchesQuery(sources.saheeh, normalizedQuery: normalizedQuery)
         let mMustafa = sourceMatchesQuery(sources.mustafa, normalizedQuery: normalizedQuery)
-        let showArabicLine = settings.showArabicText || mArabic
+        // The index that produced this result normalizes/stems differently than sourceMatchesQuery, so a
+        // returned ayah can have no field match here. In that case force the Arabic line + a guaranteed span.
+        let forceArabicHighlight = !normalizedQuery.isEmpty && !(mArabic || mTr || mSaheeh || mMustafa)
+        let showArabicLine = settings.showArabicText || mArabic || forceArabicHighlight
         let showTrLine = settings.isHafsDisplay && (settings.showTransliteration || mTr)
 
         let showEnglishLines: (saheeh: Bool, mustafa: Bool) = {
@@ -2096,7 +1140,8 @@ struct AyahSearchRow: View, Equatable {
             showArabicLine: showArabicLine,
             showTrLine: showTrLine,
             showSaheehLine: showEnglishLines.saheeh,
-            showMustafaLine: showEnglishLines.mustafa
+            showMustafaLine: showEnglishLines.mustafa,
+            forceArabicHighlight: forceArabicHighlight
         )
     }
 
@@ -2111,14 +1156,16 @@ struct AyahSearchRow: View, Equatable {
                 if visibility.showArabicLine {
                     HighlightedSnippet(
                         source: arabicDisplayText(),
-                        term: visibility.mArabic ? query : "",
+                        term: (visibility.mArabic || visibility.forceArabicHighlight) ? query : "",
                         font: .custom(searchArabicFontName, size: UIFont.preferredFont(forTextStyle: .body).pointSize),
                         accent: settings.accentColor.color,
                         fg: .primary,
                         preStyledSource: arabicTajweedText(),
                         beginnerMode: settings.beginnerMode,
-                        lineLimit: nil
+                        lineLimit: nil,
+                        guaranteeMatch: visibility.forceArabicHighlight
                     )
+                    .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .multilineTextAlignment(.trailing)
                     // Inside this badge+Arabic HStack SwiftUI otherwise truncates a long ayah to one line;
@@ -2189,14 +1236,16 @@ struct AyahSearchRow: View, Equatable {
             if visibility.showArabicLine {
                 HighlightedSnippet(
                     source: arabicDisplayText(),
-                    term: visibility.mArabic ? query : "",
+                    term: (visibility.mArabic || visibility.forceArabicHighlight) ? query : "",
                     font: .custom(searchArabicFontName, size: UIFont.preferredFont(forTextStyle: .body).pointSize),
                     accent: settings.accentColor.color,
                     fg: .primary,
                     preStyledSource: arabicTajweedText(),
                     beginnerMode: settings.beginnerMode,
-                    lineLimit: nil
+                    lineLimit: nil,
+                    guaranteeMatch: visibility.forceArabicHighlight
                 )
+                .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
@@ -2280,7 +1329,8 @@ struct AyahSearchRow: View, Equatable {
         l.page == r.page &&
         l.juz == r.juz &&
         l.favoriteSurahs == r.favoriteSurahs &&
-        l.bookmarkedAyahs == r.bookmarkedAyahs
+        l.bookmarkedAyahs == r.bookmarkedAyahs &&
+        l.renderSettingsSignature == r.renderSettingsSignature
     }
 }
 

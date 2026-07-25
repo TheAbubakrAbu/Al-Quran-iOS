@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SurahsHeader: View {
-    @EnvironmentObject var quranData: QuranData
+    @ObservedObject var quranData = QuranData.shared
 
     @State private var randomSurah: Surah?
 
@@ -19,6 +19,8 @@ struct SurahsHeader: View {
             Spacer()
 
             goToSurah
+            // The count pill sits left of the shuffle, the section-header family's order.
+            CountPill(count: quranData.quran.count)
             randomSurahLink
             #endif
         }
@@ -56,9 +58,9 @@ struct SurahsHeader: View {
 }
 
 struct JuzHeader: View {
-    @EnvironmentObject var quranData: QuranData
+    @ObservedObject var quranData = QuranData.shared
     #if os(iOS)
-    @EnvironmentObject var settings: Settings
+    @ObservedObject var settings = Settings.shared
     #endif
 
     let juz: Juz
@@ -88,7 +90,7 @@ struct JuzHeader: View {
             surahCountBadge
             infoButton
             // Khatm's Juz grouping is about tracking a full read-through, so the random "shuffle to a surah"
-            // jump doesn't belong there — hide it in khatm mode.
+            // jump doesn't belong there - hide it in khatm mode.
             if settings.quranSortMode != .khatm {
                 randomSurahLink
             }
@@ -99,17 +101,6 @@ struct JuzHeader: View {
                 randomSurah = randomSurahInJuz
             }
         }
-        #if os(iOS)
-        .confirmationDialog(
-            "Juz \(juz.id) — \(juz.nameTransliteration)",
-            isPresented: $showInfo,
-            titleVisibility: .visible
-        ) {
-            Button("OK") {}
-        } message: {
-            Text(infoMessage)
-        }
-        #endif
     }
 
     private var surahsInRange: [Surah] {
@@ -158,6 +149,20 @@ struct JuzHeader: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(settings.accentColor.color)
+        // Anchored to the info button itself, so the dialog pops from where the tap happened.
+        .confirmationDialog(
+            "Juz \(juz.id) - \(juz.nameTransliteration)",
+            isPresented: $showInfo,
+            titleVisibility: .visible
+        ) {
+            Button("Copy Info") {
+                settings.hapticFeedback()
+                UIPasteboard.general.string = "Juz \(juz.id) - \(juz.nameTransliteration)\n\(infoMessage)"
+            }
+            Button("OK") {}
+        } message: {
+            Text(infoMessage)
+        }
     }
 
     private var randomSurahLink: some View {
@@ -195,8 +200,12 @@ struct PageHeader: View {
 }
 
 struct SurahSectionHeader: View {
-    @EnvironmentObject var settings: Settings
-    @EnvironmentObject var quranPlayer: QuranPlayer
+    @ObservedObject var settings = Settings.shared
+    // Player state is only READ on watchOS (the wrist playback button). Observing it on iOS re-rendered
+    // this header on every play/pause/ayah-advance publish for a body that never looks at it.
+    #if os(watchOS)
+    @ObservedObject var quranPlayer = QuranPlayer.shared
+    #endif
 
     var surah: Surah
     var compact: Bool = false
@@ -204,20 +213,21 @@ struct SurahSectionHeader: View {
     var body: some View {
         #if os(watchOS)
         // watchOS has too little width to fit the emoji, ayah/page summary, play, and star on one line,
-        // so the controls get their own row beneath the summary.
-        VStack(spacing: 8) {
-            HStack(spacing: 6) {
+        // so the controls get their own row beneath the summary. The emoji + summary sit together as one
+        // centered group (no stretched gap between them), and the play/star row sits tight just below.
+        VStack(spacing: 3) {
+            HStack(spacing: 5) {
                 revelationSymbol
                 ayahSummary
-                    .frame(maxWidth: .infinity, alignment: .center)
             }
+            .frame(maxWidth: .infinity, alignment: .center)
 
-            HStack(spacing: 28) {
+            HStack(spacing: 22) {
                 watchPlaybackButton
                 favoriteToggle
             }
-            .frame(maxWidth: .infinity)
         }
+        .padding(.bottom, 2)
         #else
         // Revelation symbol on the left, ayah/page info centered, favorite star on the right.
         // The symbol and star share the same size so the centered text sits exactly in the middle.
@@ -313,8 +323,8 @@ struct SurahSectionHeader: View {
 }
 
 struct HeaderRow: View {
-    @EnvironmentObject var settings: Settings
-    @EnvironmentObject var quranPlayer: QuranPlayer
+    @ObservedObject var settings = Settings.shared
+    @ObservedObject var quranPlayer = QuranPlayer.shared
 
     let arabicText: String
     let englishTransliteration: String
@@ -333,6 +343,7 @@ struct HeaderRow: View {
                 beginnerMode: settings.beginnerMode || ayahBeginnerMode,
                 highlightAllahNames: settings.highlightAllahNames
             )
+            .arabicFontDesign(custom: usesCustomArabicFace)
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, 8)
@@ -405,10 +416,16 @@ struct HeaderRow: View {
         return cleanedText
     }
 
+    /// "Remove Arabic dots" forces the system face, and so does picking "Basic" in the font picker. In both cases
+    /// the bismillah / ta'awwudh is really system text, so it should stay rounded like the rest of the UI.
+    private var usesCustomArabicFace: Bool {
+        !settings.removeArabicDots && settings.quranUsesCustomArabicFace
+    }
+
     private var arabicFont: Font {
-        settings.removeArabicDots
-            ? .system(size: settings.fontArabicSize)
-            : .custom(settings.fontArabic, size: settings.fontArabicSize)
+        usesCustomArabicFace
+            ? Font.arabic(settings.fontArabic, size: settings.fontArabicSize)
+            : .system(size: settings.fontArabicSize)
     }
 }
 

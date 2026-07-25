@@ -48,6 +48,12 @@ struct BoundaryDividerModel: Codable, Equatable {
     let pageSegment: String
     let juzSegment: String?
     let style: BoundaryDividerStyle
+
+    /// Where this page falls WITHIN the surah, and how many pages the surah spans - the "(3/10)" already shown
+    /// inside `pageSegment`, kept as numbers so the floating overlay can draw a progress bar from them instead
+    /// of parsing them back out of the label. `nil` when the boundary is a juz with no page.
+    var pageInSurah: Int? = nil
+    var surahPageCount: Int? = nil
 }
 
 extension Surah {
@@ -66,12 +72,13 @@ extension Surah {
     }
 }
 
-/// "Page 102 (3)" — the absolute mushaf page annotated with its position within
-/// `surah` when that can be determined, otherwise just "Page 102". Pass `nil` for
+/// "Page 102 (3/6)" - the absolute mushaf page annotated with its position within `surah`, out of how many
+/// pages that surah spans, when that can be determined; otherwise just "Page 102". The total is what makes the
+/// relative number mean anything - "(3)" alone doesn't say whether you're near the end. Pass `nil` for
 /// cross-surah boundaries (the relative number would belong to a different surah).
 func mushafPageLabel(forAbsolutePage page: Int, in surah: Surah?) -> String {
     if let surah, let relative = surah.pageWithinSurah(page) {
-        return "Page \(page) (\(relative))"
+        return "Page \(page) (\(relative)/\(max(surah.pageCount, relative)))"
     }
     return "Page \(page)"
 }
@@ -218,6 +225,10 @@ struct ListeningHistoryItem: Identifiable, Codable {
     let surahNumber: Int
     let surahName: String
     let reciter: Reciter
+    /// Where playback stood when this entry was displaced from Last Listened - powers the history row's
+    /// "resume from here". Optional so entries saved by older builds still decode (they show no position).
+    var currentDuration: Double? = nil
+    var fullDuration: Double? = nil
     var timestamp: Date = Date()
 }
 
@@ -262,7 +273,7 @@ struct Reciter: Identifiable, Comparable, Codable, Hashable {
 
     /// When set, per-ayah audio is sourced from everyayah.com's `{surah}{ayah}.mp3` scheme in this folder
     /// instead of cdn.islamic.network's global-ayah-id scheme. Used for editions whose islamic.network feed is
-    /// unreliable — notably Minshawi Mujawwad, whose `ar.minshawimujawwad` files are the *Murattal* recording
+    /// unreliable - notably Minshawi Mujawwad, whose `ar.minshawimujawwad` files are the *Murattal* recording
     /// for ~1 in 5 ayahs (verified by identical md5), which made playback audibly drop to Murattal mid-surah.
     var everyayahFolder: String? = nil
 
@@ -271,6 +282,30 @@ struct Reciter: Identifiable, Comparable, Codable, Hashable {
     /// heads-up confirmation on selection and the now-playing label during ayah/range playback. nil when the
     /// ayah audio matches the reciter's advertised style.
     var ayahMurattalStyleNote: String? = nil
+
+    /// Surahs this reciter's mp3quran feed does NOT carry (some mushafs are partial - Islam Sobhi's covers
+    /// 109 of 114). Optional so `Reciter` values persisted before the field existed still decode. Downloads
+    /// skip these instead of dying on a 404, and playback explains instead of throwing a network error.
+    var missingSurahs: Set<Int>? = nil
+
+    /// The reciter's id in the QDC audio API (api.qurancdn.com - the service behind quran.com and QUL),
+    /// which serves per-surah AYAH TIMESTAMPS. When set, downloaded surahs also fetch their timing table,
+    /// and - once the timings are validated against the local file's duration - ayah and custom-range
+    /// playback is cut from the downloaded surah file itself: the reciter's own voice, fully offline.
+    /// nil = no timing source; every existing behavior is untouched.
+    var qdcReciterID: Int? = nil
+
+    func carriesSurah(_ surahNumber: Int) -> Bool {
+        !(missingSurahs?.contains(surahNumber) ?? false)
+    }
+
+    /// How many surahs this reciter actually offers. THE completion denominator: comparing download
+    /// counts against a flat 114 made a fully-downloaded partial-mushaf reciter (Islam Sobhi carries
+    /// 109) read as forever-incomplete - and the incomplete-download purge then DELETED the finished
+    /// download every time the reciter list appeared.
+    var carriedSurahCount: Int {
+        114 - (missingSurahs?.count ?? 0)
+    }
 
     /// Settings / lists: append English riwayah when this row is a non-Hafs surah feed.
     var displayNameWithEnglishQiraah: String {
@@ -289,12 +324,22 @@ struct Reciter: Identifiable, Comparable, Codable, Hashable {
     static let minshawiAyahFallbackName = "Muhammad Al-Minshawi (Murattal)"
 
     /// True when this reciter has no ayah-by-ayah feed of its own and falls back to Minshawi (Murattal) for
-    /// individual ayah audio. A reciter with its own `everyayahFolder` is NOT a fallback — it plays its own
+    /// individual ayah audio. A reciter with its own `everyayahFolder` is NOT a fallback - it plays its own
     /// voice from everyayah.com, so it must be excluded here (otherwise it would still show the Minshawi
     /// confirmation/label even though its ayahs are genuinely its own).
     var defaultToMinshawi: Bool {
         everyayahFolder == nil && ayahIdentifier.contains("minshawi") && !name.contains("Minshawi")
     }
+
+    /// True when a downloaded surah can also be played ayah-by-ayah OFFLINE, by cutting each ayah out of the
+    /// full-surah file using this reciter's QDC timing table (the reciter's own voice, no network). Backed by
+    /// `qdcReciterID`.
+    var supportsAyahSegments: Bool { qdcReciterID != nil }
+
+    /// True when this reciter has NO per-ayah recitation of its own to stream - individual ayahs otherwise
+    /// play in a substitute Murattal (`defaultToMinshawi` or a named `ayahMurattalStyleNote`). Combined with
+    /// `supportsAyahSegments`, this is the "must load the whole surah to hear an ayah in this voice" case.
+    var lacksOwnStreamedAyahs: Bool { defaultToMinshawi || ayahMurattalStyleNote != nil }
 
     static func < (lhs: Reciter, rhs: Reciter) -> Bool {
         lhs.name < rhs.name
@@ -327,31 +372,31 @@ let reciters: [Reciter] = {
 }()
 
 let recitersMinshawi = [
-    Reciter(name: "Muhammad Al-Minshawi (Murattal)", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server10.mp3quran.net/minsh/"),
+    Reciter(name: "Muhammad Al-Minshawi (Murattal)", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server10.mp3quran.net/minsh/", qdcReciterID: 9),
     Reciter(name: "Muhammad Al-Minshawi (Mujawwad)", ayahIdentifier: "ar.minshawimujawwad", ayahBitrate: "64", surahLink: "https://server10.mp3quran.net/minsh/Almusshaf-Al-Mojawwad/", everyayahFolder: "Minshawy_Mujawwad_192kbps"),
     Reciter(name: "Muhammad Al-Minshawi (Muallim)", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server10.mp3quran.net/minsh/Almusshaf-Al-Mo-lim/", ayahMurattalStyleNote: "Muhammad Al-Minshawi (Murattal)")
 ].sorted()
 
 let recitersMurattal = [
-    Reciter(name: "Abdul Basit (Murattal)", ayahIdentifier: "ar.abdulbasitmurattal", ayahBitrate: "192", surahLink: "https://server7.mp3quran.net/basit/"),
-    Reciter(name: "Abdul Rahman Al-Sudais", ayahIdentifier: "ar.abdurrahmaansudais", ayahBitrate: "192", surahLink: "https://server11.mp3quran.net/sds/"),
-    Reciter(name: "Abu Bakr Al-Shatri", ayahIdentifier: "ar.shaatree", ayahBitrate: "128", surahLink: "https://server11.mp3quran.net/shatri/"),
+    Reciter(name: "Abdul Basit (Murattal)", ayahIdentifier: "ar.abdulbasitmurattal", ayahBitrate: "192", surahLink: "https://server7.mp3quran.net/basit/", qdcReciterID: 2),
+    Reciter(name: "Abdul Rahman Al-Sudais", ayahIdentifier: "ar.abdurrahmaansudais", ayahBitrate: "192", surahLink: "https://server11.mp3quran.net/sds/", qdcReciterID: 3),
+    Reciter(name: "Abu Bakr Al-Shatri", ayahIdentifier: "ar.shaatree", ayahBitrate: "128", surahLink: "https://server11.mp3quran.net/shatri/", qdcReciterID: 4),
     Reciter(name: "Ahmad Deban", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server16.mp3quran.net/deban/Rewayat-Hafs-A-n-Assem/"),
-    Reciter(name: "Mahmoud Al-Hussary (Murattal)", ayahIdentifier: "ar.husary", ayahBitrate: "128", surahLink: "https://server13.mp3quran.net/husr/"),
+    Reciter(name: "Mahmoud Al-Hussary (Murattal)", ayahIdentifier: "ar.husary", ayahBitrate: "128", surahLink: "https://server13.mp3quran.net/husr/", qdcReciterID: 6),
     Reciter(name: "Maher Al-Muaiqly (Murattal)", ayahIdentifier: "ar.mahermuaiqly", ayahBitrate: "128", surahLink: "https://server12.mp3quran.net/maher/"),
-    Reciter(name: "Mishary Alafasy", ayahIdentifier: "ar.alafasy", ayahBitrate: "128", surahLink: "https://server8.mp3quran.net/afs/"),
+    Reciter(name: "Mishary Alafasy", ayahIdentifier: "ar.alafasy", ayahBitrate: "128", surahLink: "https://server8.mp3quran.net/afs/", qdcReciterID: 7),
     Reciter(name: "Abdullah Al-Juhany", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server13.mp3quran.net/jhn/", everyayahFolder: "Abdullaah_3awwaad_Al-Juhaynee_128kbps"),
     Reciter(name: "Abdurrasheed Sufi", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server16.mp3quran.net/soufi/Rewayat-Hafs-A-n-Assem/"),
     Reciter(name: "Bandar Baleela", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server6.mp3quran.net/balilah/"),
     Reciter(name: "Badr Al-Turki", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server10.mp3quran.net/bader/Rewayat-Hafs-A-n-Assem/"),
     Reciter(name: "Muhammad Al-Luhaidan", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server8.mp3quran.net/lhdan/"),
     Reciter(name: "Abdullah Al Qarafi", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server16.mp3quran.net/a_alqrafi/Rewayat-Hafs-A-n-Assem/"),
-    Reciter(name: "Muhammad Al-Minshawi (Murattal)", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server10.mp3quran.net/minsh/"),
+    Reciter(name: "Muhammad Al-Minshawi (Murattal)", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server10.mp3quran.net/minsh/", qdcReciterID: 9),
     Reciter(name: "Muhammad Jibreel", ayahIdentifier: "ar.muhammadjibreel", ayahBitrate: "128", surahLink: "https://server8.mp3quran.net/jbrl/"),
     Reciter(name: "Mustafa Ismail (Murattal)", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server8.mp3quran.net/mustafa/"),
     Reciter(name: "Mahmoud Ali Al-Banna (Murattal)", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server8.mp3quran.net/bna/", everyayahFolder: "mahmoud_ali_al_banna_32kbps"),
-    Reciter(name: "Saud Al-Shuraim", ayahIdentifier: "ar.saoodshuraym", ayahBitrate: "64", surahLink: "https://server7.mp3quran.net/shur/"),
-    Reciter(name: "Hani Al-Rifai", ayahIdentifier: "ar.hanirifai", ayahBitrate: "128", surahLink: "https://server8.mp3quran.net/hani/"),
+    Reciter(name: "Saud Al-Shuraim", ayahIdentifier: "ar.saoodshuraym", ayahBitrate: "64", surahLink: "https://server7.mp3quran.net/shur/", qdcReciterID: 10),
+    Reciter(name: "Hani Al-Rifai", ayahIdentifier: "ar.hanirifai", ayahBitrate: "128", surahLink: "https://server8.mp3quran.net/hani/", qdcReciterID: 5),
     Reciter(name: "Ahmad Al-Ajmy", ayahIdentifier: "ar.ahmedajamy", ayahBitrate: "128", surahLink: "https://server10.mp3quran.net/ajm/"),
     Reciter(name: "Muhammad Ayyub", ayahIdentifier: "ar.muhammadayyoub", ayahBitrate: "128", surahLink: "https://server8.mp3quran.net/ayyub/"),
     Reciter(name: "Muhammad Ayyub (Special)", ayahIdentifier: "ar.muhammadayyoub", ayahBitrate: "128", surahLink: "https://server16.mp3quran.net/ayyoub2/Rewayat-Hafs-A-n-Assem/"),
@@ -359,13 +404,17 @@ let recitersMurattal = [
     Reciter(name: "Hazza Al-Balushi", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server11.mp3quran.net/hazza/"),
     Reciter(name: "Ali Jaber", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server11.mp3quran.net/a_jbr/", everyayahFolder: "Ali_Jaber_64kbps"),
     Reciter(name: "Saad Al-Ghamdi", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server7.mp3quran.net/s_gmd/", everyayahFolder: "Ghamadi_40kbps"),
-    Reciter(name: "Yasser Al-Dosari", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server11.mp3quran.net/yasser/", everyayahFolder: "Yasser_Ad-Dussary_128kbps"),
+    Reciter(name: "Yasser Al-Dosari", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server11.mp3quran.net/yasser/", everyayahFolder: "Yasser_Ad-Dussary_128kbps", qdcReciterID: 97),
     Reciter(name: "Abdullah Al-Mattrod", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server8.mp3quran.net/mtrod/", everyayahFolder: "Abdullah_Matroud_128kbps"),
-    Reciter(name: "Ahmad Al-Nufais", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server16.mp3quran.net/nufais/Rewayat-Hafs-A-n-Assem/")
+    Reciter(name: "Ahmad Al-Nufais", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server16.mp3quran.net/nufais/Rewayat-Hafs-A-n-Assem/"),
+    // mp3quran carries 109 of 114 surahs for this mushaf (their API's surah_list omits these five).
+    Reciter(name: "Islam Sobhi", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server14.mp3quran.net/islam/Rewayat-Hafs-A-n-Assem/", missingSurahs: [37, 39, 40, 45, 65]),
+    Reciter(name: "Mohamed Al-Tablawi", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server12.mp3quran.net/tblawi/", everyayahFolder: "Mohammad_al_Tablaway_128kbps"),
+    Reciter(name: "Khalifa Al-Tunaiji", ayahIdentifier: "ar.minshawi", ayahBitrate: "128", surahLink: "https://server12.mp3quran.net/tnjy/", everyayahFolder: "khalefa_al_tunaiji_64kbps", qdcReciterID: 161)
 ].sorted()
 
 let recitersMujawwad = [
-    Reciter(name: "Abdul Basit (Mujawwad)", ayahIdentifier: "ar.abdulsamad", ayahBitrate: "64", surahLink: "https://server7.mp3quran.net/basit/Almusshaf-Al-Mojawwad/"),
+    Reciter(name: "Abdul Basit (Mujawwad)", ayahIdentifier: "ar.abdulsamad", ayahBitrate: "64", surahLink: "https://server7.mp3quran.net/basit/Almusshaf-Al-Mojawwad/", qdcReciterID: 1),
     Reciter(name: "Mahmoud Al-Hussary (Mujawwad)", ayahIdentifier: "ar.husarymujawwad", ayahBitrate: "128", surahLink: "https://server13.mp3quran.net/husr/Almusshaf-Al-Mojawwad/"),
     Reciter(name: "Maher Al-Muaiqly (Mujawwad)", ayahIdentifier: "ar.mahermuaiqly", ayahBitrate: "128", surahLink: "https://server12.mp3quran.net/maher/Almusshaf-Al-Mojawwad/", ayahMurattalStyleNote: "Maher Al-Muaiqly (Murattal)"),
     Reciter(name: "Muhammad Al-Minshawi (Mujawwad)", ayahIdentifier: "ar.minshawimujawwad", ayahBitrate: "64", surahLink: "https://server10.mp3quran.net/minsh/Almusshaf-Al-Mojawwad/", everyayahFolder: "Minshawy_Mujawwad_192kbps"),

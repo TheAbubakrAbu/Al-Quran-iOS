@@ -1,11 +1,182 @@
 import SwiftUI
 
+/// A search a reader asked the Quran tab to run on its behalf.
+///
+/// Both readers (the ayah list and the mushaf) are pushed ON TOP of the Quran tab, and the tab is where the
+/// whole-Quran search already lives - the verse index, the page/juz queries, the history chips, all of it.
+/// Rather than grow a second search engine inside the readers, a reader just hands its query up here; the tab
+/// pops back to the surah list, fills its search bar and focuses it. One search, reachable from everywhere.
+#if os(iOS)
+/// The Quran tab's trailing toolbar buttons (grid toggle, khatm edit, settings gear), declared twice: on
+/// iOS 26 with `ToolbarSpacer`s so each button gets its OWN Liquid Glass capsule instead of all merging
+/// into one pill, and plain on earlier OSes (which never merged them).
+private struct QuranTrailingToolbar: ViewModifier {
+    @ObservedObject var settings = Settings.shared
+    @Binding var khatmEditMode: Bool
+    @Binding var showingSettingsSheet: Bool
+    let usesColumnNavigation: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) { gridButton }
+                ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+                ToolbarItem(placement: .navigationBarTrailing) { khatmButton }
+                ToolbarSpacer(.fixed, placement: .navigationBarTrailing)
+                ToolbarItem(placement: .navigationBarTrailing) { gearButton }
+            }
+        } else {
+            content.toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) { gridButton }
+                ToolbarItem(placement: .navigationBarTrailing) { khatmButton }
+                ToolbarItem(placement: .navigationBarTrailing) { gearButton }
+            }
+        }
+    }
+
+    private var gridButton: some View {
+        Button {
+            settings.hapticFeedback()
+            withAnimation { settings.gridMode.toggle() }
+        } label: {
+            Image(systemName: settings.gridMode ? "list.bullet" : "square.grid.2x2")
+        }
+        .accessibilityLabel(settings.gridMode ? "Show lists" : "Show grids")
+        .tint(settings.accentColor.accent2)
+    }
+
+    @ViewBuilder
+    private var khatmButton: some View {
+        if settings.quranSortMode == .khatm {
+            Button {
+                settings.hapticFeedback()
+                withAnimation {
+                    khatmEditMode.toggle()
+                }
+            } label: {
+                Image(systemName: khatmEditMode ? "checkmark" : "square.and.pencil")
+            }
+            .accessibilityLabel(khatmEditMode ? "Done" : "Edit")
+            .tint(settings.accentColor.accent2)
+        }
+    }
+
+    @ViewBuilder
+    private var gearButton: some View {
+        // On iPad/Mac the open-surah (detail) pane provides the settings gear; avoid a duplicate gear in the
+        // sidebar list when using side-by-side column navigation. (The condition lives inside the
+        // ToolbarItem so the toolbar content stays non-optional, keeping pre-iOS 16 support.)
+        if !usesColumnNavigation {
+            Button {
+                settings.hapticFeedback()
+                showingSettingsSheet = true
+            } label: {
+                Image(systemName: "gear")
+            }
+            .tint(settings.accentColor.accent2)
+        }
+    }
+}
+
+/// The leading pair - reading-mode toggle and the Quran Planner - split out for the same reason as
+/// `QuranTrailingToolbar`: iOS 26 wants a ToolbarSpacer between adjacent items (Liquid Glass merges
+/// them into one capsule otherwise), and ToolbarContentBuilder can't branch on availability inline.
+private struct QuranLeadingToolbar: ViewModifier {
+    @ObservedObject var settings = Settings.shared
+    @Binding var showReadingModeConfirm: Bool
+    let isPreparingPageMode: Bool
+    let performReadingModeToggle: () -> Void
+    let push: (Int, Int?) -> Void
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.toolbar {
+                ToolbarItem(placement: .navigationBarLeading) { readingModeButton }
+                ToolbarSpacer(.fixed, placement: .navigationBarLeading)
+                ToolbarItem(placement: .navigationBarLeading) { plannerButton }
+            }
+        } else {
+            content.toolbar {
+                ToolbarItem(placement: .navigationBarLeading) { readingModeButton }
+                ToolbarItem(placement: .navigationBarLeading) { plannerButton }
+            }
+        }
+    }
+
+    private var readingModeButton: some View {
+        Button {
+            settings.hapticFeedback()
+            // Switching reading mode is a big context change (the whole surah list becomes a mushaf
+            // and vice-versa), so confirm first rather than flipping on an accidental tap.
+            showReadingModeConfirm = true
+        } label: {
+            if isPreparingPageMode {
+                ProgressView()
+            } else {
+                Image(systemName: settings.quranPageMode ? "list.bullet.rectangle" : "book")
+            }
+        }
+        .accessibilityLabel(settings.quranPageMode ? "Read surahs as a list" : "Read surahs as pages")
+        .tint(settings.accentColor.accent1)
+        // Attached to the BUTTON, not the whole view, so the dialog anchors to it (iPad popover
+        // arrows point at the button instead of floating mid-screen).
+        .confirmationDialog(
+            settings.quranPageMode ? "Switch to List View?" : "Switch to Page View?",
+            isPresented: $showReadingModeConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(settings.quranPageMode ? "Read as List" : "Read as Pages") {
+                performReadingModeToggle()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(settings.quranPageMode
+                 ? "Surahs will be shown as a scrolling list of ayahs."
+                 : "Surahs will be shown as a mushaf, one page at a time.")
+        }
+    }
+
+    @ViewBuilder
+    private var plannerButton: some View {
+        // Hafs-only, matching the khatm store the planner rides on.
+        if settings.isHafsDisplay {
+            QuranPlannerToolbarButton(openReader: { surahID, ayahID in
+                push(surahID, ayahID)
+            })
+        }
+    }
+}
+#endif
+
+@MainActor
+final class QuranSearchHandoff: ObservableObject {
+    static let shared = QuranSearchHandoff()
+    private init() {}
+
+    /// Non-nil means "a reader asked for the Quran search". Empty string is a legitimate request - it means
+    /// "open the search with nothing typed yet".
+    @Published var pendingQuery: String?
+
+    func request(_ query: String = "") {
+        pendingQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func clear() { pendingQuery = nil }
+}
+
 struct QuranView: View {
-    @EnvironmentObject var settings: Settings
-    @EnvironmentObject var quranData: QuranData
-    @EnvironmentObject var quranPlayer: QuranPlayer
+    @ObservedObject var settings = Settings.shared
+    @ObservedObject var quranData = QuranData.shared
+    @ObservedObject var quranPlayer = QuranPlayer.shared
+    @ObservedObject private var searchHandoff = QuranSearchHandoff.shared
     @Environment(\.dismiss) private var dismiss
-    
+
+    /// Whether the Quran tab is the one on screen. Page mode means "the Quran tab IS the mushaf", so every time
+    /// the tab is entered it should land in the mushaf again - not just the first time. Keying this on the tab
+    /// (rather than on `onAppear`) is deliberate: `onAppear` also fires when the reader pops BACK to the surah
+    /// list, and re-opening the mushaf there would trap the user in it.
+    var isActiveTab: Bool = true
+
     @State private var searchText = ""
     @State private var isQuranSearchFocused = false
     @State private var scrollToSurahID: Int = -1
@@ -14,6 +185,34 @@ struct QuranView: View {
     @State private var showListeningHistory = false
     @State private var showReadingHistory = false
     @State private var showAyahListeningHistory = false
+
+    #if os(iOS)
+    /// Which summary tile's recents are unfolded BELOW the tile grid. The rows can't unfold inside a
+    /// half-width grid cell, so they open as ordinary list rows under the summary - and because this is one
+    /// value rather than four booleans, opening a tile's recents closes whichever was open before.
+    @State private var summaryHistoryExpansion: SummaryHistoryKind?
+
+    enum SummaryHistoryKind: String, Identifiable {
+        case ayahOfTheDay, reading, listenedAyah, listenedSurah
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .ayahOfTheDay: return "Recent Ayahs of the Day"
+            case .reading: return "Recent Read Ayahs"
+            case .listenedAyah: return "Recent Listened Ayahs"
+            case .listenedSurah: return "Recent Listened Surahs"
+            }
+        }
+    }
+
+    /// Toggle a tile's recents: same tile collapses, a different tile takes over the one expansion slot.
+    private func toggleSummaryExpansion(_ kind: SummaryHistoryKind) {
+        withAnimation(.easeInOut) {
+            summaryHistoryExpansion = summaryHistoryExpansion == kind ? nil : kind
+        }
+    }
+    #endif
     @State private var searchTextAtFocusStart = ""
     @State private var lastSavedSearchQuery = ""
     @State private var isListMoving = false
@@ -31,17 +230,309 @@ struct QuranView: View {
     @State private var verseHits: [VerseIndexEntry] = []
     @State private var hasMoreHits = true
     private let hitPageSize = 5
+    /// When AI results land, the exhaustive keyword sections collapse behind one "Show keyword matches"
+    /// row (three stacked long lists read as noise under good AI hits). Reset per query. Declared in
+    /// SHARED scope: the collapse branch is shared code (the flag is simply never true on watchOS).
+    @State private var showKeywordResults = false
+
+    #if os(iOS)
+    // AI (semantic) ayah search: on-device meaning-based results, shown automatically ABOVE the keyword
+    // sections - no mode to enter. "Patience in hardship" finds ayahs about sabr whether or not either
+    // word appears; the keyword sections below stay exhaustive.
+    @ObservedObject private var semanticEngine = SemanticSearchEngine.shared
+    @State private var aiHits: [AISearchHit] = []
+    @State private var aiSearchTask: Task<Void, Never>?
+
+    struct AISearchHit: Identifiable {
+        let surah: Int
+        let ayah: Int
+        let score: Float
+        var id: String { "\(surah)-\(ayah)" }
+    }
+
+    /// Positional (surah, ayah) map matching the semantic corpus's build order - mushaf order over the
+    /// full Hafs ayah set, independent of the display qiraah so the corpus never rebuilds on a riwayah
+    /// switch. Rebuilt cheaply each launch (the vectors themselves load from disk).
+    @MainActor private static var semanticAyahMap: [(surah: Int, ayah: Int)] = []
+
+    private var quranSemanticCorpusID: String { "quran-en" }
+
+    /// Fingerprint of the bundled Quran source (size + mtime), folded into the corpus version. The
+    /// version used to be effectively constant ("en2-6236"), so a translation text CORRECTION shipped
+    /// in an app update never invalidated the on-disk vectors - the corrected verse kept its stale
+    /// embedding forever. The bundle's file stamp changes exactly when the source does.
+    private static let quranSourceStamp: String = {
+        guard let url = Bundle.main.url(forResource: "Quran", withExtension: "json")
+                ?? Bundle.main.url(forResource: "Quran", withExtension: "json", subdirectory: "JSONs"),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? UInt64 else { return "0" }
+        let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return "\(size).\(Int(mtime))"
+    }()
+
+    /// Resolve the corpus texts (both bundled translations per ayah, so either's phrasing matches) and
+    /// hand them to the engine. No-ops once ready; cheap when the vectors are already on disk.
+    private func prepareQuranSemanticCorpus() {
+        guard SemanticSearchEngine.isSupported, !quranData.quran.isEmpty else { return }
+        if Self.semanticAyahMap.isEmpty {
+            var map: [(Int, Int)] = []
+            map.reserveCapacity(6236)
+            for surah in quranData.quran {
+                for ayah in surah.ayahs {
+                    map.append((surah.id, ayah.id))
+                }
+            }
+            Self.semanticAyahMap = map
+        }
+        guard !semanticEngine.isReady(quranSemanticCorpusID) else { return }
+        var texts: [String] = []
+        texts.reserveCapacity(Self.semanticAyahMap.count)
+        for surah in quranData.quran {
+            for ayah in surah.ayahs {
+                texts.append("\(ayah.textEnglishSaheeh) \(ayah.textEnglishMustafa)")
+            }
+        }
+        semanticEngine.prepare(corpusID: quranSemanticCorpusID, version: "en2-\(texts.count)-\(Self.quranSourceStamp)", texts: texts)
+    }
+
+    /// True when the live query is one the semantic engine can answer (English text, not a reference).
+    private var aiQueryEligible: Bool {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return SemanticSearchEngine.isSupported
+            && trimmed.count >= 3
+            && !trimmed.containsArabicLetters
+            && getSurahAndAyah(from: trimmed).surah == nil
+    }
+
+    // Ask (the on-device LLM, grounded RAG): auto-runs for QUESTION-shaped queries only, streaming an
+    // answer card above the AI results - drawn strictly from the retrieved ayahs, cited, never invented.
+    // Exists only on Apple Intelligence devices (`OnDeviceAsk.isAvailable`); elsewhere nothing renders.
+    @State private var askAnswer = ""
+    @State private var askIsStreaming = false
+    @State private var askRanForQuery = ""
+    /// A MANUAL ask that found nothing to ground on (gibberish like "taka") or errored. The tapped row
+    /// must answer with SOMETHING - silently tearing the card down left the prompt sitting there as if
+    /// the tap never happened.
+    @State private var askNoAnswer = false
+    @State private var askTask: Task<Void, Never>?
+
+    private func runAskIfNeeded(query: String) {
+        runAsk(query: query, manual: false)
+    }
+
+    /// Auto mode runs only for QUESTION-shaped queries; `manual` (the tapped "Ask AI" row) runs for
+    /// anything - the user explicitly asked, so the query IS the question.
+    private func runAsk(query: String, manual: Bool) {
+        askTask?.cancel()
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Any new run (or keystroke) clears a previous dead-end notice.
+        askNoAnswer = false
+        guard OnDeviceAsk.isAvailable, trimmed.count >= 3,
+              manual || OnDeviceAsk.looksLikeQuestion(trimmed) else {
+            if !askRanForQuery.isEmpty {
+                // Plain writes here and below: the Ask card is a List section, and animated section
+                // churn during typing is the collection-view assertion (see the SearchBar binding note).
+                askAnswer = ""; askIsStreaming = false; askRanForQuery = ""
+            }
+            return
+        }
+
+        askTask = Task {
+            // Auto waits out the search debounces so the retrieval this answer is GROUNDED on has
+            // settled; a manual tap means the results are already on screen - go immediately.
+            try? await Task.sleep(nanoseconds: manual ? 100_000_000 : 900_000_000)
+            guard !Task.isCancelled else { return }
+
+            var sources: [OnDeviceAsk.Source] = []
+            var seen = Set<String>()
+            for hit in aiHits.prefix(6) {
+                let reference = "\(hit.surah):\(hit.ayah)"
+                if seen.insert(reference).inserted,
+                   let ayah = quranData.ayah(surah: hit.surah, ayah: hit.ayah) {
+                    sources.append(.init(reference: reference, text: ayah.textEnglishSaheeh))
+                }
+            }
+            for hit in verseHits.prefix(6) {
+                let reference = "\(hit.surah):\(hit.ayah)"
+                if seen.insert(reference).inserted,
+                   let ayah = quranData.ayah(surah: hit.surah, ayah: hit.ayah) {
+                    sources.append(.init(reference: reference, text: ayah.textEnglishSaheeh))
+                }
+            }
+            // A "5:6"-style reference has no text hits, but it names its passage outright - asking
+            // about it grounds the answer on that exact ayah.
+            if sources.isEmpty {
+                let exact = getSurahAndAyah(from: trimmed)
+                if let surah = exact.surah, let ayah = exact.ayah {
+                    sources.append(.init(reference: "\(surah.id):\(ayah.id)", text: ayah.textEnglishSaheeh))
+                }
+            }
+            guard !sources.isEmpty else {
+                askAnswer = ""; askIsStreaming = false; askRanForQuery = ""
+                // A tapped ask MUST respond: with nothing retrieved to ground on, say so instead of
+                // silently putting the prompt row back (which read as "the button does nothing").
+                if manual { askNoAnswer = true }
+                return
+            }
+
+            askAnswer = ""; askIsStreaming = true; askRanForQuery = trimmed
+            guard #available(iOS 26.0, *) else { return }
+            do {
+                for try await text in OnDeviceAsk.streamAnswer(question: trimmed, sources: sources) {
+                    guard !Task.isCancelled else { return }
+                    askAnswer = text
+                }
+                guard !Task.isCancelled else { return }
+                askIsStreaming = false
+            } catch {
+                // Declined or errored: the card goes away - keyword and AI results still stand. But a
+                // MANUAL ask still owes a response (see the empty-sources guard).
+                guard !Task.isCancelled else { return }
+                askAnswer = ""; askIsStreaming = false; askRanForQuery = ""
+                if manual { askNoAnswer = true }
+            }
+        }
+    }
+
+    /// "(46:15)"-style references parsed out of the streamed answer, resolved against the Quran and
+    /// deduped in citation order - the model names the verses, these rows OPEN them. Parsing the live
+    /// text keeps the rows in lockstep with whatever the answer actually cites.
+    private static let askCitationRegex = try! NSRegularExpression(pattern: #"\b(\d{1,3}):(\d{1,3})\b"#)
+
+    private var askCitedAyahs: [(surah: Surah, ayah: Ayah)] {
+        guard !askAnswer.isEmpty else { return [] }
+        let text = askAnswer as NSString
+        var seen = Set<Int>()
+        var cited: [(surah: Surah, ayah: Ayah)] = []
+        for match in Self.askCitationRegex.matches(in: askAnswer, range: NSRange(location: 0, length: text.length)) {
+            guard let surahID = Int(text.substring(with: match.range(at: 1))),
+                  let ayahID = Int(text.substring(with: match.range(at: 2))),
+                  seen.insert(surahID * 1000 + ayahID).inserted,
+                  let surah = quranData.surah(surahID),
+                  let ayah = quranData.ayah(surah: surahID, ayah: ayahID)
+            else { continue }
+            cited.append((surah, ayah))
+            if cited.count == 10 { break }
+        }
+        return cited
+    }
+
+    /// "ASK AI" with the sparkles glyph; the pill counts the answer's cited ayahs once they exist.
+    private func askAIHeader(citedCount: Int) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "sparkles")
+            
+            Text("ASK AI")
+
+            Spacer()
+
+            if citedCount > 0 {
+                Text(String(citedCount))
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .conditionalGlassEffect()
+                    .padding(.vertical, -16)
+            }
+        }
+        .foregroundStyle(settings.accentColor.color)
+    }
+
+    /// The grounded Ask experience as ONE section pinned ABOVE the surah results: the one-tap prompt
+    /// row before it runs, the streamed answer WITH its cited ayahs (real tappable rows) after - the
+    /// citations are the answer's receipts, so they live in the same section, not a separate one.
+    /// ALWAYS present while searching (even for "5:6" references and zero-result queries) - the ask is
+    /// an invitation, not a result.
+    @ViewBuilder
+    private func askAISection(context: SearchDisplayContext) -> some View {
+        if context.isSearching,
+           quranData.isVerseSearchReady,
+           OnDeviceAsk.isAvailable {
+            if askNoAnswer {
+                // The tapped ask found nothing to ground on (or the model declined): answer with a
+                // clear dead-end instead of silently restoring the prompt row.
+                Section(header: askAIHeader(citedCount: 0)) {
+                    askNoAnswerRow
+                }
+            } else if !askRanForQuery.isEmpty {
+                let cited = askCitedAyahs
+                Section(header: askAIHeader(citedCount: cited.count)) {
+                    AskAnswerCard(answer: askAnswer, isStreaming: askIsStreaming)
+
+                    ForEach(Array(cited.enumerated()), id: \.offset) { _, item in
+                        pageJuzAyahRow(item: item)
+                    }
+                }
+            } else {
+                Section(header: askAIHeader(citedCount: 0)) {
+                    askPromptRow
+                }
+            }
+        }
+    }
+
+    /// Shown when a manual ask dead-ends: nothing retrieved matched the query, so there was nothing to
+    /// answer from. Editing the query clears it (`runAsk` resets `askNoAnswer` on every run).
+    private var askNoAnswerRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "questionmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("AI couldn't find anything in the Quran matching \u{201C}\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D}. Try different wording.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .conditionalGlassEffect(clear: true, rectangle: true)
+    }
+
+    /// Debounced semantic query - runs alongside (never instead of) the keyword pipeline, so AI results
+    /// sit at the top while the exhaustive keyword sections stay below them.
+    private func runAISearch(query: String) {
+        aiSearchTask?.cancel()
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard SemanticSearchEngine.isSupported,
+              trimmed.count >= 3, !trimmed.containsArabicLetters,
+              getSurahAndAyah(from: trimmed).surah == nil else {
+            if !aiHits.isEmpty { aiHits = [] }
+            return
+        }
+        prepareQuranSemanticCorpus()
+        let corpusID = quranSemanticCorpusID
+
+        aiSearchTask = Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            let results = await semanticEngine.search(corpusID: corpusID, query: trimmed, limit: 12)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard trimmed == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+                // Not animated - see the SearchBar binding note (collection-view assertion).
+                aiHits = results.compactMap { result in
+                    guard Self.semanticAyahMap.indices.contains(result.index) else { return nil }
+                    let ref = Self.semanticAyahMap[result.index]
+                    return AISearchHit(surah: ref.surah, ayah: ref.ayah, score: result.score)
+                }
+            }
+        }
+    }
+    #endif
 
     private static let arFormatter: NumberFormatter = {
         let f = NumberFormatter()
         f.locale = Locale(identifier: "ar")
         return f
     }()
-    
+
     func arabicToEnglishNumber(_ arabicNumber: String) -> Int? {
         QuranView.arFormatter.number(from: arabicNumber)?.intValue
     }
-    
+
     var lastReadSurah: Surah? {
         quranData.surah(settings.lastReadSurah)
     }
@@ -93,13 +584,18 @@ struct QuranView: View {
         }
         return (nil, nil)
     }
-    
+
     /// Verse hits sorted by surah, then ayah (search results are always grouped by surah).
+    /// Deduped by entry id as the last line of defense: a duplicate id inside a `ForEach` is undefined
+    /// behavior, and during an ANIMATED List update (results apply with `withAnimation`) it hard-crashes
+    /// the diff - the ayah-search crash that survived the off-main-read fix.
     private var verseHitsGroupedBySurah: [(surahId: Int, hits: [VerseIndexEntry])] {
         var grouped = [Int: [VerseIndexEntry]]()
         var orderedSurahIDs: [Int] = []
+        var seenIDs = Set<String>()
 
         for hit in verseHits {
+            guard seenIDs.insert(hit.id).inserted else { continue }
             if grouped[hit.surah] == nil {
                 grouped[hit.surah] = []
                 orderedSurahIDs.append(hit.surah)
@@ -111,6 +607,15 @@ struct QuranView: View {
             guard let hits = grouped[sid] else { return nil }
             return (sid, hits)
         }
+    }
+
+    /// Removes duplicate entries (same id) while keeping order. Duplicates arise when offset-paginated
+    /// pages are fetched against an index that was rebuilt in between (qiraah/translation/settings
+    /// change), so page N+1 can re-contain entries already shown - and duplicate ForEach ids crash
+    /// animated List diffs. Applied at every point that writes `verseHits`.
+    private func dedupedHits(_ hits: [VerseIndexEntry]) -> [VerseIndexEntry] {
+        var seen = Set<String>()
+        return hits.filter { seen.insert($0.id).inserted }
     }
 
     private struct PageJuzQuery {
@@ -229,9 +734,15 @@ struct QuranView: View {
         }
     }
 
+    /// Compiled once: this is reached from a computed property evaluated on every body pass, and
+    /// `NSRegularExpression` construction is not cheap enough to redo per render.
+    private static let surahCountQueryRegex = try? NSRegularExpression(
+        pattern: #"(?:^|\s)(<=|>=|==|<|>)?\s*([0-9٠-٩]+)\s*(ayah|ayahs|aayah|aayahs|ay|page|pages|pg|pgs)\b"#,
+        options: [.caseInsensitive]
+    )
+
     private func parseSurahCountQuery(from raw: String) -> SurahCountQuery? {
-        let pattern = #"(?:^|\s)(<=|>=|==|<|>)?\s*([0-9٠-٩]+)\s*(ayah|ayahs|aayah|aayahs|ay|page|pages|pg|pgs)\b"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        guard let regex = Self.surahCountQueryRegex else { return nil }
 
         let nsRange = NSRange(raw.startIndex..<raw.endIndex, in: raw)
         let matches = regex.matches(in: raw, options: [], range: nsRange)
@@ -288,6 +799,19 @@ struct QuranView: View {
             return [surah]
         }
 
+        // An "X:Y" reference offers BOTH surah readings: "2:50" shows Surah 2 and Surah 50 (Y only when
+        // it is itself a valid surah number - "2:280" shows just Surah 2). The exact-ayah 2:50 row still
+        // renders separately above.
+        let referenceParts = trimmed.split(separator: ":").map { $0.trimmingCharacters(in: .whitespaces) }
+        if referenceParts.count == 2,
+           let first = Int(referenceParts[0]) ?? arabicToEnglishNumber(referenceParts[0]),
+           let second = Int(referenceParts[1]) ?? arabicToEnglishNumber(referenceParts[1]) {
+            var results: [Surah] = []
+            if (1...114).contains(first), let surah = quranData.surah(first) { results.append(surah) }
+            if (1...114).contains(second), second != first, let surah = quranData.surah(second) { results.append(surah) }
+            if !results.isEmpty { return results }
+        }
+
         return quranData.filteredSurahs(query: query)
     }
 
@@ -321,9 +845,65 @@ struct QuranView: View {
             }
         }
     }
-    
+
     @State private var path: [QuranRoute] = []
+    /// Guards the once-per-appearance auto-open of the mushaf when page mode is already on.
+    @State private var didAutoOpenMushaf = false
     @State private var selectedRoute: QuranRoute?
+    /// Bumped to move the keyboard into the search bar - see `QuranSearchHandoff`.
+    @State private var searchFocusRequestID = 0
+    /// True while the page-mode toggle is paginating in the background (the button shows a spinner).
+    @State private var isPreparingPageMode = false
+    /// Drives the "Switch to Page/List View?" confirmation before the reading mode actually flips.
+    @State private var showReadingModeConfirm = false
+    /// Apple Music-style bar minimization: true while the user scrolls down (see `collapseBarsOnScroll`).
+    @State private var barsCollapsed = false
+
+    /// Flip between the list reader and the mushaf. Opening the mushaf cold paginates all ~6,236 ayahs, so
+    /// that runs off-main with the toolbar button showing a spinner; the mode flips the moment the pages
+    /// exist. Confirmed via `showReadingModeConfirm` before this runs.
+    private func performReadingModeToggle() {
+        #if os(iOS)
+        let openingMushaf = !settings.quranPageMode
+        if openingMushaf, !MushafPagination.isBuilt(quran: quranData.quran, qiraah: settings.displayQiraahForArabic) {
+            guard !isPreparingPageMode else { return }
+            isPreparingPageMode = true
+            Task {
+                await MushafPagination.buildInBackground(quran: quranData.quran, qiraah: settings.displayQiraahForArabic)
+                isPreparingPageMode = false
+                withAnimation { settings.quranPageMode = true }
+                openMushafWhereLeftOff()
+            }
+        } else {
+            withAnimation { settings.quranPageMode.toggle() }
+            if openingMushaf { openMushafWhereLeftOff() }
+        }
+        #else
+        withAnimation { settings.quranPageMode.toggle() }
+        #endif
+    }
+
+    /// A reader asked for the Quran search: come back out to the surah list, carry its query into the search
+    /// bar and open the keyboard on it. From there the hit rows navigate straight back into whichever reader
+    /// the user has on (list or mushaf), so this is a round trip, not a dead end.
+    #if os(iOS)
+    /// When a push targets a specific ayah while a text query is typed, hand the query to the arriving
+    /// reader (AyahArrivalTerm ignores reference queries like "5:5" itself).
+    private func stashArrivalTerm(for route: QuranRoute?) {
+        guard case let .ayahs(surahID, ayahID?) = route else { return }
+        AyahArrivalTerm.shared.set(term: searchText, surahID: surahID, ayahID: ayahID)
+    }
+    #endif
+
+    private func runHandedOffSearch(_ query: String) {
+        #if os(iOS)
+        path.removeAll()
+        selectedRoute = nil
+        #endif
+        searchText = query
+        searchFocusRequestID += 1
+        searchHandoff.clear()
+    }
 
     func push(surahID: Int, ayahID: Int? = nil) {
         #if os(iOS)
@@ -337,34 +917,91 @@ struct QuranView: View {
         }
         #endif
     }
-    
+
+    /// Turning reading mode on opens the mushaf where you stopped: the reader resolves the page from the
+    /// last-read ayah, so the page and the ayah can't drift apart. Nothing read yet means Al-Fatiha.
+    private func openMushafWhereLeftOff() {
+        #if os(iOS)
+        guard usesColumnNavigation || path.isEmpty else { return }
+
+        if settings.lastReadSurah > 0,
+           settings.lastReadAyah > 0,
+           quranData.surah(settings.lastReadSurah) != nil {
+            push(surahID: settings.lastReadSurah, ayahID: settings.lastReadAyah)
+        } else {
+            push(surahID: 1)
+        }
+        #endif
+    }
+
+    // Both fetchers split the work by thread-safety, not by cost: the snapshot HANDOFF happens on the main
+    // actor (it reads live index arrays whose writers publish on main - reading them from this Task's
+    // background thread was the search crash), and the actual scan runs detached on the snapshot's immutable
+    // copies, so typing never blocks on it.
     private func fetchHitsOffMain(query: String, limit: Int, offset: Int) async -> ([VerseIndexEntry], Bool) {
-        guard let snapshot = quranData.verseSearchSnapshot() else {
+        let quranData = self.quranData
+        guard let snapshot = await MainActor.run(body: { quranData.verseSearchSnapshot() }) else {
             return ([], false)
         }
 
-        return await Task.detached(priority: .userInitiated) {
+        // Bridge cancellation into the DETACHED scan: detached tasks don't inherit it, so the scan's
+        // own `Task.isCancelled` early-out never fired - cancelling `ayahSearchTask` on the next
+        // keystroke left every abandoned full-corpus scan running to completion (and fast typing piled
+        // them up concurrently, the exact Low-Power-Mode burn the guard was written to prevent).
+        let scan = Task.detached(priority: .userInitiated) {
             let page = snapshot.search(term: query, limit: limit + 1, offset: offset)
             let more = page.count > limit
             return (Array(page.prefix(limit)), more)
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await scan.value
+        } onCancel: {
+            scan.cancel()
+        }
     }
 
     private func fetchAllHitsOffMain(query: String) async -> [VerseIndexEntry] {
-        guard let snapshot = quranData.verseSearchSnapshot() else {
+        let quranData = self.quranData
+        guard let snapshot = await MainActor.run(body: { quranData.verseSearchSnapshot() }) else {
             return []
         }
 
-        return await Task.detached(priority: .userInitiated) {
+        let scan = Task.detached(priority: .userInitiated) {
             snapshot.search(term: query, limit: .max, offset: 0)
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await scan.value
+        } onCancel: {
+            scan.cancel()
+        }
+    }
+
+    /// Folds the exact strings the result rows are about to render, off the main thread, so each row's first
+    /// body evaluation hits the highlight cache instead of paying the fold during scrolling. The strings are
+    /// resolved HERE (on main - they come from published Quran data); only the folding leaves the main thread.
+    private func prewarmHighlightCaches(for hits: [VerseIndexEntry]) {
+        var sources: [String] = []
+        sources.reserveCapacity(hits.count * 4)
+        for hit in hits {
+            guard quranData.surah(hit.surah) != nil,
+                  let ayah = quranData.ayah(surah: hit.surah, ayah: hit.ayah) else { continue }
+            sources.append(ayah.displayArabicText(surahId: hit.surah, clean: settings.cleanArabicText))
+            sources.append(ayah.textTransliteration)
+            sources.append(ayah.textEnglishSaheeh)
+            sources.append(ayah.textEnglishMustafa)
+        }
+        guard !sources.isEmpty else { return }
+        let list = sources
+        Task.detached(priority: .userInitiated) {
+            HighlightedSnippet.prewarmNormalization(of: list)
+        }
     }
 
     private func clearAyahSearchState() {
-        withAnimation {
-            verseHits = []
-            hasMoreHits = false
-        }
+        // Not animated: search-driven List mutations stay transactionless (see the SearchBar binding
+        // note) - an animated clear racing an in-flight result apply is the collection-view assertion.
+        verseHits = []
+        hasMoreHits = false
     }
 
     private var shouldShowSearchHelpOverlay: Bool {
@@ -430,18 +1067,24 @@ struct QuranView: View {
             .buttonStyle(.plain)
 
             if showAyahSearchLearnMore {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Plain text matches anywhere (substring): 'رب' also finds 'ربهم'")
-                    Text("Use =term for whole words / a phrase: '=رب' finds the word رب, not ربهم")
-                    Text("Use #term for an exact substring (case- and tashkeel-sensitive)")
-                    Text("Use ^term for starts-with and term% for ends-with")
-                    Text("Boolean operators: & (AND), | (OR), ! (NOT)")
-                    Text("Count filters: 'X ayahs/pages', '<X', '>X', '<=X', '>=X', '==X'")
-                    Text("Juz names work too: Arabic or transliteration")
-                    Text("Example: =Allah & mercy%")
+                // Scrollable and capped: the full guide is taller than what's left of the screen under
+                // the search bar, so the expanded part scrolls within the card instead of clipping.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Plain text matches anywhere (substring): 'رب' also finds 'ربهم'")
+                        Text("Use =term for whole words / a phrase: '=رب' finds the word رب, not ربهم")
+                        Text("Use #term for an exact substring (case- and tashkeel-sensitive)")
+                        Text("Use ^term for starts-with and term% for ends-with")
+                        Text("Boolean operators: & (AND), | (OR), ! (NOT)")
+                        Text("Count filters: 'X ayahs/pages', '<X', '>X', '<=X', '>=X', '==X'")
+                        Text("Juz names work too: Arabic or transliteration")
+                        Text("Example: =Allah & mercy%")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .frame(maxHeight: 180)
             }
         }
         .padding(14)
@@ -467,11 +1110,50 @@ struct QuranView: View {
             quranPlayer.playbackAlertTitle,
             isPresented: $quranPlayer.showInternetAlert,
             titleVisibility: .visible
-        ) { Button("OK") { } } message: {
+        ) {
+            if let offer = quranPlayer.offlineReciterSwitch {
+                Button("Play \(offer.suggested.name)") { quranPlayer.acceptOfflineReciterSwitch() }
+            }
+            Button("OK") { quranPlayer.offlineReciterSwitch = nil }
+        } message: {
             Text(quranPlayer.playbackAlertMessage)
         }
         .task {
             prewarmQuranDestinations()
+            #if os(iOS)
+            // Build (or disk-load) the AI search index AHEAD of the first search - by the time anyone
+            // types, it's ready and the "Preparing" row never shows.
+            Task {
+                await quranData.waitUntilCoreLoaded()
+                prepareQuranSemanticCorpus()
+            }
+            #endif
+            #if os(iOS)
+            // If the reader is already in page mode when the Quran tab is first built, resume in the mushaf at
+            // the last-read ayah's page. Guarded so backing out to the list doesn't immediately re-open it.
+            // The pagination is awaited OFF-main first: this task races the launch prewarm, and whichever
+            // loses used to pay the full 6,236-ayah build synchronously inside the reader's first body -
+            // main-thread work that landed exactly on the first switch into this tab.
+            if settings.quranPageMode, !didAutoOpenMushaf {
+                didAutoOpenMushaf = true
+                await MushafPagination.buildInBackground(quran: quranData.quran, qiraah: settings.displayQiraahForArabic)
+                openMushafWhereLeftOff()
+            }
+            #endif
+        }
+        // Coming BACK to the Quran tab (from Adhan, Settings, ...) while page mode is on re-opens the mushaf -
+        // but only when the tab was left sitting on the surah list with no reader open. `openMushafWhereLeftOff`
+        // can't make that call itself: on iPad it deliberately re-points the detail column whatever is in it,
+        // which would throw an iPad user off whatever they had open every time they came back to the tab.
+        .onChange(of: isActiveTab) { active in
+            #if os(iOS)
+            guard active, settings.quranPageMode, path.isEmpty, selectedRoute == nil else { return }
+            openMushafWhereLeftOff()
+            #endif
+        }
+        .onChange(of: searchHandoff.pendingQuery) { query in
+            guard let query else { return }
+            runHandedOffSearch(query)
         }
         .onDisappear {
             ayahSearchTask?.cancel()
@@ -495,7 +1177,7 @@ struct QuranView: View {
         // first so the most likely next tap is ready, then the rest fill in slowly in the background.
         Task(priority: .utility) { @MainActor in
             // This whole prewarm runs on the main actor (it reads `settings`/builds caches), so doing it the
-            // instant the tab appears stalls the FIRST render — the main cause of "opening Quran feels slow".
+            // instant the tab appears stalls the FIRST render - the main cause of "opening Quran feels slow".
             // Wait for the first render to settle before warming anything, so the list paints immediately and
             // caches fill in afterward. (Cancelled automatically if the user leaves the tab.)
             try? await Task.sleep(nanoseconds: 450_000_000)
@@ -512,10 +1194,10 @@ struct QuranView: View {
             }
 
             // The broad prewarm scans all 114 surahs. This `Task` is unstructured (not tied to `.task`), so
-            // leaving and re-entering the Quran tab — common on iPad/Mac split view — would otherwise spawn
+            // leaving and re-entering the Quran tab - common on iPad/Mac split view - would otherwise spawn
             // overlapping full prewarm passes. Run it at most once per session; caches are rebuilt lazily on
             // demand afterward, so correctness is unaffected.
-            // Shared with the app-root prewarm that fires when the Adhan tab appears — whichever finishes the
+            // Shared with the app-root prewarm that fires when the Adhan tab appears - whichever finishes the
             // full sweep first sets the flag, and the other skips it (no duplicate pass).
             guard shouldPrewarmAllQuranDestinations, !QuranData.didBroadPrewarm else { return }
 
@@ -532,7 +1214,7 @@ struct QuranView: View {
     private var shouldPrewarmAllQuranDestinations: Bool {
         !AppPerformance.shouldAvoidBroadPrewarm
     }
-    
+
     private var navigationContainer: some View {
         Group {
             #if os(iOS)
@@ -609,11 +1291,20 @@ struct QuranView: View {
         return .ayahs(surahID: 1, ayah: nil)
     }
 
+    /// UNIVERSAL now, not column-only: on iPhone this pushes through the same `push` every other row
+    /// uses. It used to return nil there, which dropped rows into their internal legacy
+    /// `NavigationLink(destination:)` fallback - dead inside this NavigationStack container, which is
+    /// exactly why the one-verse exact match "wouldn't open".
     private var columnAyahSelectionHandler: ((Int, Int) -> Void)? {
         #if os(iOS)
-        return usesColumnNavigation ? { surahID, ayahID in
-            selectedRoute = .ayahs(surahID: surahID, ayah: ayahID)
-        } : nil
+        if usesColumnNavigation {
+            return { surahID, ayahID in
+                selectedRoute = .ayahs(surahID: surahID, ayah: ayahID)
+            }
+        }
+        return { surahID, ayahID in
+            push(surahID: surahID, ayahID: ayahID)
+        }
         #else
         return nil
         #endif
@@ -692,32 +1383,49 @@ struct QuranView: View {
             )
         }
     }
-    
+
+    /// Heap-box a section subtree. `content` is ONE expression: without boxing, every section's ENTIRE
+    /// generic view value materializes together on `content.getter`'s single stack frame - which
+    /// overflowed the device main thread's 1MB stack (EXC_BAD_ACCESS code=2 at a guard-page address)
+    /// the moment the tab built under the launch cover. The simulator's 8MB main stack hid it entirely.
+    /// AnyView stores the subtree on the heap, so the frame holds pointers instead of megabyte values;
+    /// each wrapped position keeps a stable underlying type, so List diffing is unaffected.
+    private func boxed<V: View>(_ view: V) -> AnyView { AnyView(view) }
+
     var content: some View {
         ScrollViewReader { scrollProxy in
             let context = searchDisplayContext
 
             List {
                 Group {
-                    primaryHistorySections(context: context)
-                    bookmarkSection(context: context)
-                    favoriteSection(context: context)
+                    boxed(primaryHistorySections(context: context))
+                    boxed(bookmarkSection(context: context))
+                    boxed(favoriteSection(context: context))
                     // Only hoist page/juz above the surah list for EXPLICIT "page X" / "juz Y" queries
                     // (where surahContentSections is empty anyway). For a bare number, the surah match
                     // comes first and the compact page/juz results follow below (in searchResultSections).
                     if context.explicitPageOrJuzMode && context.isSearching {
-                        pageSearchSection(context: context)
-                        juzSearchSection(context: context)
+                        boxed(pageSearchSection(context: context))
+                        boxed(juzSearchSection(context: context))
                     }
-                    surahContentSections(context: context)
-                    searchResultSections(context: context)
+                    // Ask AI sits ABOVE the surah results: the question (and its answer + cited ayahs)
+                    // is the most deliberate thing on the page when it's there at all.
+                    #if os(iOS)
+                    boxed(askAISection(context: context))
+                    #endif
+                    // Surah matches first, ayah results below - always the same order, so the eye
+                    // never has to re-learn the page.
+                    boxed(surahContentSections(context: context))
+                    boxed(searchResultSections(context: context))
                 }
                 .themedListRowBackground()
             }
             .applyConditionalListStyle(disableNowPlayingInset: true)
             .compactListSectionSpacing()
             .listSectionIndexVisibilityWhenAvailable(visible: settings.quranSortMode == .juz && searchText.isEmpty)
-            // No list-level `.animation(...)` here — it makes lazily-loaded rows stutter while scrolling
+            // Apple Music-style: the bottom bar minimizes while scrolling down, restores on scroll-up.
+            .collapseBarsOnScroll($barsCollapsed)
+            // No list-level `.animation(...)` here - it makes lazily-loaded rows stutter while scrolling
             // (SurahView has none). The sort-change transition is already animated at the toggle sites via
             // `withAnimation` in `sortModeButton` / the sort-direction picker.
             #if os(watchOS)
@@ -725,7 +1433,35 @@ struct QuranView: View {
             #endif
             .onChange(of: searchText) { txt in
                 handleAyahSearchChange(txt)
+                #if os(iOS)
+                runAISearch(query: txt)
+                runAskIfNeeded(query: txt)
+                #endif
             }
+            #if os(iOS)
+            // Focusing the search field starts the one-time AI vector build (or its disk load) EARLY, so
+            // by the time a query is typed the semantic results usually appear with the keyword ones.
+            .onChange(of: isQuranSearchFocused) { focused in
+                if focused { prepareQuranSemanticCorpus() }
+            }
+            // The one-time vector build finishing mid-query: re-run the pending AI search so the results
+            // appear the moment the corpus is ready, without another keystroke.
+            .onChange(of: semanticEngine.readyCorpora) { ready in
+                guard ready.contains(quranSemanticCorpusID) else { return }
+                runAISearch(query: searchText)
+            }
+            #endif
+            #if os(iOS)
+            // The moment an ayah push happens while a TEXT search is live, the query travels with it so
+            // the destination colors the matched snippet. Route-level, not gesture-level: a tap gesture
+            // on the row (even simultaneous) blocked the NavigationLink from firing at all.
+            .onChange(of: path) { newPath in
+                stashArrivalTerm(for: newPath.last)
+            }
+            .onChange(of: selectedRoute) { newRoute in
+                stashArrivalTerm(for: newRoute)
+            }
+            #endif
             .onChange(of: quranData.isVerseSearchReady) { isReady in
                 guard isReady else { return }
                 handleAyahSearchChange(searchText, debounce: false)
@@ -739,69 +1475,36 @@ struct QuranView: View {
                 guard id > 0 else { return }
                 // Grid mode (a LazyVGrid added after 4.4.4) can't scroll to off-screen tiles, so flip to list
                 // first. Otherwise this is exactly the Version 4.4.4 scroll, which felt right: one delayed,
-                // animated scrollTo — no retry loop, no settle attempts.
-                if settings.quranGridMode { settings.quranGridMode = false }
+                // animated scrollTo - no retry loop, no settle attempts.
+                if settings.gridMode { settings.gridMode = false }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     withAnimation {
                         scrollProxy.scrollTo("surah_\(id)", anchor: .top)
                     }
                 }
             }
-            
+
         }
         .navigationTitle("Al-Quran")
         #if os(iOS)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                // Page mode changes nothing here — it only decides whether opening a surah reads as swipeable
-                // mushaf pages or as the scrolling ayah list.
-                Button {
-                    settings.hapticFeedback()
-                    withAnimation { settings.quranPageMode.toggle() }
-                } label: {
-                    Image(systemName: settings.quranPageMode ? "list.bullet.rectangle" : "book")
-                }
-                .accessibilityLabel(settings.quranPageMode ? "Read surahs as a list" : "Read surahs as pages")
-            }
-
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button {
-                    settings.hapticFeedback()
-                    withAnimation { settings.quranGridMode.toggle() }
-                } label: {
-                    Image(systemName: settings.quranGridMode ? "list.bullet" : "square.grid.2x2")
-                }
-                .accessibilityLabel(settings.quranGridMode ? "Show lists" : "Show grids")
-            }
-
-            ToolbarItem(placement: .navigationBarTrailing) {
-                if settings.quranSortMode == .khatm {
-                    Button {
-                        settings.hapticFeedback()
-                        withAnimation {
-                            khatmEditMode.toggle()
-                        }
-                    } label: {
-                        Image(systemName: khatmEditMode ? "checkmark" : "square.and.pencil")
-                    }
-                    .accessibilityLabel(khatmEditMode ? "Done" : "Edit")
-                }
-            }
-
-            ToolbarItem(placement: .navigationBarTrailing) {
-                // On iPad/Mac the open-surah (detail) pane provides the settings gear; avoid a duplicate gear
-                // in the sidebar list when using side-by-side column navigation. (The condition lives inside
-                // the ToolbarItem so the toolbar content stays non-optional, keeping pre-iOS 16 support.)
-                if !usesColumnNavigation {
-                    Button {
-                        settings.hapticFeedback()
-                        showingSettingsSheet = true
-                    } label: {
-                        Image(systemName: "gear")
-                    }
-                }
-            }
-        }
+        // Reading-mode toggle + Quran Planner. Separate modifier for the same reason as the trailing
+        // toolbar: iOS 26 needs a ToolbarSpacer between the items so Liquid Glass doesn't merge them
+        // into one capsule, and ToolbarContentBuilder can't branch on availability inline.
+        .modifier(QuranLeadingToolbar(
+            showReadingModeConfirm: $showReadingModeConfirm,
+            isPreparingPageMode: isPreparingPageMode,
+            performReadingModeToggle: performReadingModeToggle,
+            push: { surahID, ayahID in push(surahID: surahID, ayahID: ayahID) }
+        ))
+        // The trailing buttons live in their own modifier so iOS 26 can interleave ToolbarSpacers between
+        // them - without spacers, Liquid Glass merges adjacent trailing items into ONE capsule. (A separate
+        // view-level branch because ToolbarContentBuilder can't branch on availability while the app deploys
+        // to iOS 15.)
+        .modifier(QuranTrailingToolbar(
+            khatmEditMode: $khatmEditMode,
+            showingSettingsSheet: $showingSettingsSheet,
+            usesColumnNavigation: usesColumnNavigation
+        ))
         .sheet(isPresented: $showingSettingsSheet) {
             NavigationView { SettingsQuranView(presentedAsSheet: true) }
                 .smallMediumSheetPresentation()
@@ -845,7 +1548,7 @@ struct QuranView: View {
         }
         #endif
     }
-    
+
     @ViewBuilder
     private var nowPlayingInset: some View {
         #if os(iOS)
@@ -867,6 +1570,8 @@ struct QuranView: View {
                     }
                 }
             }
+            // The mini player minimizes with the rest of the bars.
+            .minimizedBarStyle(barsCollapsed && !isQuranSearchFocused)
             .padding(.horizontal, 24)
             .padding(.bottom, active ? 8 : 0)
             .background(Color.white.opacity(0.00001))
@@ -875,20 +1580,44 @@ struct QuranView: View {
         #endif
     }
 
+    @ViewBuilder
     private var bottomControls: some View {
         #if os(iOS)
+        // Apple Music-style: while scrolling down, the secondary rows fold away and the search row shrinks;
+        // scrolling up (or typing) brings everything back. Never minimized mid-search. The rows STAY MOUNTED
+        // and collapse via height+opacity - `if` insertion/removal snapshots their glass as hard black boxes.
+        // Scroll-collapse is OFF: the sort row stays put while scrolling.
+        // (Was: `!barsCollapsed || isQuranSearchFocused` - restore to fold it away again.)
+        let secondaryVisible = true
+        let chipsVisible = secondaryVisible && isQuranSearchFocused && !settings.quranSearchHistory.isEmpty
+
         VStack(spacing: SafeAreaInsetVStackSpacing.standard) {
             searchHistoryChips
+                .frame(height: chipsVisible ? nil : 0)
+                .clipped()
+                .opacity(chipsVisible ? 1 : 0)
+                .allowsHitTesting(chipsVisible)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: chipsVisible)
             sortControls
+                .frame(height: secondaryVisible ? nil : 0)
+                .clipped()
+                .opacity(secondaryVisible ? 1 : 0)
+                .allowsHitTesting(secondaryVisible)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: secondaryVisible)
             searchAndPlaybackRow
+                .minimizedBarStyle(barsCollapsed && !isQuranSearchFocused)
         }
+        // Value-gated spring, INSIDE the keyboard transaction-strip below (inner modifiers win): without it
+        // the strip also swallowed the collapse animation and the sort row popped in and out as a hard box.
+        // Being value-gated, it never touches the keyboard-driven position changes the strip exists for.
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: barsCollapsed)
         .padding(.horizontal, 24)
         .padding(.bottom, 8)
         .background(Color.white.opacity(0.00001))
         // Strip the inherited animation transaction so this bottom bar SNAPS to its keyboard-driven position
         // instead of easing on its own curve. Dismissing the keyboard on scroll fires onFocusChanged →
         // `withAnimation { isQuranSearchFocused = … }`, whose easeInOut then collides with the keyboard's own
-        // frame animation on the same bar — the "weird" lurch. Same `.transaction { $0.animation = nil }` fix
+        // frame animation on the same bar - the "weird" lurch. Same `.transaction { $0.animation = nil }` fix
         // as NowPlayingView's progress bar; the keyboard supplies the motion, so the bar tracks it cleanly.
         .transaction { $0.animation = nil }
         #else
@@ -896,15 +1625,15 @@ struct QuranView: View {
         #endif
     }
 
+    /// Always mounted; visibility is driven by the caller via height+opacity. An `if` insertion/removal
+    /// snapshots the glass chips as hard black boxes - Liquid Glass can't participate in view transitions.
     @ViewBuilder
     private var searchHistoryChips: some View {
         #if os(iOS)
-        if isQuranSearchFocused && !settings.quranSearchHistory.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(settings.quranSearchHistory, id: \.self) { query in
-                        searchHistoryChip(query: query)
-                    }
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(settings.quranSearchHistory, id: \.self) { query in
+                    searchHistoryChip(query: query)
                 }
             }
         }
@@ -915,11 +1644,9 @@ struct QuranView: View {
         HStack(spacing: 4) {
             Button {
                 settings.hapticFeedback()
-                withAnimation {
-                    searchText = query
-                    settings.addQuranSearchHistory(query)
-                    self.endEditing()
-                }
+                searchText = query
+                settings.addQuranSearchHistory(query)
+                self.endEditing()
             } label: {
                 Text(query)
                     .font(.caption)
@@ -966,7 +1693,7 @@ struct QuranView: View {
         } else {
             // Bind to the stored @AppStorage raw via its projected binding (like SettingsView's color-theme
             // picker). A hand-rolled Binding(get:set:) closure over `settings` does NOT drive a segmented
-            // Picker's selection here — the segment never commits — which is why this used to refuse to switch.
+            // Picker's selection here - the segment never commits - which is why this used to refuse to switch.
             Picker("Sort Direction", selection: $settings.quranSortDirectionRaw.animation(.easeInOut)) {
                 ForEach(sortDirectionOptions) { direction in
                     Text(direction.title)
@@ -989,7 +1716,7 @@ struct QuranView: View {
     private var khatmGroupingPicker: some View {
         #if os(iOS)
         // Projected @AppStorage binding (like ArabicView's font picker). A custom Binding(get:set:) closure
-        // wouldn't commit the segment here — that was the "can't switch to Juz" bug.
+        // wouldn't commit the segment here - that was the "can't switch to Juz" bug.
         Picker("Khatm Grouping", selection: $settings.khatmGroupByJuz.animation(.easeInOut)) {
             Text("Surah")
                 .accessibilityLabel("Group by Surah")
@@ -1093,8 +1820,13 @@ struct QuranView: View {
         HStack(spacing: 0) {
             quranSearchBar
 
-            playbackMenuButton
-                .padding(.bottom, 2)
+            // While the search field is focused, the playback menu slides away so the field takes the whole
+            // width - you're searching, not reaching for playback.
+            if !isQuranSearchFocused {
+                playbackMenuButton
+                    .padding(.bottom, 2)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
         }
         .padding(.leading, -8)
         .padding(.top, UIDevice.current.userInterfaceIdiom == .pad ? 0 : -8)
@@ -1106,7 +1838,15 @@ struct QuranView: View {
     private var quranSearchBar: some View {
         #if os(iOS)
         SearchBar(
-            text: $searchText.animation(.easeInOut),
+            // PLAIN binding, permanently. The animated binding came back once the duplicate-id crash was
+            // closed - and the search still crashed: UICollectionView's update assertion fires when an
+            // animated structural diff (sections appearing/disappearing per keystroke) interleaves with
+            // the in-flight diffs of the async result pipelines (keyword at 150ms, AI at 250ms, Ask at
+            // 900ms - each landing in its own transaction). See the crash log's recursive
+            // `_updateVisibleCellsNow` → `_invalidateLayoutWithContext` → assertion. Every searchText-
+            // driven List mutation is now transactionless; the type/delete/type crash dies with it.
+            text: $searchText,
+            focusRequestID: searchFocusRequestID,
             onSearchButtonClicked: {
                 self.endEditing()
             },
@@ -1135,7 +1875,7 @@ struct QuranView: View {
             if quranPlayer.isLoading || quranPlayer.isPlaying || quranPlayer.isPaused {
                 Button {
                     settings.hapticFeedback()
-                    // Fully stop whether loading or playing — a loading tap used to only pause the in-flight
+                    // Fully stop whether loading or playing - a loading tap used to only pause the in-flight
                     // load, which could then resume on its own.
                     quranPlayer.stop()
                 } label: {
@@ -1187,6 +1927,17 @@ struct QuranView: View {
     @ViewBuilder
     private var playbackMenuContent: some View {
         #if os(iOS)
+        // Reciter picker pinned to the very top, with a divider under it - the placement wanted for the
+        // page-mode play menu, mirrored here so the reciter is the first thing every play menu offers.
+        Button {
+            settings.hapticFeedback()
+            showReciterPickerSheet = true
+        } label: {
+            Label("Choose Reciter", systemImage: "headphones")
+        }
+
+        Divider()
+
         if let last = settings.lastListenedSurah,
               let surah = quranData.surah(last.surahNumber) {
             Button {
@@ -1227,13 +1978,7 @@ struct QuranView: View {
         } label: {
             Label("Play Random Ayah", systemImage: "shuffle.circle")
         }
-        
-        Button {
-            settings.hapticFeedback()
-            showReciterPickerSheet = true
-        } label: {
-            Label("Choose Reciter", systemImage: "headphones")
-        }
+        // (Choose Reciter now lives at the TOP of this menu.)
         #endif
     }
 
@@ -1242,7 +1987,7 @@ struct QuranView: View {
         #if os(iOS)
         if settings.quranSummaryMode {
             if context.isSearching == false {
-                summaryTilesSection(context: context)
+                boxed(summaryTilesSection(context: context))
             }
         } else {
             // Order: Ayah of the Day · Last Listened Surah · Last Listened Ayah · Last Read Ayah.
@@ -1332,6 +2077,118 @@ struct QuranView: View {
     }
 
     #if os(iOS)
+    /// The last ten Ayahs of the Day: today first, then back through the previous days. The picker is a pure
+    /// function of the date, so "history" needs no storage - earlier days are simply recomputed.
+    private var recentAyahsOfTheDay: [(dayLabel: String, surah: Surah, ayah: Ayah)] {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.doesRelativeDateFormatting = true
+
+        return (0..<10).compactMap { daysBack in
+            guard let date = Calendar.current.date(byAdding: .day, value: -daysBack, to: Date()),
+                  let ref = settings.ayahOfTheDayReference(for: date),
+                  let surah = quranData.surah(ref.surahID),
+                  let ayah = surah.ayahs.first(where: { $0.id == ref.ayahID })
+            else { return nil }
+            return (formatter.string(from: date), surah, ayah)
+        }
+    }
+
+    /// The rows a summary tile's plus unfolds, rendered as ordinary list rows directly below the tile grid -
+    /// the summary-mode analogue of the inline expansion the full-size rows have.
+    @ViewBuilder
+    private func summaryHistoryRows(kind: SummaryHistoryKind) -> some View {
+        switch kind {
+        case .ayahOfTheDay:
+            // Keyed by the day, not the ayah: the hash can land two days on the same ayah, and
+            // duplicate ForEach ids are undefined behavior. "Today" keeps full brightness - it IS the
+            // current ayah, not history.
+            ForEach(Array(recentAyahsOfTheDay.enumerated()), id: \.element.dayLabel) { index, entry in
+                if index == 0 {
+                    // The "Today" row IS the current ayah - full brightness, and it carries the shuffle
+                    // that replaces today's pick with a fresh random one.
+                    HStack(spacing: 8) {
+                        summaryHistoryRow(surah: entry.surah, ayah: entry.ayah, caption: entry.dayLabel, dimmed: false)
+
+                        Image(systemName: "shuffle")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(settings.accentColor.color)
+                            .frame(width: SectionPillHeader.pillHeight, height: SectionPillHeader.pillHeight)
+                            .conditionalGlassEffect(circle: true)
+                            .onTapGesture {
+                                settings.hapticFeedback()
+                                withAnimation(.easeInOut) { settings.shuffleAyahOfTheDay() }
+                            }
+                            .accessibilityLabel("Shuffle the Ayah of the Day")
+                    }
+                } else {
+                    summaryHistoryRow(surah: entry.surah, ayah: entry.ayah, caption: entry.dayLabel)
+                }
+            }
+        case .reading:
+            ForEach(quranPlayer.readingHistory) { item in
+                if let surah = quranData.surah(item.surahNumber),
+                   let ayah = surah.ayahs.first(where: { $0.id == max(1, item.ayahNumber) }) {
+                    summaryHistoryRow(surah: surah, ayah: ayah, caption: nil)
+                }
+            }
+        case .listenedAyah:
+            ForEach(quranPlayer.ayahListeningHistory) { item in
+                if let surah = quranData.surah(item.surahNumber),
+                   let ayah = surah.ayahs.first(where: { $0.id == item.ayahNumber }) {
+                    summaryHistoryRow(surah: surah, ayah: ayah, caption: item.reciter.displayNameWithEnglishQiraah)
+                }
+            }
+        case .listenedSurah:
+            ForEach(quranPlayer.listeningHistory) { item in
+                if let surah = quranData.surah(item.surahNumber) {
+                    Button {
+                        settings.hapticFeedback()
+                        push(surahID: surah.id, ayahID: nil)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(surah.id) - \(surah.nameTransliteration)")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(settings.accentColor.color)
+
+                            Text(item.reciter.displayNameWithEnglishQiraah)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .opacity(0.75)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func summaryHistoryRow(surah: Surah, ayah: Ayah, caption: String?, dimmed: Bool = true) -> some View {
+        Button {
+            settings.hapticFeedback()
+            push(surahID: surah.id, ayahID: ayah.id)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                if let caption {
+                    Text(caption)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.secondary)
+                }
+
+                SurahAyahRow(surah: surah, ayah: ayah)
+                    .equatable()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            // Same dimming the full-size rows give their unfolded history, so "current" reads brighter.
+            // (The Ayah of the Day's "Today" row passes dimmed: false - it IS the current ayah.)
+            .opacity(dimmed ? 0.75 : 1)
+        }
+        .buttonStyle(.plain)
+    }
+
     /// Compact "summary mode": all enabled history items as tappable tiles in a single section.
     /// Order: Last Read Ayah · Ayah of the Day, then Last Listened Ayah · Last Listened Surah.
     @ViewBuilder
@@ -1351,19 +2208,25 @@ struct QuranView: View {
                 spacing: 10
             ) {
                 if settings.saveLastReadAyah, let lastReadSurah, let lastReadAyah {
-                    SummaryAyahTile(title: "Last Read Ayah", icon: "book", surah: lastReadSurah, ayah: lastReadAyah, titleColor: settings.accentColor.color) {
+                    SummaryAyahTile(title: "Last Read Ayah", icon: "book", surah: lastReadSurah, ayah: lastReadAyah, titleColor: settings.accentColor.color,
+                                    isExpanded: summaryHistoryExpansion == .reading,
+                                    onExpand: quranPlayer.readingHistory.isEmpty ? nil : { toggleSummaryExpansion(.reading) }) {
                         push(surahID: lastReadSurah.id, ayahID: lastReadAyah.id)
                     }
                     .animation(.easeInOut, value: settings.lastReadSurah * 1000 + settings.lastReadAyah)
                 }
                 if showAyah, let pair = ayahOfTheDayPair {
-                    SummaryAyahTile(title: "Ayah of the Day", icon: "sparkles", surah: pair.surah, ayah: pair.ayah) {
+                    SummaryAyahTile(title: "Ayah of the Day", icon: "sparkles", surah: pair.surah, ayah: pair.ayah, titleColor: settings.accentColor.color,
+                                    isExpanded: summaryHistoryExpansion == .ayahOfTheDay,
+                                    onExpand: { toggleSummaryExpansion(.ayahOfTheDay) }) {
                         push(surahID: pair.surah.id, ayahID: pair.ayah.id)
                     }
                     .animation(.easeInOut, value: pair.surah.id * 1000 + pair.ayah.id)
                 }
                 if settings.saveLastListenedAyah, let pair = lastListenedAyahPair {
-                    SummaryAyahTile(title: "Last Listened Ayah", icon: "headphones.circle", surah: pair.surah, ayah: pair.ayah, titleColor: settings.accentColor.color) {
+                    SummaryAyahTile(title: "Last Listened Ayah", icon: "headphones.circle", surah: pair.surah, ayah: pair.ayah, titleColor: settings.accentColor.color,
+                                    isExpanded: summaryHistoryExpansion == .listenedAyah,
+                                    onExpand: quranPlayer.ayahListeningHistory.isEmpty ? nil : { toggleSummaryExpansion(.listenedAyah) }) {
                         push(surahID: pair.surah.id, ayahID: pair.ayah.id)
                     }
                     .animation(.easeInOut, value: pair.surah.id * 1000 + pair.ayah.id)
@@ -1371,13 +2234,21 @@ struct QuranView: View {
                 if settings.saveLastListenedSurah,
                    let last = settings.lastListenedSurah,
                    let surah = quranData.surah(last.surahNumber) {
-                    SummarySurahTile(title: "Last Listened Surah", icon: "headphones", surah: surah, lastListenedSurah: last, titleColor: settings.accentColor.color) {
+                    SummarySurahTile(title: "Last Listened Surah", icon: "headphones", surah: surah, lastListenedSurah: last, titleColor: settings.accentColor.color,
+                                     isExpanded: summaryHistoryExpansion == .listenedSurah,
+                                     onExpand: quranPlayer.listeningHistory.isEmpty ? nil : { toggleSummaryExpansion(.listenedSurah) }) {
                         push(surahID: surah.id, ayahID: nil)
                     }
                     .animation(.easeInOut, value: last.surahNumber)
                 }
             }
             .padding(.vertical, 4)
+
+            // The one open expansion, unfolded as plain rows right under the tiles.
+            if let kind = summaryHistoryExpansion {
+                summaryHistoryRows(kind: kind)
+                    .transition(.opacity)
+            }
         }
     }
     #endif
@@ -1390,7 +2261,7 @@ struct QuranView: View {
             }
             Section(header: bookmarkHeader(count: sortedBookmarks.count)) {
                 if settings.showBookmarks {
-                    if settings.quranGridMode {
+                    if settings.gridMode {
                         LazyVGrid(
                             columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
                             alignment: .leading,
@@ -1411,33 +2282,21 @@ struct QuranView: View {
         }
     }
 
+    /// The SHARED pill header (the Hadith tab's exact control), so bookmarks read identically across
+    /// the app - with the shuffle the hadith headers carry: open a random bookmarked ayah.
     private func bookmarkHeader(count: Int) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "bookmark.fill")
-                .foregroundStyle(settings.accentColor.color)
-
-            Text("BOOKMARKED AYAHS")
-                .foregroundStyle(settings.accentColor.color)
-
-            Spacer()
-
-            Text("\(count)")
-                .font(.caption.weight(.semibold))
-                .monospacedDigit()
-                .foregroundStyle(settings.accentColor.color)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .conditionalGlassEffect()
-
-            Image(systemName: settings.showBookmarks ? "chevron.down.circle" : "chevron.up.circle")
-                .foregroundColor(settings.accentColor.color)
-                .padding(4)
-                .conditionalGlassEffect()
-                .onTapGesture {
-                    settings.hapticFeedback()
-                    withAnimation { settings.showBookmarks.toggle() }
+        SectionPillHeader(
+            title: "BOOKMARKS",
+            count: count,
+            icon: "bookmark.fill",
+            accentTitle: true,
+            isExpanded: $settings.showBookmarks,
+            onShuffle: {
+                if let random = settings.bookmarkedAyahs.randomElement() {
+                    push(surahID: random.surah, ayahID: random.ayah)
                 }
-        }
+            }
+        )
     }
 
     @ViewBuilder
@@ -1452,6 +2311,7 @@ struct QuranView: View {
                 push(surahID: surah.id, ayahID: ayah.id)
             } label: {
                 SurahAyahRow(surah: surah, ayah: ayah, note: noteToShow, grid: true)
+                    .equatable()
             }
             .buttonStyle(.plain)
             #else
@@ -1497,6 +2357,7 @@ struct QuranView: View {
 
             quranNavigationLink(route: .ayahs(surahID: surah.id, ayah: ayah.id)) {
                 SurahAyahRow(surah: surah, ayah: ayah, note: noteToShow)
+                    .equatable()
             }
             .tag(surah.id)
             .rightSwipeActions(
@@ -1530,7 +2391,7 @@ struct QuranView: View {
             let sortedFavorites = settings.favoriteSurahs.sorted()
             Section(header: favoriteHeader(count: sortedFavorites.count)) {
                 if settings.showFavorites {
-                    if settings.quranGridMode {
+                    if settings.gridMode {
                         LazyVGrid(
                             columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
                             alignment: .leading,
@@ -1551,33 +2412,20 @@ struct QuranView: View {
         }
     }
 
+    /// The shared pill header, for favorites - with the shuffle: open a random favorite surah.
     private func favoriteHeader(count: Int) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "star.fill")
-                .foregroundStyle(settings.accentColor.color)
-
-            Text("FAVORITE SURAHS")
-                .foregroundStyle(settings.accentColor.color)
-
-            Spacer()
-
-            Text("\(count)")
-                .font(.caption.weight(.semibold))
-                .monospacedDigit()
-                .foregroundStyle(settings.accentColor.color)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .conditionalGlassEffect()
-
-            Image(systemName: settings.showFavorites ? "chevron.down.circle" : "chevron.up.circle")
-                .foregroundColor(settings.accentColor.color)
-                .padding(4)
-                .conditionalGlassEffect()
-                .onTapGesture {
-                    settings.hapticFeedback()
-                    withAnimation { settings.showFavorites.toggle() }
+        SectionPillHeader(
+            title: "FAVORITES",
+            count: count,
+            icon: "star.fill",
+            accentTitle: true,
+            isExpanded: $settings.showFavorites,
+            onShuffle: {
+                if let random = settings.favoriteSurahs.randomElement() {
+                    push(surahID: random, ayahID: nil)
                 }
-        }
+            }
+        )
     }
 
     @ViewBuilder
@@ -1591,6 +2439,15 @@ struct QuranView: View {
                 SurahRow(surah: surah, isFavorite: context.favoriteSurahs.contains(surah.id), grid: true)
             }
             .buttonStyle(.plain)
+            // The single tappable corner star, matching the main surah grid (SurahRow no longer draws its
+            // own inline star).
+            .gridFavoriteStar(
+                isFavorite: context.favoriteSurahs.contains(surah.id),
+                accent: settings.accentColor.color,
+                accessibilityName: surah.nameTransliteration
+            ) {
+                settings.toggleSurahFavorite(surah: surah.id)
+            }
             #else
             Button {
                 settings.hapticFeedback()
@@ -1659,7 +2516,7 @@ struct QuranView: View {
     }
 
     private func orderedQuranSurahs(showsRevelationOrder: Bool) -> [Surah] {
-        // Khatm's Surah grouping is always natural surah order — it reuses the Asc/Desc slot for the
+        // Khatm's Surah grouping is always natural surah order - it reuses the Asc/Desc slot for the
         // Surah/Juz toggle, so `quranSortDirection` (left over from another mode) must not reorder it.
         if settings.quranSortMode == .khatm {
             return quranData.quran
@@ -1733,36 +2590,37 @@ struct QuranView: View {
             EmptyView()
         } else if context.isSearching {
             if settings.searchForSurahs {
-                surahSearchSection(context: context)
+                boxed(surahSearchSection(context: context))
             }
         } else {
+            // Every branch boxed for the same stack-size reason as `content` - see `boxed`.
             switch settings.quranSortMode {
             case .surah:
-                surahBrowseSection(context: context, showsRevelationOrder: false)
+                boxed(surahBrowseSection(context: context, showsRevelationOrder: false))
             case .ayahs:
-                surahBrowseSection(context: context, showsRevelationOrder: false)
+                boxed(surahBrowseSection(context: context, showsRevelationOrder: false))
             case .juz:
-                juzSections(context: context)
+                boxed(juzSections(context: context))
             case .page:
-                surahBrowseSection(context: context, showsRevelationOrder: false)
+                boxed(surahBrowseSection(context: context, showsRevelationOrder: false))
             case .revelation:
-                surahBrowseSection(context: context, showsRevelationOrder: true)
+                boxed(surahBrowseSection(context: context, showsRevelationOrder: true))
             case .khatm:
-                khatmProgressSection()
-                khatmExtraDetailsSection()
+                boxed(khatmProgressSection())
+                boxed(khatmExtraDetailsSection())
                 if settings.khatmGroupByJuz {
-                    khatmJuzSections(context: context)
+                    boxed(khatmJuzSections(context: context))
                 } else {
-                    surahBrowseSection(context: context, showsRevelationOrder: false)
+                    boxed(surahBrowseSection(context: context, showsRevelationOrder: false))
                 }
             case .pages:
-                pagesBrowseSection(context: context)
+                boxed(pagesBrowseSection(context: context))
             case .sajdah:
-                sajdahBrowseSection(context: context)
+                boxed(sajdahBrowseSection(context: context))
             case .muqattaat:
-                muqattaatBrowseSection(context: context)
+                boxed(muqattaatBrowseSection(context: context))
             case .words, .letters:
-                surahBrowseSection(context: context, showsRevelationOrder: false)
+                boxed(surahBrowseSection(context: context, showsRevelationOrder: false))
             }
         }
     }
@@ -1837,7 +2695,7 @@ struct QuranView: View {
     @ViewBuilder
     private func specialAyahCollection(_ rows: [(surah: Surah, ayah: Ayah)], context: SearchDisplayContext) -> some View {
         #if os(iOS)
-        if settings.quranGridMode {
+        if settings.gridMode {
             LazyVGrid(
                 columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
                 alignment: .leading,
@@ -1866,6 +2724,7 @@ struct QuranView: View {
             push(surahID: item.surah.id, ayahID: item.ayah.id)
         } label: {
             SurahAyahRow(surah: item.surah, ayah: item.ayah, grid: true)
+                .equatable()
         }
         .buttonStyle(.plain)
     }
@@ -1951,14 +2810,14 @@ struct QuranView: View {
                     Text("\(khatmPercent)% completed")
                         .font(.headline)
                         .foregroundStyle(settings.accentColor.color)
-                    
+
                     Spacer()
-                    
+
                     Text("\(khatmCompletedAyahs)/\(khatmTotalAyahs) ayahs")
                         .font(.subheadline.monospacedDigit().weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
-                
+
                 ProgressView(value: Double(khatmCompletedAyahs), total: Double(max(khatmTotalAyahs, 1)))
                     .tint(settings.accentColor.color)
             }
@@ -1970,15 +2829,10 @@ struct QuranView: View {
                     let completedJuz = khatmJuzStats.values.reduce(0) { $0 + ($1.completed == $1.total ? 1 : 0) }
                     let juzPercent = totalJuz > 0 ? Int((Double(completedJuz) / Double(totalJuz) * 100).rounded()) : 0
 
-                    // Use the actual mushaf page range (max page present in data) if available,
-                    // otherwise fall back to the canonical 604 pages.
-                    let totalPages: Int = {
-                        let maxPage = quranData.quran
-                            .flatMap { $0.ayahs }
-                            .compactMap { $0.page }
-                            .max()
-                        return maxPage ?? 604
-                    }()
+                    // The actual mushaf page range: the last surah's end page IS the max page in
+                    // mushaf order (canonical 604 fallback) - O(1), where this used to flatMap all
+                    // 6,236 ayahs on every render of the khatm section.
+                    let totalPages = totalMushafPages
                     let completedPages = khatmPageStats.keys.filter { page in
                         if let stats = khatmPageStats[page] { return stats.completed == stats.total }
                         return false
@@ -2006,7 +2860,7 @@ struct QuranView: View {
 
                 if khatmEditMode {
                     Divider()
-                    
+
                     Button(role: .destructive) {
                         settings.hapticFeedback()
                         withAnimation {
@@ -2036,7 +2890,7 @@ struct QuranView: View {
         if showKhatmExtraDetails {
             let totals = khatmExtraTotals
             let isLoading = khatmExtraLoading
-            
+
             Section {
                 VStack {
                     if isLoading {
@@ -2049,18 +2903,18 @@ struct QuranView: View {
                     } else if let totals {
                         HStack {
                             Text("Words: \(totals.words)/\(totals.totalWords)")
-                            
+
                             Spacer()
-                            
+
                             Text("\(Int((Double(totals.words)/Double(max(totals.totalWords,1))*100)).description)%")
                                 .monospacedDigit()
                         }
-                        
+
                         HStack {
                             Text("Letters: \(totals.letters)/\(totals.totalLetters)")
-                            
+
                             Spacer()
-                            
+
                             Text("\(Int((Double(totals.letters)/Double(max(totals.totalLetters,1))*100)).description)%")
                                 .monospacedDigit()
                         }
@@ -2159,7 +3013,7 @@ struct QuranView: View {
         Section(header: surahBrowseHeader(showsRevelationOrder: showsRevelationOrder)) { }
             .padding(.bottom, -12)
 
-        if settings.quranGridMode {
+        if settings.gridMode {
             Section {
                 surahGrid(browsedSurahs, context: context)
             }
@@ -2206,10 +3060,20 @@ struct QuranView: View {
                 isFavorite: context.favoriteSurahs.contains(surah.id),
                 khatmCompletedAyahs: settings.quranSortMode == .khatm ? settings.khatmCompletedCount(for: surah) : nil,
                 khatmTotalAyahs: settings.quranSortMode == .khatm ? surah.numberOfAyahs : nil,
+                searchQuery: searchText,
                 grid: true
             )
         }
         .buttonStyle(.plain)
+        // The same corner star every grid tile carries - context menus inside a grid-in-a-list-row lift the
+        // whole row, so the star is the grid's tap-to-favorite.
+        .gridFavoriteStar(
+            isFavorite: context.favoriteSurahs.contains(surah.id),
+            accent: settings.accentColor.color,
+            accessibilityName: surah.nameTransliteration
+        ) {
+            settings.toggleSurahFavorite(surah: surah.id)
+        }
         .id("surah_\(surah.id)")
         .onAppear {
             if surah.id == scrollToSurahID {
@@ -2235,38 +3099,69 @@ struct QuranView: View {
         Group {
             Section(header: surahSectionHeader(context: context)) { }
                 .padding(.bottom, -12)
-            
-            ForEach(filteredSurahs, id: \.id) { surah in
+
+            // Surah-NAME results honor grid mode, the same as browsing. Ayah-TEXT results (searchResultSections)
+            // always stay a list - grid tiles can't show the matched ayah text.
+            #if os(iOS)
+            if settings.gridMode {
+                if !filteredSurahs.isEmpty {
+                    Section {
+                        surahGrid(filteredSurahs, context: context)
+                    }
+                }
+            } else {
+                surahSearchListRows(filteredSurahs, context: context)
+            }
+            #else
+            surahSearchListRows(filteredSurahs, context: context)
+            #endif
+
+            // A bare "0" pill reads as broken; say it outright.
+            if filteredSurahs.isEmpty, context.isSearching {
                 Section {
-                    quranNavigationLink(route: .ayahs(surahID: surah.id, ayah: nil)) {
-                        surahSearchRow(surah: surah, context: context)
+                    Text("No surahs match your search.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func surahSearchListRows(_ filteredSurahs: [Surah], context: SearchDisplayContext) -> some View {
+        ForEach(filteredSurahs, id: \.id) { surah in
+            Section {
+                quranNavigationLink(route: .ayahs(surahID: surah.id, ayah: nil)) {
+                    surahSearchRow(surah: surah, context: context)
+                }
+                .id("surah_\(surah.id)")
+                .onAppear {
+                    if surah.id == scrollToSurahID {
+                        scrollToSurahID = -1
                     }
-                    .id("surah_\(surah.id)")
-                    .onAppear {
-                        if surah.id == scrollToSurahID {
-                            scrollToSurahID = -1
-                        }
-                    }
-                    .rightSwipeActions(
+                }
+                .rightSwipeActions(
+                    surahID: surah.id,
+                    surahName: surah.nameTransliteration,
+                    searchText: $searchText,
+                    scrollToSurahID: $scrollToSurahID
+                )
+                .leftSwipeActions(surah: surah.id, favoriteSurahs: context.favoriteSurahs)
+                #if os(iOS)
+                .contextMenu {
+                    SurahContextMenu(
                         surahID: surah.id,
                         surahName: surah.nameTransliteration,
+                        favoriteSurahs: context.favoriteSurahs,
                         searchText: $searchText,
                         scrollToSurahID: $scrollToSurahID
                     )
-                    .leftSwipeActions(surah: surah.id, favoriteSurahs: context.favoriteSurahs)
-                    #if os(iOS)
-                    .contextMenu {
-                        SurahContextMenu(
-                            surahID: surah.id,
-                            surahName: surah.nameTransliteration,
-                            favoriteSurahs: context.favoriteSurahs,
-                            searchText: $searchText,
-                            scrollToSurahID: $scrollToSurahID
-                        )
-                    }
-                    #endif
-                    .animation(.easeInOut, value: searchText)
                 }
+                #endif
+                // No `.animation(value: searchText)` here: it opened an animation transaction on every
+                // visible result row on every KEYSTROKE. Row insertion/reordering already animates where
+                // the results are APPLIED (handleAyahSearchChange wraps its updates in withAnimation);
+                // the row's own content has nothing to animate while typing.
             }
         }
     }
@@ -2283,12 +3178,9 @@ struct QuranView: View {
             SurahRow(surah: surah, isFavorite: context.favoriteSurahs.contains(surah.id), searchQuery: searchText).equatable()
         }
     }
-    
+
     private var revelationBadgeWidth: CGFloat {
-        let font = UIFont.preferredFont(forTextStyle: .caption1)
-        let text = "#114" as NSString
-        let size = text.size(withAttributes: [.font: font])
-        return size.width + 8
+        BadgeWidthCache.width(template: "#114", style: .caption1)
     }
 
     private func revelationOrderBadge(_ order: Int) -> some View {
@@ -2339,7 +3231,7 @@ struct QuranView: View {
             let juz = sectionData.juz
             Section(header: JuzHeader(juz: juz)) {
                 #if os(iOS)
-                if settings.quranGridMode {
+                if settings.gridMode {
                     LazyVGrid(columns: surahGridColumns, alignment: .leading, spacing: 10) {
                         ForEach(sectionData.rows) { row in
                             juzGridTile(row: row, context: context)
@@ -2371,7 +3263,7 @@ struct QuranView: View {
             let surahs = quranData.quran.filter { ($0.firstJuz ?? $0.ayahs.first?.juz) == juz.id }
             Section(header: JuzHeader(juz: juz)) {
                 #if os(iOS)
-                if settings.quranGridMode {
+                if settings.gridMode {
                     surahGrid(surahs, context: context)
                 } else {
                     ForEach(surahs, id: \.id) { surah in
@@ -2401,6 +3293,14 @@ struct QuranView: View {
                 juzGridLabel(row: row, surah: surah, isFavorite: context.favoriteSurahs.contains(surah.id))
             }
             .buttonStyle(.plain)
+            // The single tappable corner star, matching the main surah grid.
+            .gridFavoriteStar(
+                isFavorite: context.favoriteSurahs.contains(surah.id),
+                accent: settings.accentColor.color,
+                accessibilityName: surah.nameTransliteration
+            ) {
+                settings.toggleSurahFavorite(surah: surah.id)
+            }
         }
     }
 
@@ -2609,13 +3509,14 @@ struct QuranView: View {
         if context.isSearching {
             // Page/juz rows for explicit queries are inserted above surahContentSections. For a bare number
             // they go here, BELOW the surah match (juz before page). Each shows the range's Start/End ayah.
+            // Boxed for the same stack-size reason as `content` - see `boxed`.
             if !context.explicitPageOrJuzMode {
-                juzSearchSection(context: context)
-                pageSearchSection(context: context)
+                boxed(juzSearchSection(context: context))
+                boxed(pageSearchSection(context: context))
             }
 
             if !context.explicitPageOrJuzMode {
-                ayahSearchSection(context: context)
+                boxed(ayahSearchSection(context: context))
             }
         }
     }
@@ -2645,7 +3546,7 @@ struct QuranView: View {
     }
 
     /// A page/juz search result shows the range's FIRST and LAST ayah (labeled Start / End) rather than
-    /// every ayah — like Juz View marks where a section begins and ends. The header's count pill conveys
+    /// every ayah - like Juz View marks where a section begins and ends. The header's count pill conveys
     /// the total. A single-ayah range shows just the one row (unlabeled).
     @ViewBuilder
     private func pageJuzRangeRows(first: (surah: Surah, ayah: Ayah), last: (surah: Surah, ayah: Ayah)?, count: Int) -> some View {
@@ -2669,6 +3570,7 @@ struct QuranView: View {
                 // Full ayah row (same font/tajweed/beginner mode/highlight as the reading view); already
                 // single-line internally.
                 SurahAyahRow(surah: item.surah, ayah: item.ayah)
+                    .equatable()
             }
         }
     }
@@ -2692,8 +3594,6 @@ struct QuranView: View {
 
     @ViewBuilder
     private func ayahSearchSection(context: SearchDisplayContext) -> some View {
-        let bestHits = bestAyahHitsForCurrentQuery()
-
         if context.isExactAyahReference {
             Section(header: ayahSearchHeader(context: context)) {
                 ayahExactMatchRows(context: context)
@@ -2710,33 +3610,194 @@ struct QuranView: View {
                 .padding(.vertical, 8)
             }
         } else {
-            if !bestHits.isEmpty {
-                Section(header: bestAyahHeader(count: bestHits.count)) {
-                    ForEach(bestHits) { hit in
-                        ayahHitRow(hit: hit, context: context, section: "best")
-                    }
-                }
-            }
+            #if os(iOS)
+            // (The Ask AI block - prompt row, streamed answer, cited ayahs - now renders in
+            // `askAISection`, hoisted ABOVE the surah results in `content`.)
 
-            Section(header: ayahSearchHeader(context: context)) {
-                ayahExactMatchRows(context: context)
-            }
-
-            ForEach(verseHitsGroupedBySurah, id: \.surahId) { group in
+            // Both result kinds landed: ONE segmented switch decides which list fills the page - the
+            // AI's ranked meaning matches or the exhaustive keyword lists - never both stacked. With
+            // only one kind present there is nothing to choose, so no picker: it just shows.
+            let showResultsPicker = !aiHits.isEmpty && !verseHits.isEmpty
+            if showResultsPicker {
                 Section {
-                    ForEach(group.hits) { hit in
-                        ayahHitRow(hit: hit, context: context, section: "grouped")
+                    // Plain binding: flipping this swaps whole section groups, and animating that swap
+                    // is the same collection-view assertion risk as the typing path.
+                    Picker("Results", selection: $showKeywordResults) {
+                        Text("AI Results").tag(false)
+                        Text("Keyword Results").tag(true)
                     }
-                } header: {
-                    surahSearchSectionHeader(surahId: group.surahId)
+                    .pickerStyle(.segmented)
                 }
             }
 
-            Section {
-                ayahLoadMoreControls(context: context)
+            if !showResultsPicker || !showKeywordResults {
+                // AI results appear AUTOMATICALLY at the top - no mode to enter. The section shows the
+                // one-time build progress the first time, then the ranked semantic matches.
+                boxed(aiResultsSection)
+            }
+
+            let keywordVisible = !showResultsPicker || showKeywordResults
+            #else
+            let keywordVisible = true
+            #endif
+
+            if keywordVisible {
+                // Computed HERE, not at the top of the section: the filter+sort over every verse hit
+                // is dead weight on the exact-reference path and while the AI list is on screen.
+                let bestHits = bestAyahHitsForCurrentQuery()
+                // "Top" picks only matter when the AI list isn't the one on screen.
+                #if os(iOS)
+                let showBest = !bestHits.isEmpty && (aiHits.isEmpty || showKeywordResults)
+                #else
+                let showBest = !bestHits.isEmpty
+                #endif
+                if showBest {
+                    Section(header: bestAyahHeader(count: bestHits.count)) {
+                        ForEach(bestHits) { hit in
+                            ayahHitRow(hit: hit, context: context, section: "best")
+                        }
+                    }
+                }
+
+                Section(header: ayahSearchHeader(context: context)) {
+                    ayahExactMatchRows(context: context)
+
+                    // Nothing exact and nothing from the keyword sweep: say so instead of a bare header.
+                    // Scoped to KEYWORD when AI found matches (iOS only - the watch has no AI search):
+                    // "No ayahs match" directly under a populated AI RESULTS section read as a contradiction.
+                    if context.exactMatch.surah == nil || context.exactMatch.ayah == nil,
+                       verseHitsGroupedBySurah.isEmpty {
+                        #if os(iOS)
+                        Text(aiHits.isEmpty ? "No ayahs match your search." : "No keyword matches - see the AI results above.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        #else
+                        Text("No ayahs match your search.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        #endif
+                    }
+                }
+
+                ForEach(verseHitsGroupedBySurah, id: \.surahId) { group in
+                    Section {
+                        ForEach(group.hits) { hit in
+                            ayahHitRow(hit: hit, context: context, section: "grouped")
+                        }
+                    } header: {
+                        surahSearchSectionHeader(surahId: group.surahId, matchCount: group.hits.count)
+                    }
+                }
+
+                Section {
+                    ayahLoadMoreControls(context: context)
+                }
             }
         }
     }
+
+    #if os(iOS)
+    /// The semantic results block, shown automatically for any eligible (English text) query: the
+    /// one-time build progress first, then the ranked matches - each the standard ayah search row.
+    /// Deliberately SILENT otherwise (Arabic query, build failed, no semantic matches): an automatic
+    /// section must never nag - the keyword results below always carry the search.
+    @ViewBuilder
+    private var aiResultsSection: some View {
+        if aiQueryEligible {
+            if semanticEngine.isReady(quranSemanticCorpusID) {
+                if !aiHits.isEmpty {
+                    Section(header: aiResultsHeader(count: aiHits.count)) {
+                        ForEach(aiHits) { hit in
+                            aiHitRow(hit)
+                        }
+                    }
+                }
+            } else if !semanticEngine.failedCorpora.contains(quranSemanticCorpusID) {
+                Section { AISearchStatusRow(progress: semanticEngine.progress(quranSemanticCorpusID), failed: false) }
+            }
+        }
+    }
+
+    /// The one-tap Ask entry for non-question queries: press to run the grounded on-device answer for
+    /// exactly what's typed.
+    private var askPromptRow: some View {
+        Button {
+            settings.hapticFeedback()
+            runAsk(query: searchText, manual: true)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.caption)
+
+                Text("Ask AI about \u{201C}\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D}")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundColor(settings.accentColor.color)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .conditionalGlassEffect(clear: true, rectangle: true)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func aiResultsHeader(count: Int) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "sparkles")
+            Text("AI RESULTS")
+
+            Spacer()
+
+            Text(String(count))
+                .font(.caption.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(settings.accentColor.color)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .conditionalGlassEffect()
+                .padding(.vertical, -16)
+        }
+    }
+
+    /// One semantic match - the standard compact ayah search row (same fonts, tajweed-off rule, arrival
+    /// term travel) so AI results read exactly like every other ayah result.
+    @ViewBuilder
+    private func aiHitRow(_ hit: AISearchHit) -> some View {
+        if let surah = quranData.surah(hit.surah),
+           let ayah = quranData.ayah(surah: hit.surah, ayah: hit.ayah) {
+            quranNavigationLink(route: .ayahs(surahID: surah.id, ayah: ayah.id)) {
+                AyahSearchRow(
+                    surahName: surah.nameTransliteration,
+                    surah: hit.surah,
+                    ayah: hit.ayah,
+                    query: searchText,
+                    arabic: ayah.displayArabicText(surahId: hit.surah, clean: settings.cleanArabicText),
+                    transliteration: ayah.textTransliteration,
+                    englishSaheeh: ayah.textEnglishSaheeh,
+                    englishMustafa: ayah.textEnglishMustafa,
+                    page: ayah.page,
+                    juz: ayah.juz,
+                    favoriteSurahs: Set(settings.favoriteSurahs),
+                    bookmarkedAyahs: Set(settings.bookmarkedAyahs.map(\.id)),
+                    searchText: $searchText,
+                    scrollToSurahID: $scrollToSurahID,
+                    qiraahRefreshKey: settings.displayQiraah,
+                    compact: true,
+                    disableTajweedColors: true
+                )
+                .id("ayah-results-ai-\(surah.id)-\(ayah.id)")
+            }
+        }
+    }
+    #endif
 
     private func bestAyahHeader(count: Int) -> some View {
         HStack {
@@ -2775,7 +3836,7 @@ struct QuranView: View {
 
         // Only worth a separate "Top Ayah Results" section when there's a real contrast: some loaded hits
         // contain the exact phrase and others only matched loosely. If every hit (or no hit) is an exact
-        // phrase match, the section just duplicates the list below — so suppress it instead of showing a
+        // phrase match, the section just duplicates the list below - so suppress it instead of showing a
         // redundant "top" that's no better than the rest.
         guard !exactHits.isEmpty, exactHits.count < verseHits.count else { return [] }
 
@@ -2814,23 +3875,32 @@ struct QuranView: View {
     }
 
     @ViewBuilder
-    private func surahSearchSectionHeader(surahId: Int) -> some View {
-        if let s = quranData.surah(surahId) {
-            let latinHeader1 = "\(s.id). \(s.nameTransliteration)".uppercased()
-            
-            let latinHeader2 = "(\(s.nameEnglish)) —".uppercased()
-            
-            HStack(spacing: 6) {
-                Text(latinHeader1)
-                
-                Text(latinHeader2)
-                    .font(.caption)
-                
-                Text(s.nameArabic)
-                    .font(.caption)
+    private func surahSearchSectionHeader(surahId: Int, matchCount: Int? = nil) -> some View {
+        Group {
+            if let s = quranData.surah(surahId) {
+                let latinHeader1 = "\(s.id). \(s.nameTransliteration)".uppercased()
+
+                let latinHeader2 = "(\(s.nameEnglish)) - ".uppercased()
+
+                HStack(spacing: 6) {
+                    Text(latinHeader1)
+
+                    Text(latinHeader2)
+                        .font(.caption)
+
+                    Text(settings.cleanedQuranArabic(s.nameArabic))
+                        .font(.caption)
+
+                    // How many of the ayah matches live in THIS surah - the total pill sits up top.
+                    if let matchCount {
+                        Spacer()
+
+                        CountPill(count: matchCount)
+                    }
+                }
+            } else {
+                Text("SURAH \(surahId)")
             }
-        } else {
-            Text("SURAH \(surahId)")
         }
     }
 
@@ -2894,7 +3964,7 @@ struct QuranView: View {
                 disableTajweedColors: true
             )
             // Section-scoped id: the same ayah can appear in both "best" and "grouped" sections, and
-            // duplicate List identities cause scroll jank. No per-row .animation here — that previously
+            // duplicate List identities cause scroll jank. No per-row .animation here - that previously
             // re-animated every visible row whenever verseHits.count changed (e.g. while loading more
             // results during scroll), which is what made scrolling feel laggy versus SurahView.
             .id("ayah-results-\(section)-\(surah.id)-\(ayah.id)")
@@ -2902,6 +3972,9 @@ struct QuranView: View {
             quranNavigationLink(route: .ayahs(surahID: surah.id, ayah: ayah.id)) {
                 row
             }
+            // The search term rides along via the route-change hooks on the navigation state (see
+            // `stashArrivalTerm`) - a gesture here, even a simultaneous one, swallowed the
+            // NavigationLink's own tap and made the hit rows dead.
         }
     }
 
@@ -2943,7 +4016,7 @@ struct QuranView: View {
             .lineLimit(1)
             .minimumScaleFactor(0.5)
             #endif
-            
+
             Button {
                 settings.hapticFeedback()
                 ayahSearchTask?.cancel()
@@ -2953,7 +4026,7 @@ struct QuranView: View {
                     guard !Task.isCancelled else { return }
                     await MainActor.run {
                         guard query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-                        verseHits = allHits
+                        verseHits = dedupedHits(allHits)
                         hasMoreHits = false
                     }
                 }
@@ -2988,14 +4061,25 @@ struct QuranView: View {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-                verseHits.append(contentsOf: moreHits)
+                // Append only entries not already shown - the index can be rebuilt between pages, which
+                // shifts offsets and lets a page overlap the last one (duplicate ids crash the List diff).
+                let existing = Set(verseHits.map(\.id))
+                let fresh = moreHits.filter { !existing.contains($0.id) }
+                verseHits.append(contentsOf: fresh)
                 hasMoreHits = moreAvail
+                // Only the FIRST page prewarmed its highlight folds; later pages paid the fold during
+                // scrolling, on first render of each new row.
+                prewarmHighlightCaches(for: fresh)
             }
         }
     }
 
     private func handleAyahSearchChange(_ txt: String, debounce: Bool) {
         ayahSearchTask?.cancel()
+        #if os(iOS)
+        // Every new query starts with the keyword lists collapsed again (when AI results are present).
+        showKeywordResults = false
+        #endif
 
         let query = txt.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -3037,14 +4121,12 @@ struct QuranView: View {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-                // Animate the initial appearance of results so it matches `clearAyahSearchState()` (which
-                // animates) — that mismatch is why search felt "sometimes animated, sometimes not". Only the
-                // first page animates; `loadMoreAyahMatches` / "load all" stay un-animated on purpose so
-                // appending rows mid-scroll doesn't re-animate the whole list (see the `.id(...)` note above).
-                withAnimation {
-                    verseHits = first
-                    hasMoreHits = more
-                }
+                // NOT animated - like every other searchText-driven List mutation (see the SearchBar
+                // binding note): the keyword and AI pipelines land in separate passes, and an animated
+                // apply racing another in-flight animated diff is the collection-view assertion crash.
+                prewarmHighlightCaches(for: first)
+                verseHits = dedupedHits(first)
+                hasMoreHits = more
             }
         }
     }

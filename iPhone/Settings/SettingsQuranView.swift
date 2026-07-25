@@ -1,11 +1,9 @@
 import SwiftUI
-#if os(iOS)
 import UIKit
-#endif
 
 struct SettingsQuranView: View {
-    @EnvironmentObject var settings: Settings
-    @EnvironmentObject var quranData: QuranData
+    @ObservedObject var settings = Settings.shared
+    @ObservedObject var quranData = QuranData.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var confirmHideQiraahDetails = false
@@ -70,18 +68,12 @@ struct SettingsQuranView: View {
                         recitationDestination
                     }
                 }
-                // The Quran Tab View options (full surah details, summary mode, last-read rows) only affect
-                // the iPhone/iPad Quran tab layout, so hide this whole section on watchOS.
-                #if os(iOS)
+                // One merged screen for how the Quran LOOKS: the tab layout options and the surah
+                // reading options live as separate sections inside it. (The tab options only affect the
+                // iPhone/iPad Quran tab, so the watch shows just the reading half.)
                 Section {
-                    quranSettingsLink(title: "Quran Tab View", systemImage: "list.bullet.rectangle") {
-                        quranTabViewDestination
-                    }
-                }
-                #endif
-                Section {
-                    quranSettingsLink(title: "Surah Reading View", systemImage: "book") {
-                        surahReadingDestination
+                    quranSettingsLink(title: "Reading View", systemImage: "book") {
+                        readingViewsDestination
                     }
                 }
                 Section {
@@ -95,6 +87,12 @@ struct SettingsQuranView: View {
                     }
                 }
                 #if os(iOS)
+                Section {
+                    quranSettingsLink(title: "Tafsir", systemImage: "text.book.closed") {
+                        tafsirDestination
+                    }
+                }
+
                 favoritesAndBookmarksSection
                 #endif
             }
@@ -136,14 +134,27 @@ struct SettingsQuranView: View {
     }
 
     #if os(iOS)
-    /// Bulk-management screens for the user's saved items. Only shown from the main Settings entry
+    /// Bulk-management screens for the user's saved items. One row like every other setting on this screen -
+    /// the four editors live behind it rather than taking four rows of the root list.
     @ViewBuilder
     private var favoritesAndBookmarksSection: some View {
-        Section(header: Text("FAVORITES AND BOOKMARKS")) {
-            favoritesLink(title: "Edit Favorite Surahs", type: .surah)
-            favoritesLink(title: "Edit Bookmarked Ayahs", type: .ayah)
-            favoritesLink(title: "Edit Favorite Letters", type: .letter)
-            favoritesLink(title: "Edit Khatm Progress", type: .khatm)
+        Section {
+            quranSettingsLink(title: "Favorites and Bookmarks", systemImage: "star") {
+                favoritesAndBookmarksDestination
+            }
+        }
+    }
+
+    private var favoritesAndBookmarksDestination: some View {
+        quranSettingsSubList(title: "Favorites and Bookmarks") {
+            Section {
+                favoritesLink(title: "Edit Favorite Surahs", type: .surah)
+                favoritesLink(title: "Edit Bookmarked Ayahs", type: .ayah)
+                favoritesLink(title: "Edit Favorite Letters", type: .letter)
+                favoritesLink(title: "Edit Khatm Progress", type: .khatm)
+            } footer: {
+                Text("These are kept when you reset your settings, unless you choose to erase everything.")
+            }
         }
     }
 
@@ -158,6 +169,12 @@ struct SettingsQuranView: View {
                 .padding(.vertical, 4)
         }
         .tint(settings.accentColor.color)
+    }
+
+    private var tafsirDestination: some View {
+        quranSettingsSubList(title: "Tafsir") {
+            TafsirDownloadSection()
+        }
     }
     #endif
 
@@ -183,14 +200,12 @@ struct SettingsQuranView: View {
         }
     }
 
-    private var quranTabViewDestination: some View {
-        quranSettingsSubList(title: "Quran Tab View") {
+    /// The merged Quran Tab + Surah Reading screen: both keep their own sections, one push.
+    private var readingViewsDestination: some View {
+        quranSettingsSubList(title: "Reading View") {
+            #if os(iOS)
             quranTabViewSection
-        }
-    }
-
-    private var surahReadingDestination: some View {
-        quranSettingsSubList(title: "Surah Reading View") {
+            #endif
             surahReadingSection
         }
     }
@@ -277,6 +292,7 @@ struct SettingsQuranView: View {
         Text("The Quran recitations are streamed online by default. You can open Choose Reciter to download full surahs per reciter for offline playback and reduced data use.")
             .font(.caption)
             .foregroundColor(.secondary)
+            .padding(.vertical, 2)
         #endif
     }
 
@@ -288,7 +304,7 @@ struct SettingsQuranView: View {
                     .font(.subheadline)
                     .onChange(of: settings.showFullSurahRow) { _ in settings.hapticFeedback() }
 
-                Text("Adds extra details — revelation type, ayah count, page count, and more — beneath each surah in the main Quran list, the screen where all the surahs are shown.")
+                Text("Adds extra details - revelation type, ayah count, page count, and more - beneath each surah in the main Quran list, the screen where all the surahs are shown.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.vertical, 2)
@@ -299,7 +315,7 @@ struct SettingsQuranView: View {
                     .font(.subheadline)
                     .onChange(of: settings.quranSummaryMode) { _ in settings.hapticFeedback() }
 
-                Text("Bundles Ayah of the Day, Last Listened, and Last Read into one compact \"Your Summary\" section of tiles at the top of the Quran tab — it's all one thing. Turn it off to show each as its own full-width section instead, which is clearer but takes up a lot more space. (Summary is separate from the grid button, so you can keep this on while everything else stays a list.)")
+                Text("Bundles Ayah of the Day, Last Listened, and Last Read into one compact \"Your Summary\" section of tiles at the top of the Quran tab - it's all one thing. Turn it off to show each as its own full-width section instead, which is clearer but takes up a lot more space. (Summary is separate from the grid button, so you can keep this on while everything else stays a list.)")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.vertical, 2)
@@ -379,22 +395,7 @@ struct SettingsQuranView: View {
         }
     }
 
-    private var searchSection: some View {
-        Section(header: Text("SEARCH")) {
-            VStack(alignment: .leading) {
-                Toggle("Ignore Silent Letters in Ayah Search", isOn: $settings.ignoreSilentLettersInQuranSearch.animation(.easeInOut))
-                    .font(.subheadline)
-                    .onChange(of: settings.ignoreSilentLettersInQuranSearch) { _ in settings.hapticFeedback() }
-
-                Text("Arabic ayah search also checks a recitation-style version with silent letters removed, such as hamzatul wasl and silent alif, waw, ya, or lam.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .padding(.vertical, 2)
-            }
-        }
-    }
-
-    /// "Use System Font Size" for the Arabic text only — pins the Arabic size to the device's Dynamic Type
+    /// "Use System Font Size" for the Arabic text only - pins the Arabic size to the device's Dynamic Type
     /// body size (+10, the reading-comfortable default). Split out from the English control so each script
     /// can follow the system size independently.
     private var useSystemArabicFontSize: Binding<Bool> {
@@ -412,7 +413,7 @@ struct SettingsQuranView: View {
         )
     }
 
-    /// "Use System Font Size" for the English text only — pins the English size to the device's Dynamic
+    /// "Use System Font Size" for the English text only - pins the English size to the device's Dynamic
     /// Type body size.
     private var useSystemEnglishFontSize: Binding<Bool> {
         Binding(
@@ -500,7 +501,22 @@ struct SettingsQuranView: View {
         }
     }
 
+    @ViewBuilder
     private var cleanArabicTextGroup: some View {
+        // The clean/no-dots text exists only for the Hafs reading - the other qiraat ship as fully
+        // vocalized text and the renderer ignores these flags for them - so with another riwayah
+        // selected the toggles hide behind a short explanation instead of silently doing nothing.
+        if !settings.isHafsDisplay {
+            Text("Hide Tashkeel and Hide Dots are available for the Hafs reading only. Switch the Arabic Riwayah back to Hafs to use them.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.vertical, 2)
+        } else {
+            cleanArabicTextToggles
+        }
+    }
+
+    private var cleanArabicTextToggles: some View {
         VStack(alignment: .leading) {
             Toggle("Hide Arabic Tashkeel (Vowel Diacritics) and Signs", isOn: cleanArabicTextBinding.animation(.easeInOut))
                 .font(.subheadline)
@@ -534,6 +550,7 @@ struct SettingsQuranView: View {
         Picker("Arabic Font", selection: $settings.fontArabic.animation(.easeInOut)) {
             Text("Uthmani").tag(Settings.hafsUthmaniFontName)
             Text("Indopak").tag(Settings.indopakFontName)
+            Text("Basic").tag(Settings.systemArabicFontName)
         }
         #if os(iOS)
         .pickerStyle(SegmentedPickerStyle())
@@ -546,6 +563,7 @@ struct SettingsQuranView: View {
         VStack(alignment: .leading, spacing: 16) {
             Toggle("Use System Font Size", isOn: useSystemArabicFontSize.animation(.easeInOut))
                 .font(.subheadline)
+                .padding(.vertical, 2)
 
             Stepper(value: $settings.fontArabicSize.animation(.easeInOut), in: 15...75, step: 1) {
                 Text("Arabic Font Size: \(Int(settings.fontArabicSize))")
@@ -553,8 +571,27 @@ struct SettingsQuranView: View {
             }
 
             Slider(value: $settings.fontArabicSize.animation(.easeInOut), in: 15...75, step: 1)
+
+            #if os(iOS)
+            fitPageControls
+            #endif
         }
     }
+
+    #if os(iOS)
+    private var fitPageControls: some View {
+        VStack(alignment: .leading) {
+            Toggle("Fit Page to Screen", isOn: $settings.mushafFitPage.animation(.easeInOut))
+                .font(.subheadline)
+                .onChange(of: settings.mushafFitPage) { _ in settings.hapticFeedback() }
+
+            Text("In reading mode, shrinks each mushaf page's Arabic just enough that all of its ayahs fit on one screen, the way a printed mushaf sets them. Never larger than your chosen font size. Turn this off to read at exactly the size above and scroll.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.vertical, 2)
+        }
+    }
+    #endif
 
     private var beginnerModeGroup: some View {
         VStack(alignment: .leading) {
@@ -610,6 +647,7 @@ struct SettingsQuranView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Toggle("Use System Font Size", isOn: useSystemEnglishFontSize.animation(.easeInOut))
                     .font(.subheadline)
+                    .padding(.vertical, 2)
 
                 Stepper(value: $settings.englishFontSize.animation(.easeInOut), in: 13...20, step: 1) {
                     Text("English Font Size: \(Int(settings.englishFontSize))")
@@ -663,6 +701,7 @@ struct SettingsQuranView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.65)
+                    .padding(.vertical, 2)
                 Spacer(minLength: 0)
             }
         } footer: {
@@ -702,6 +741,7 @@ struct SettingsQuranView: View {
         """)
             .font(.caption)
             .foregroundColor(.primary)
+            .padding(.vertical, 2)
     }
 
     private var qiraahLinks: some View {
@@ -710,11 +750,13 @@ struct SettingsQuranView: View {
                 Text("The 7 Ahruf (Modes)")
             }
             .font(.caption)
+            .padding(.vertical, 2)
 
             NavigationLink(destination: QiraatView()) {
                 Text("The 10 Qiraat (Recitations)")
             }
             .font(.caption)
+            .padding(.vertical, 2)
         }
     }
 
@@ -723,6 +765,7 @@ struct SettingsQuranView: View {
             .font(.caption)
             .foregroundColor(.primary)
             .padding(.top, 4)
+            .padding(.vertical, 2)
     }
 
     private var comparisonModeGroup: some View {
@@ -741,6 +784,357 @@ struct SettingsQuranView: View {
 }
 
 /// Section header for qiraat reciter groups: title and Arabic on one row (same idea as `JuzHeader`).
+
+#Preview {
+    AlIslamPreviewContainer(embedInNavigation: true) {
+        SettingsQuranView()
+    }
+}
+
+#if os(iOS)
+enum FavoriteType: Identifiable {
+    case surah, ayah, letter, khatm
+    var id: Self { self }
+}
+
+/// Bulk editor for the user's saved Quran items - favorite surahs, bookmarked ayahs, favorite letters, and
+/// khatm progress - with swipe-to-delete, EditButton, and a "Delete All". Reachable from Quran Settings.
+struct FavoritesView: View {
+    @ObservedObject var quranData = QuranData.shared
+    @ObservedObject var settings = Settings.shared
+
+    @State private var editMode: EditMode = .inactive
+
+    let type: FavoriteType
+
+    var body: some View {
+        List {
+            Group {
+            switch type {
+            case .surah:
+                if settings.favoriteSurahs.isEmpty {
+                    Text("No favorite surahs here, long tap a surah to favorite it.")
+                } else {
+                    ForEach(settings.favoriteSurahs.sorted(), id: \.self) { surahId in
+                        if let surah = quranData.quran.first(where: { $0.id == surahId }) {
+                            SurahRow(surah: surah, isFavorite: true).equatable()
+                        }
+                    }
+                    .onDelete(perform: removeSurahs)
+                }
+            case .ayah:
+                if settings.bookmarkedAyahs.isEmpty {
+                    Text("No bookmarked ayahs here, long tap an ayah to bookmark it.")
+                } else {
+                    ForEach(settings.bookmarkedAyahs.sorted {
+                        $0.surah == $1.surah ? ($0.ayah < $1.ayah) : ($0.surah < $1.surah)
+                    }, id: \.id) { bookmarkedAyah in
+                        if let surah = quranData.quran.first(where: { $0.id == bookmarkedAyah.surah }),
+                           let ayah = surah.ayahs.first(where: { $0.id == bookmarkedAyah.ayah }) {
+                            SurahAyahRow(surah: surah, ayah: ayah)
+                                .equatable()
+                        }
+                    }
+                    .onDelete(perform: removeAyahs)
+                }
+            case .letter:
+                if settings.favoriteLetters.isEmpty {
+                    Text("No favorite letters here, long tap a letter to favorite it.")
+                } else {
+                    ForEach(settings.favoriteLetters.sorted(), id: \.id) { favorite in
+                        ArabicLetterRow(letterData: favorite).equatable()
+                    }
+                    .onDelete(perform: removeLetters)
+                }
+            case .khatm:
+                if settings.khatmCompletedAyahs.isEmpty {
+                    Text("No khatm progress yet. Open a surah while Khatm mode is selected to mark ayahs as viewed.")
+                } else {
+                    ForEach(quranData.quran.filter { settings.khatmCompletedCount(for: $0) > 0 }, id: \.id) { surah in
+                        SurahRow(
+                            surah: surah,
+                            khatmCompletedAyahs: settings.khatmCompletedCount(for: surah),
+                            khatmTotalAyahs: surah.numberOfAyahs
+                        )
+                        .equatable()
+                    }
+                    .onDelete(perform: removeKhatmSurahs)
+                }
+            }
+
+            Section {
+                if !isListEmpty {
+                    Button("Delete All") {
+                        settings.hapticFeedback()
+                        withAnimation { deleteAll() }
+                    }
+                    .foregroundColor(.red)
+                }
+            }
+            }
+            .themedListRowBackground()
+        }
+        .applyConditionalListStyle()
+        .navigationTitle(titleForFavoriteType(type))
+        .toolbar {
+            EditButton()
+        }
+        .environment(\.editMode, $editMode)
+    }
+
+    private var isListEmpty: Bool {
+        switch type {
+        case .surah: return settings.favoriteSurahs.isEmpty
+        case .ayah: return settings.bookmarkedAyahs.isEmpty
+        case .letter: return settings.favoriteLetters.isEmpty
+        case .khatm: return settings.khatmCompletedAyahs.isEmpty
+        }
+    }
+
+    private func deleteAll() {
+        switch type {
+        case .surah:
+            settings.favoriteSurahs.removeAll()
+        case .ayah:
+            settings.bookmarkedAyahs.removeAll()
+        case .letter:
+            settings.favoriteLetters.removeAll()
+        case .khatm:
+            settings.resetAllKhatmProgress()
+        }
+    }
+
+    private func removeSurahs(at offsets: IndexSet) {
+        let sorted = settings.favoriteSurahs.sorted()
+        let idsToRemove = offsets.map { sorted[$0] }
+        settings.favoriteSurahs.removeAll { idsToRemove.contains($0) }
+    }
+
+    private func removeAyahs(at offsets: IndexSet) {
+        let sorted = settings.bookmarkedAyahs.sorted {
+            $0.surah == $1.surah ? ($0.ayah < $1.ayah) : ($0.surah < $1.surah)
+        }
+        let idsToRemove = Set(offsets.map { sorted[$0].id })
+        settings.bookmarkedAyahs.removeAll { idsToRemove.contains($0.id) }
+    }
+
+    private func removeLetters(at offsets: IndexSet) {
+        let sorted = settings.favoriteLetters.sorted()
+        let idsToRemove = Set(offsets.map { sorted[$0].id })
+        settings.favoriteLetters.removeAll { idsToRemove.contains($0.id) }
+    }
+
+    private func removeKhatmSurahs(at offsets: IndexSet) {
+        let surahsWithProgress = quranData.quran.filter { settings.khatmCompletedCount(for: $0) > 0 }
+        for offset in offsets {
+            settings.resetKhatmProgress(for: surahsWithProgress[offset])
+        }
+    }
+
+    private func titleForFavoriteType(_ type: FavoriteType) -> String {
+        switch type {
+        case .surah:  return "Favorite Surahs"
+        case .ayah:   return "Bookmarked Ayahs"
+        case .letter: return "Favorite Letters"
+        case .khatm:  return "Khatm Progress"
+        }
+    }
+}
+#endif
+
+
+#if os(iOS)
+/// The Tafsir settings screen: choose which tafsir packages to keep offline - each individually, all
+/// English, all Arabic, or everything - with live progress and per-package storage management. Individual
+/// tafsirs are always cached automatically the first time they're opened; downloading just fills the cache
+/// up front.
+private struct TafsirDownloadSection: View {
+    @ObservedObject private var settings = Settings.shared
+    @ObservedObject private var store = TafsirStore.shared
+
+    /// The targets a tapped download button would fetch, pending confirmation.
+    @State private var pendingTargets: [TafsirDownloadTarget] = []
+    @State private var confirmDownload = false
+    @State private var deleteTarget: TafsirDownloadTarget?
+    @State private var confirmDelete = false
+
+    private func byteText(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private func usage(_ target: TafsirDownloadTarget) -> (files: Int, bytes: Int64) {
+        store.diskUsage[target.rawValue] ?? (0, 0)
+    }
+
+    private func requestDownload(_ targets: [TafsirDownloadTarget]) {
+        settings.hapticFeedback()
+        pendingTargets = targets
+        confirmDownload = true
+    }
+
+    var body: some View {
+        Section {
+            if store.isDownloading {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(store.downloadingTargetName)
+                        .font(.subheadline.weight(.semibold))
+
+                    ProgressView(
+                        value: Double(store.downloadCompleted),
+                        total: Double(max(store.downloadTotal, 1))
+                    )
+
+                    Text("\(store.downloadCompleted) of \(store.downloadTotal) ayahs (\(byteText(store.downloadBytes)))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                        .padding(.vertical, 2)
+
+                    Button(role: .destructive) {
+                        settings.hapticFeedback()
+                        store.cancelDownload()
+                    } label: {
+                        Text("Cancel Download")
+                            .font(.subheadline)
+                    }
+                }
+                .padding(.vertical, 4)
+            } else {
+                ForEach(TafsirDownloadTarget.allCases) { target in
+                    targetRow(target)
+                }
+            }
+
+            if let error = store.downloadError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .padding(.vertical, 2)
+            }
+        } header: {
+            Text("OFFLINE TAFSIR")
+        } footer: {
+            Text("Tafsir for any ayah you open is saved automatically. Downloads run while the app is open, can be cancelled, and resume where they left off - already-saved ayahs are skipped. English includes all 3 English tafsirs in one package; each Arabic tafsir downloads separately.")
+        }
+        .onAppear {
+            store.refreshDiskUsage()
+        }
+
+        if !store.isDownloading {
+            Section {
+                bulkButton("Download All English (~\(TafsirDownloadTarget.estimatedTotal(TafsirDownloadTarget.englishTargets)) MB)",
+                           targets: TafsirDownloadTarget.englishTargets)
+                bulkButton("Download All Arabic (~\(TafsirDownloadTarget.estimatedTotal(TafsirDownloadTarget.arabicTargets)) MB)",
+                           targets: TafsirDownloadTarget.arabicTargets)
+                bulkButton("Download Everything (~\(TafsirDownloadTarget.estimatedTotal(TafsirDownloadTarget.allCases)) MB)",
+                           targets: TafsirDownloadTarget.allCases)
+            }
+            .confirmationDialog("Download Tafsir?", isPresented: $confirmDownload, titleVisibility: .visible) {
+                Button("Download (~\(TafsirDownloadTarget.estimatedTotal(pendingTargets)) MB)") {
+                    settings.hapticFeedback()
+                    store.startDownload(targets: pendingTargets)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(pendingTargets.count == 1
+                     ? "This fetches \(pendingTargets.first?.displayName ?? "the tafsir") for all 6,236 ayahs for offline use. It may use significant data - Wi-Fi is recommended."
+                     : "This fetches \(pendingTargets.count) tafsir packages for all 6,236 ayahs each, for offline use. It may use significant data - Wi-Fi is recommended.")
+            }
+            .confirmationDialog("Delete saved tafsir?", isPresented: $confirmDelete, titleVisibility: .visible) {
+                Button("Delete \(deleteTarget?.displayName ?? "")", role: .destructive) {
+                    settings.hapticFeedback()
+                    if let deleteTarget {
+                        store.deleteDownloads(target: deleteTarget)
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("It will be re-downloaded from the Internet as you open ayahs, or you can download it again here.")
+            }
+        }
+
+    }
+
+    @ViewBuilder
+    private func targetRow(_ target: TafsirDownloadTarget) -> some View {
+        let usage = usage(target)
+
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(target.displayName)
+                    .font(.subheadline)
+
+                Text(usage.files > 0
+                     ? "Saved: \(usage.files) ayahs (\(byteText(usage.bytes)))"
+                     : "Not downloaded (~\(target.estimatedMegabytes) MB)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .monospacedDigit()
+                    .padding(.vertical, 2)
+            }
+
+            Spacer()
+
+            if usage.files > 0 {
+                Button {
+                    settings.hapticFeedback()
+                    deleteTarget = target
+                    confirmDelete = true
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.subheadline)
+                        .foregroundColor(.red)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Delete \(target.displayName)")
+            }
+
+            Button {
+                requestDownload([target])
+            } label: {
+                Image(systemName: "icloud.and.arrow.down")
+                    .font(.subheadline)
+                    .foregroundColor(settings.accentColor.color)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Download \(target.displayName)")
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func bulkButton(_ title: String, targets: [TafsirDownloadTarget]) -> some View {
+        Button {
+            requestDownload(targets)
+        } label: {
+            Label(title, systemImage: "icloud.and.arrow.down")
+                .font(.subheadline)
+                .foregroundColor(settings.accentColor.color)
+        }
+    }
+}
+#endif
+
+#if os(iOS)
+// MARK: - Settings-search entries (kept in THIS file, next to the screens they describe)
+extension SettingsSearchEntry {
+    static let quranEntries: [SettingsSearchEntry] = [
+        .init(title: "Quran Settings", path: "Al-Quran", keywords: "mushaf reading", destination: .quranSettings),
+        .init(title: "Reciter", path: "Quran Settings → Recitation", keywords: "reciters audio download favorite minshawi husary sudais qari listen", destination: .reciters),
+        .init(title: "Recitation Type & Random Reciter", path: "Quran Settings → Recitation", keywords: "murattal mujawwad muallim random ayah recitation", destination: .quranSettings),
+        .init(title: "Arabic Text (Quran)", path: "Quran Settings → Arabic Text", keywords: "font size uthmani indopak script clean dots beginner mode spacing", destination: .quranSettings),
+        .init(title: "Tajweed Colors", path: "Quran Settings → Arabic Text", keywords: "tajwid rules colors ghunnah qalqalah madd legend", destination: .quranSettings),
+        .init(title: "Highlight Allah (Quran)", path: "Quran Settings → Arabic Text", keywords: "highlight name of allah red color quran", destination: .quranSettings),
+        .init(title: "Riwayah & Qiraat", path: "Quran Settings → Arabic Text", keywords: "hafs warsh qaloon riwayah qiraat ahruf readings", destination: .quranSettings),
+        .init(title: "Transliteration & English Translations", path: "Quran Settings → English Text", keywords: "saheeh international mustafa khattab translation english transliteration", destination: .quranSettings),
+        .init(title: "Reading Mode (List / Page)", path: "Quran Settings → Reading View", keywords: "page mode mushaf list mode grid summary last read", destination: .quranSettings),
+        .init(title: "Tafsir", path: "Quran Settings → Tafsir", keywords: "tafsir commentary ibn kathir download", destination: .quranSettings),
+        .init(title: "Favorites and Bookmarks (Quran)", path: "Quran Settings → Favorites and Bookmarks", keywords: "manage favorites bookmarks notes surahs ayahs letters", destination: .quranSettings),
+    ]
+}
+#endif
+
+// MARK: - Reciter list (merged from ReciterListView.swift: same file as the Quran settings that link to it)
+
 private struct QiraahReciterSectionHeader: View {
     let title: String
     let arabic: String
@@ -756,6 +1150,7 @@ private struct QiraahReciterSectionHeader: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .minimumScaleFactor(0.65)
+                .padding(.vertical, 2)
             Spacer(minLength: 0)
         }
     }
@@ -772,6 +1167,7 @@ private struct MurattalSectionHeader: View {
             Text(subtitle)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .padding(.vertical, 2)
         }
         .lineLimit(1)
         .minimumScaleFactor(0.75)
@@ -785,7 +1181,7 @@ struct ReciterListView: View {
     /// When `false`, list opens at top without scrolling to the selected reciter.
     var autoScrollToInitialSelection = true
 
-    @EnvironmentObject var settings: Settings
+    @ObservedObject var settings = Settings.shared
     @Environment(\.presentationMode) private var presentationMode
     @State private var didAutoScrollToSelection = false
     @State private var searchText = ""
@@ -807,6 +1203,56 @@ struct ReciterListView: View {
         let subtitle: String
         let reciters: [Reciter]
     }
+
+    #if os(iOS)
+    @State private var showReciterTypeLegendInfo = false
+
+    /// The colored legend that replaced the per-row explanatory captions: one dot per reciter type,
+    /// with the full explanation one tap away.
+    private var reciterTypeLegend: some View {
+        // The dialog is attached to the compact dots cluster - not a full-width row - so on iPad it
+        // pops from the legend itself.
+        HStack {
+            Spacer(minLength: 0)
+
+            Button {
+                settings.hapticFeedback()
+                showReciterTypeLegendInfo = true
+            } label: {
+                HStack(spacing: 10) {
+                    reciterTypeLegendItem(.blue, "Full offline")
+                    reciterTypeLegendItem(.green, "Own voice")
+                    reciterTypeLegendItem(.orange, "Murattal")
+                    reciterTypeLegendItem(.red, "Surahs only")
+                }
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .confirmationDialog("Reciter Types", isPresented: $showReciterTypeLegendInfo, titleVisibility: .visible) {
+            Button("OK") {}
+        } message: {
+            Text("Blue: the highest tier - surahs and individual ayahs play in this reciter's own voice, and downloaded surahs also play ayah-by-ayah fully offline. Green: individual ayahs play in this reciter's own voice when streaming. Orange: streamed ayahs play in a Murattal style; download the surah to hear ayahs in this reciter's own voice. Red: full surahs only - individual ayahs default to Minshawi (Murattal).")
+        }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func reciterTypeLegendItem(_ color: Color, _ title: String) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+    }
+    #endif
 
     private var qiraahChangeDialogTitle: String {
         pendingRequestedQiraahIsUnsupported ? "Qiraah Text Not Supported" : "Change Quran Text?"
@@ -1211,7 +1657,7 @@ struct ReciterListView: View {
 
     private var reciterSearchControlsInset: some View {
         #if os(iOS)
-        SearchBar(text: $searchText.animation(.easeInOut))
+        SearchBar(text: (AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut)))
         .padding([.leading, .top], -8)
         #else
         EmptyView()
@@ -1250,7 +1696,7 @@ struct ReciterListView: View {
         if reciter.defaultToMinshawi {
             pendingMinshawiReciter = reciter
         } else if reciter.ayahMurattalStyleNote != nil {
-            // Mujawwad/Muallim variant with no true per-ayah recording in that style — confirm the ayah
+            // Mujawwad/Muallim variant with no true per-ayah recording in that style - confirm the ayah
             // audio will be this reciter's own Murattal.
             pendingMurattalStyleReciter = reciter
         } else {
@@ -1335,6 +1781,11 @@ struct ReciterListView: View {
         ScrollViewReader { scrollProxy in
             List {
                 Group {
+                #if os(iOS)
+                Section {
+                    reciterTypeLegend
+                }
+                #endif
                 if isSearchingReciters {
                     searchResultsBanner()
 
@@ -1369,16 +1820,19 @@ struct ReciterListView: View {
                             Text("Downloads are full-reciter packages (all 114 surahs).")
                                 .font(.caption)
                                 .foregroundColor(.primary)
+                                .padding(.vertical, 2)
 
                             Text("Ayah download is not supported, only surah download.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+                                .padding(.vertical, 2)
                         }
 
                         let downloadedCount = uniqueDownloadedReciterCount
                         Text("Downloaded reciters: \(downloadedCount)")
                             .font(.caption)
                             .foregroundColor(.secondary)
+                            .padding(.vertical, 2)
 
                         if downloadedCount > 0 {
                             Button(role: .destructive) {
@@ -1400,7 +1854,9 @@ struct ReciterListView: View {
 
                     if !filteredReciters(recitersMinshawi).isEmpty {
                         Section(header: Text("MUHAMMAD SIDDIQ AL-MINSHAWI")) {
-                            reciterButtons(filteredReciters(recitersMinshawi))
+                            // Prefixed ids: these same reciters also appear in their style sections below, so
+                            // the featured copies must carry distinct view identities.
+                            reciterButtons(filteredReciters(recitersMinshawi), idPrefix: "featured-minshawi")
                         }
                     }
                     
@@ -1608,7 +2064,7 @@ struct ReciterListView: View {
                     .background(Color.white.opacity(0.00001))
             }
             #elseif os(watchOS)
-            .searchable(text: $searchText.animation(.easeInOut))
+            .searchable(text: (AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut)))
             #endif
             .applyConditionalListStyle()
             .confirmationDialog(qiraahChangeDialogTitle, isPresented: Binding(
@@ -1746,10 +2202,12 @@ struct ReciterListView: View {
     }
 
     private var shouldHideDuplicateMinshawiEntries: Bool {
-        // The three Minshawi variants are always shown together in their own featured section, so they must
-        // be excluded from the Mujawwad/Muallim/Murattal style sections in every case — otherwise each shows
-        // up twice (the "two reciters" duplication). (Previously only hidden while filtering to downloads.)
-        true
+        // Minshawi is shown BOTH in his own featured section AND in the Mujawwad/Muallim/Murattal style
+        // section his variant belongs to (each variant naturally lives in exactly one style section). The
+        // featured section's rows carry a section-prefixed view id (see `reciterButtons(idPrefix:)`) so the
+        // two copies never collide in the List; selection/favorites stay keyed on the bare reciter id, so
+        // toggling either instance lights up both.
+        false
     }
     #else
     private var shouldHideDuplicateMinshawiEntries: Bool {
@@ -1757,10 +2215,19 @@ struct ReciterListView: View {
     }
     #endif
 
+    /// A reciter tagged with a section-scoped view id. Minshawi appears in his own featured section AND in
+    /// his style section, so the two copies must carry distinct SwiftUI identities (`idPrefix`) even though
+    /// they wrap the same `Reciter` (selection/favorites stay keyed on the bare `reciter.id`).
+    private struct KeyedReciterRow: Identifiable {
+        let id: String
+        let reciter: Reciter
+    }
+
     @ViewBuilder
-    private func reciterButtons(_ list: [Reciter], qiraah: Bool = false) -> some View {
-        ForEach(list) { reciter in
-            reciterRow(reciter, qiraah: qiraah)
+    private func reciterButtons(_ list: [Reciter], qiraah: Bool = false, idPrefix: String = "") -> some View {
+        ForEach(list.map { KeyedReciterRow(id: idPrefix.isEmpty ? $0.id : "\(idPrefix)|\($0.id)", reciter: $0) }) { item in
+            reciterRow(item.reciter, qiraah: qiraah)
+                .id(item.id)
         }
     }
 
@@ -1773,7 +2240,9 @@ struct ReciterListView: View {
             .id("search-qiraah-\(section.id)")
         } else {
             Section(header: Text(section.title)) {
-                reciterButtons(section.reciters)
+                // The featured Minshawi section's rows are prefixed so they never collide with the same
+                // reciters shown in their style sections.
+                reciterButtons(section.reciters, idPrefix: section.id == "minshawi" ? "featured-minshawi" : "")
             }
         }
     }
@@ -1809,6 +2278,7 @@ struct ReciterListView: View {
                 Text("A new reciter is chosen at random for every session.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                    .padding(.vertical, 2)
             }
         }
         .id(Settings.randomReciterName)
@@ -1834,8 +2304,7 @@ struct ReciterListView: View {
                 requestScrollToReciter(reciter)
             }
         )
-        .environmentObject(downloadManager)
-        .id(reciter.id)
+        .equatable()
         #else
         WatchReciterRow(
             reciter: reciter,
@@ -1856,15 +2325,18 @@ struct ReciterListView: View {
                 settings.toggleReciterFavorite(reciterID: reciter.id)
             }
         )
-        .id(reciter.id)
         #endif
     }
 }
 
 #if os(iOS)
-private struct ReciterRow: View {
-    @EnvironmentObject private var settings: Settings
-    @EnvironmentObject private var downloadManager: ReciterDownloadManager
+private struct ReciterRow: View, Equatable {
+    // Plain references, NOT @ObservedObject: every value this row RENDERS arrives as an input (the
+    // `downloadState` snapshot included), and the manager/settings are only touched from tap actions.
+    // Observing the manager here meant every progress byte-tick re-rendered every visible row - the
+    // Equatable snapshot the parent already passes couldn't skip anything.
+    private var settings: Settings { .shared }
+    private var downloadManager: ReciterDownloadManager { .shared }
 
     let reciter: Reciter
     let qiraah: Bool
@@ -1872,11 +2344,28 @@ private struct ReciterRow: View {
     let isSelected: Bool
     let downloadState: ReciterDownloadManager.DownloadState
     let accentColor: AccentColor
+    /// Compared alongside `accentColor`: for the `.custom` accent, `.color` resolves through this hex,
+    /// so an edit to it must fail `==` - this row observes nothing, and comparing only the enum case
+    /// left visible rows on the old tint until they scrolled off.
+    var customAccentHex: String = Settings.shared.customAccentColorHex
     let searchQuery: String
     let onSelect: () -> Void
     let onScrollToReciter: () -> Void
 
     @State private var confirmDownload = false
+
+    /// The closures are recreated per parent pass; identity lives in the value inputs. This is what
+    /// lets the one row whose snapshot changed re-render while the rest skip their bodies.
+    static func == (lhs: ReciterRow, rhs: ReciterRow) -> Bool {
+        lhs.reciter.id == rhs.reciter.id
+            && lhs.qiraah == rhs.qiraah
+            && lhs.isFavorite == rhs.isFavorite
+            && lhs.isSelected == rhs.isSelected
+            && lhs.downloadState == rhs.downloadState
+            && lhs.accentColor == rhs.accentColor
+            && lhs.customAccentHex == rhs.customAccentHex
+            && lhs.searchQuery == rhs.searchQuery
+    }
 
     var body: some View {
         let hasDownloads = downloadState.completedSurahs > 0
@@ -1899,24 +2388,28 @@ private struct ReciterRow: View {
                     }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    HighlightedSnippet(
-                        source: reciter.name,
-                        term: searchQuery,
-                        font: .subheadline,
-                        accent: accentColor.color,
-                        fg: isSelected ? accentColor.color : .primary
-                    )
-                        .multilineTextAlignment(.leading)
+                    HStack(spacing: 6) {
+                        // The type dot the top-of-list legend explains - it replaced the caption note
+                        // each row used to carry.
+                        if !qiraah {
+                            Circle()
+                                .fill(reciterTypeDotColor)
+                                .frame(width: 8, height: 8)
+                        }
+
+                        HighlightedSnippet(
+                            source: reciter.name,
+                            term: searchQuery,
+                            font: .subheadline,
+                            accent: accentColor.color,
+                            fg: isSelected ? accentColor.color : .primary
+                        )
+                            .multilineTextAlignment(.leading)
+                    }
 
                     if isDownloading {
                         ProgressView(value: overallProgress)
                             .padding(.top, 2)
-                    }
-
-                    if !qiraah && reciter.defaultToMinshawi {
-                        Text("This reciter supports surahs only. Ayahs default to Minshawi (Murattal).")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1994,22 +2487,25 @@ private struct ReciterRow: View {
                 Text("Downloading surah \(downloadState.currentSurahNumber ?? max(downloadState.completedSurahs + 1, 1)) of \(downloadState.totalSurahs) (\(Int(overallProgress * 100))%)")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                    .padding(.vertical, 2)
             }
 
             if hasDownloads {
                 Text("Storage used: \(downloadManager.storageText(bytes: downloadState.totalBytes))")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                    .padding(.vertical, 2)
             }
 
             if let errorMessage = downloadState.errorMessage, !errorMessage.isEmpty {
                 Text("Download error: \(errorMessage)")
                     .font(.caption)
                     .foregroundColor(.red)
+                    .padding(.vertical, 2)
             }
         }
         .confirmationDialog("Download \(reciter.name)?", isPresented: $confirmDownload, titleVisibility: .visible) {
-            Button("Download All 114 Surahs") {
+            Button("Download All \(reciter.carriedSurahCount) Surahs") {
                 settings.hapticFeedback()
                 withAnimation {
                     downloadManager.beginDownloadAll(for: reciter)
@@ -2018,17 +2514,57 @@ private struct ReciterRow: View {
 
             Button("Cancel") {}
         } message: {
-            Text("This downloads all 114 full-surah recitations for offline playback — it does not download ayah-by-ayah audio. It runs in the background and may use significant data and storage.")
+            Text(reciter.supportsAyahSegments
+                ? "This downloads all \(reciter.carriedSurahCount) full-surah recitations for offline playback. This reciter also supports ayah segments, so individual ayahs and custom ranges then play offline too, cut from the downloaded surah. It runs in the background and may use significant data and storage."
+                : "This downloads all \(reciter.carriedSurahCount) full-surah recitations for offline playback - it does not download ayah-by-ayah audio. It runs in the background and may use significant data and storage.")
         }
         .onAppear {
             downloadManager.ensureStateLoaded(for: reciter)
         }
     }
 
+    /// The legend color for this reciter's ayah-playback type: blue = the highest tier (surahs AND
+    /// own-voice ayahs AND offline ayah segments once downloaded), green = own-voice streamed ayahs,
+    /// orange = ayahs substitute a Murattal style, red = surahs only (ayahs default to Minshawi).
+    private var reciterTypeDotColor: Color {
+        if reciter.defaultToMinshawi { return .red }
+        if reciter.ayahMurattalStyleNote != nil { return .orange }
+        if reciter.supportsAyahSegments { return .blue }
+        return .green
+    }
+
+    /// The one-line caption under the reciter name explaining how it plays INDIVIDUAL ayahs (segments vs.
+    /// a substitute Murattal). Ordered most-specific first. (Replaced in the row by the legend dot;
+    /// kept for reference.)
+    @ViewBuilder
+    private var reciterAyahSupportNote: some View {
+        if reciter.defaultToMinshawi {
+            reciterNoteText("This reciter supports surahs only. Ayahs default to Minshawi (Murattal).")
+        } else if let style = reciter.ayahMurattalStyleNote {
+            if reciter.supportsAyahSegments {
+                // Segments, but no own streamed ayahs: the whole surah must be downloaded to hear an ayah
+                // in this reciter's own voice.
+                reciterNoteText("Streamed ayahs play in \(style). Download the surah to hear ayahs in this reciter's own voice, cut as offline ayah segments.")
+            } else {
+                reciterNoteText("Individual ayahs and custom ranges play in \(style).")
+            }
+        } else if reciter.supportsAyahSegments {
+            // Own per-ayah stream AND offline segments.
+            reciterNoteText("Downloaded surahs also play ayah-by-ayah offline, cut as precise ayah segments.")
+        }
+    }
+
+    private func reciterNoteText(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .padding(.vertical, 2)
+    }
+
 }
 #else
 private struct WatchReciterRow: View {
-    @EnvironmentObject private var settings: Settings
+    @ObservedObject private var settings = Settings.shared
 
     let reciter: Reciter
     let qiraah: Bool
@@ -2068,6 +2604,7 @@ private struct WatchReciterRow: View {
                     Text("This reciter supports surahs only. Ayahs default to Minshawi (Murattal).")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                        .padding(.vertical, 2)
                 }
             }
             .padding(.vertical, 4)
@@ -2075,161 +2612,5 @@ private struct WatchReciterRow: View {
         .buttonStyle(.plain)
     }
 
-}
-#endif
-
-#Preview {
-    AlIslamPreviewContainer(embedInNavigation: true) {
-        SettingsQuranView()
-    }
-}
-
-#if os(iOS)
-enum FavoriteType: Identifiable {
-    case surah, ayah, letter, khatm
-    var id: Self { self }
-}
-
-/// Bulk editor for the user's saved Quran items — favorite surahs, bookmarked ayahs, favorite letters, and
-/// khatm progress — with swipe-to-delete, EditButton, and a "Delete All". Reachable from Quran Settings.
-struct FavoritesView: View {
-    @EnvironmentObject var quranData: QuranData
-    @EnvironmentObject var settings: Settings
-
-    @State private var editMode: EditMode = .inactive
-
-    let type: FavoriteType
-
-    var body: some View {
-        List {
-            Group {
-            switch type {
-            case .surah:
-                if settings.favoriteSurahs.isEmpty {
-                    Text("No favorite surahs here, long tap a surah to favorite it.")
-                } else {
-                    ForEach(settings.favoriteSurahs.sorted(), id: \.self) { surahId in
-                        if let surah = quranData.quran.first(where: { $0.id == surahId }) {
-                            SurahRow(surah: surah, isFavorite: true).equatable()
-                        }
-                    }
-                    .onDelete(perform: removeSurahs)
-                }
-            case .ayah:
-                if settings.bookmarkedAyahs.isEmpty {
-                    Text("No bookmarked ayahs here, long tap an ayah to bookmark it.")
-                } else {
-                    ForEach(settings.bookmarkedAyahs.sorted {
-                        $0.surah == $1.surah ? ($0.ayah < $1.ayah) : ($0.surah < $1.surah)
-                    }, id: \.id) { bookmarkedAyah in
-                        if let surah = quranData.quran.first(where: { $0.id == bookmarkedAyah.surah }),
-                           let ayah = surah.ayahs.first(where: { $0.id == bookmarkedAyah.ayah }) {
-                            SurahAyahRow(surah: surah, ayah: ayah)
-                        }
-                    }
-                    .onDelete(perform: removeAyahs)
-                }
-            case .letter:
-                if settings.favoriteLetters.isEmpty {
-                    Text("No favorite letters here, long tap a letter to favorite it.")
-                } else {
-                    ForEach(settings.favoriteLetters.sorted(), id: \.id) { favorite in
-                        ArabicLetterRow(letterData: favorite).equatable()
-                    }
-                    .onDelete(perform: removeLetters)
-                }
-            case .khatm:
-                if settings.khatmCompletedAyahs.isEmpty {
-                    Text("No khatm progress yet. Open a surah while Khatm mode is selected to mark ayahs as viewed.")
-                } else {
-                    ForEach(quranData.quran.filter { settings.khatmCompletedCount(for: $0) > 0 }, id: \.id) { surah in
-                        SurahRow(
-                            surah: surah,
-                            khatmCompletedAyahs: settings.khatmCompletedCount(for: surah),
-                            khatmTotalAyahs: surah.numberOfAyahs
-                        )
-                        .equatable()
-                    }
-                    .onDelete(perform: removeKhatmSurahs)
-                }
-            }
-
-            Section {
-                if !isListEmpty {
-                    Button("Delete All") {
-                        settings.hapticFeedback()
-                        withAnimation { deleteAll() }
-                    }
-                    .foregroundColor(.red)
-                }
-            }
-            }
-            .themedListRowBackground()
-        }
-        .applyConditionalListStyle()
-        .navigationTitle(titleForFavoriteType(type))
-        .toolbar {
-            EditButton()
-        }
-        .environment(\.editMode, $editMode)
-    }
-
-    private var isListEmpty: Bool {
-        switch type {
-        case .surah: return settings.favoriteSurahs.isEmpty
-        case .ayah: return settings.bookmarkedAyahs.isEmpty
-        case .letter: return settings.favoriteLetters.isEmpty
-        case .khatm: return settings.khatmCompletedAyahs.isEmpty
-        }
-    }
-
-    private func deleteAll() {
-        switch type {
-        case .surah:
-            settings.favoriteSurahs.removeAll()
-        case .ayah:
-            settings.bookmarkedAyahs.removeAll()
-        case .letter:
-            settings.favoriteLetters.removeAll()
-        case .khatm:
-            settings.resetAllKhatmProgress()
-        }
-    }
-
-    private func removeSurahs(at offsets: IndexSet) {
-        let sorted = settings.favoriteSurahs.sorted()
-        let idsToRemove = offsets.map { sorted[$0] }
-        settings.favoriteSurahs.removeAll { idsToRemove.contains($0) }
-    }
-
-    private func removeAyahs(at offsets: IndexSet) {
-        let sorted = settings.bookmarkedAyahs.sorted {
-            $0.surah == $1.surah ? ($0.ayah < $1.ayah) : ($0.surah < $1.surah)
-        }
-        let idsToRemove = Set(offsets.map { sorted[$0].id })
-        settings.bookmarkedAyahs.removeAll { idsToRemove.contains($0.id) }
-    }
-
-    private func removeLetters(at offsets: IndexSet) {
-        let sorted = settings.favoriteLetters.sorted()
-        let idsToRemove = Set(offsets.map { sorted[$0].id })
-        settings.favoriteLetters.removeAll { idsToRemove.contains($0.id) }
-    }
-
-    private func removeKhatmSurahs(at offsets: IndexSet) {
-        let surahsWithProgress = quranData.quran.filter { settings.khatmCompletedCount(for: $0) > 0 }
-        for offset in offsets {
-            settings.resetKhatmProgress(for: surahsWithProgress[offset])
-        }
-    }
-
-    private func titleForFavoriteType(_ type: FavoriteType) -> String {
-        switch type {
-        case .surah:  return "Favorite Surahs"
-        case .ayah:   return "Bookmarked Ayahs"
-        case .letter: return "Favorite Letters"
-        case .khatm:  return "Khatm Progress"
-        }
-    }
 }
 #endif

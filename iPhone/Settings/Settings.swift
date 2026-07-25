@@ -1,6 +1,7 @@
 import SwiftUI
-import Combine
+import CoreLocation
 import WidgetKit
+import Combine
 import os
 
 let logger = Logger(subsystem: AppIdentifiers.bundleIdentifier, category: "Settings")
@@ -8,21 +9,31 @@ let logger = Logger(subsystem: AppIdentifiers.bundleIdentifier, category: "Setti
 /// The single source of truth for all user settings.
 ///
 /// **Why everything lives in this one file:** `@AppStorage` / `@Published` are stored property wrappers, and
-/// Swift only allows stored properties in a type's primary declaration — never in an extension. So the
+/// Swift only allows stored properties in a type's primary declaration - never in an extension. So the
 /// settings themselves can't be physically moved into separate Quran/Adhan files; the *behavior* that uses
 /// them is what's split out, into `SettingsAdhan.swift` (prayer times, notifications, location) and
 /// `SettingsQuran.swift` (reciters, bookmarks, khatm, …).
 ///
 /// The declarations below are grouped, in order, into the four buckets:
-///   1. **App Group** — `@Published`, mirrored into `appGroupUserDefaults` so widgets/extensions see them.
-///   2. **App Storage — Adhan/Prayer** — `@AppStorage` prayer state, notifications, travel, calculation.
-///   3. **App Storage — Quran** — `@AppStorage` reciter, favorites, sajdah/muqatta'at, bookmarks, khatm.
-///   4. **App Storage — Arabic/Names + appearance/misc** — fonts, themes, haptics, color scheme.
+///   1. **App Group** - `@Published`, mirrored into `appGroupUserDefaults` so widgets/extensions see them.
+///   2. **App Storage - Adhan/Prayer** - `@AppStorage` prayer state, notifications, travel, calculation.
+///   3. **App Storage - Quran** - `@AppStorage` reciter, favorites, sajdah/muqatta'at, bookmarks, khatm.
+///   4. **App Storage - Arabic/Names + appearance/misc** - fonts, themes, haptics, color scheme.
 /// Keep new settings in the matching section (and storage mechanism) so the split stays clean.
 final class Settings: ObservableObject {
     static let shared = Settings()
-    private let appGroupUserDefaults = UserDefaults(suiteName: AppIdentifiers.appGroupSuiteName)
+    // Internal (not private): the per-domain extension files (SettingsQuran and friends) mirror their
+    // typed accessors into the App Group suite for widgets/Siri, same as the members below do.
+    let appGroupUserDefaults = UserDefaults(suiteName: AppIdentifiers.appGroupSuiteName)
     @Published private(set) var isReadyForUI = false
+
+    /// Trailing-debounce work items so the launch burst of `fetchPrayerTimes` calls (onAppear + location
+    /// callback + onChange + watch sync) collapses to a single notification reschedule / widget reload,
+    /// off the synchronous first-paint path. Only used for callers that pass no completion (see
+    /// `scheduleNotifications(deferred:)`); the background-refresh task path stays synchronous.
+    /// (Not `private` because the coalescing helpers live in the `SettingsAdhan` extension, another file.)
+    var pendingNotificationScheduleWorkItem: DispatchWorkItem?
+    var pendingWidgetReloadWorkItem: DispatchWorkItem?
 
     static let encoder: JSONEncoder = {
         let enc = JSONEncoder()
@@ -40,9 +51,10 @@ final class Settings: ObservableObject {
         self.accentColor = AccentColor(rawValue: appGroupUserDefaults?.string(forKey: "accentColor") ?? AppIdentifiers.mainColorString) ?? AppIdentifiers.mainColor
         self.customAccentColorHex = appGroupUserDefaults?.string(forKey: "customAccentColorHex") ?? "34C759"
         self.customBackgroundColorHex = appGroupUserDefaults?.string(forKey: "customBackgroundColorHex") ?? "1C1C1E"
-        
-        loadKhatmProgressCacheFromStorage()
+
         runQuranStartupMigrations()
+        runWatchSyncKeyMigration()
+
         isReadyForUI = true
     }
 
@@ -53,29 +65,42 @@ final class Settings: ObservableObject {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
     }
-    
+
     /// Restores every *preference* (appearance, prayer, and Quran options) to its default while keeping the
-    /// user's content. We wipe the app's standard-defaults domain — which clears all the `@AppStorage`
-    /// preferences in one shot — but first snapshot the content keys and write them back afterward, then
+    /// user's content. We wipe the app's standard-defaults domain - which clears all the `@AppStorage`
+    /// preferences in one shot - but first snapshot the content keys and write them back afterward, then
     /// reset the app-group-backed `@Published` preferences (accent, calculation, madhab, traveling, Hijri
     /// offset) to their defaults via their setters so the shared store + widgets update too. Location and
     /// other app-group content are left untouched.
     @MainActor
-    func resetAllSettings() {
+    func resetAllSettings(keepingContent: Bool = true) {
         // Bookmarks, favorites, khatm progress, saved reading/listening positions, and search history are
-        // content, not settings — preserve them across the domain wipe.
+        // content, not settings - preserved across the domain wipe unless the user asked to erase everything.
         let contentKeys = [
             "favoriteSurahsData", "bookmarkedAyahsData", "favoriteLetterData", "favoriteNameNumbersData",
-            "khatmCompletedAyahsData", "favoriteReciterIDsData", "favoriteQiraahTagsData",
+            "khatmCompletedAyahsData", "quranPlanData", "favoriteReciterIDsData", "favoriteQiraahTagsData",
             "favoriteEnglishTranslationIDsData", "savedSajdahAyahIDsData", "savedBrokenLetterAyahIDsData",
             "lastReadSurah", "lastReadAyah", "lastListenedAyahData", "lastListenedSurahData",
             "quranSearchHistoryData",
+            // The prayer tracker and menses-pause record: months of marks and exempt days - the most
+            // clearly "the user's, not a preference" data in the app.
+            "prayerTrackerData", "prayerTrackerExemptDaysData", "mensesPauseActive", "mensesPauseStartStamp",
+            // Hadith content: marks, favorites, reading positions, search history, daily-hadith history.
+            "hadithFavoriteBooks", "hadithFavoriteChapters", "hadithBookmarks",
+            "hadithLastReadByBook", "hadithSearchHistoryData", "hadithOfTheDayHistory", "hadithBookCounts",
+            // Tally counts (and the free counter's custom label, which is the user's own text).
+            "tasbihFreeCount", "tasbihPresetCounts", "tasbihFreeLabel",
+            // Only wiped by a full erase: these are stats/history rather than saved items, but they're still
+            // the user's, not preferences.
+            "surahOpenCountsData", "surahPlayCountsData",
         ]
 
         let standard = UserDefaults.standard
-        let preserved = contentKeys.reduce(into: [String: Any]()) { dict, key in
-            if let value = standard.object(forKey: key) { dict[key] = value }
-        }
+        let preserved = keepingContent
+            ? contentKeys.reduce(into: [String: Any]()) { dict, key in
+                if let value = standard.object(forKey: key) { dict[key] = value }
+            }
+            : [:]
 
         if let bundleID = Bundle.main.bundleIdentifier {
             standard.removePersistentDomain(forName: bundleID)
@@ -85,11 +110,24 @@ final class Settings: ObservableObject {
             standard.set(value, forKey: key)
         }
 
+        // A full erase also clears the shared app-group store - the saved location, the cached prayer times,
+        // the widgets' copy of everything, and the one-shot migration flags. That's what makes it equivalent to
+        // deleting and reinstalling the app, rather than just to clearing this process's defaults.
+        if !keepingContent {
+            appGroupUserDefaults?.removePersistentDomain(forName: AppIdentifiers.appGroupSuiteName)
+            explicitlySetKeys.removeAll()
+        }
+
         // App-group preferences are mirrored by these @Published properties; reassigning to the defaults
         // re-persists them through each didSet. (Mirrors the init defaults.)
         accentColor = AppIdentifiers.mainColor
         customAccentColorHex = "34C759"
         customBackgroundColorHex = "1C1C1E"
+        
+        // The domain wipe changed the data underneath every in-memory cache. The memo-style caches
+        // (favorites, bookmarks, sky palette) self-heal because they key on the stored bytes; these
+        // presence-checked ones kept serving the erased values until a cold launch.
+        loadKhatmProgressCacheFromStorage()
 
         objectWillChange.send()
         #if os(iOS) || os(watchOS)
@@ -97,33 +135,89 @@ final class Settings: ObservableObject {
         #endif
     }
 
-    // MARK: - App group — shared with widgets / extensions
+    // MARK: - App group - shared with widgets / extensions
+
+    /// True in the iPhone app and the Watch app; false in every app extension.
+    ///
+    /// Extensions build a throwaway `Settings` and assign into it to render from the app group - see
+    /// `PrayersProvider.makeEntry()`. They must never write back. The old test for this was
+    /// `bundleIdentifier.contains("Widget")`, which silently missed the watch complication
+    /// (`…watchkitapp.complication1`), letting that process persist its *fallback defaults* over the user's
+    /// real values. Bundle layout, not naming, decides this: every extension lives in a `.appex`.
+    static let isAppProcess = Bundle.main.bundleURL.pathExtension != "appex"
+
+    /// The app-group keys holding a value the user (or an applied sync) actually chose, as opposed to one
+    /// that merely sits at its default. `watchSyncSnapshot()` transmits only these, so a device that has
+    /// never been configured cannot broadcast its defaults over an established peer.
+    ///
+    /// A plain `object(forKey:) != nil` check used to stand in for this, and it was wrong: any process that
+    /// assigned a default created the key, and the default then looked chosen.
+    private static let explicitKeysDefaultsKey = "settings.explicitlySetKeys"
+
+    private(set) lazy var explicitlySetKeys: Set<String> =
+        Set(appGroupUserDefaults?.stringArray(forKey: Self.explicitKeysDefaultsKey) ?? [])
+
+    private func markExplicitlySet(_ key: String) {
+        guard Self.isAppProcess, !explicitlySetKeys.contains(key) else { return }
+        explicitlySetKeys.insert(key)
+        appGroupUserDefaults?.set(Array(explicitlySetKeys), forKey: Self.explicitKeysDefaultsKey)
+    }
+
+    /// Backfills `explicitlySetKeys` once, and only on the iPhone.
+    ///
+    /// The iPhone's app group was never written by an extension (the iOS widget's bundle ID *did* contain
+    /// "Widget", so the old guard held there), so every key present in it is a real choice and can be seeded.
+    /// The watch's app group was polluted by the complication, so it is deliberately left to start empty:
+    /// the watch will re-mark each key the moment it applies a snapshot or the user changes it there.
+    ///
+    /// Clearing the sync digest makes the phone re-push its true configuration on the next WC activation,
+    /// with a fresh timestamp - which is what pulls a watch that has been broadcasting green back in line.
+    private func runWatchSyncKeyMigration() {
+        #if os(iOS)
+        let migrationKey = "settings.didSeedExplicitKeys"
+        guard Self.isAppProcess,
+              let appGroup = appGroupUserDefaults,
+              !appGroup.bool(forKey: migrationKey) else { return }
+
+        let syncedAppGroupKeys = [
+            "accentColor", "customAccentColorHex", "customBackgroundColorHex", "prayerCalculation",
+            "hanafiMadhab", "travelingMode", "hijriOffset", "highLatitudeRule", "customPrayerNames",
+        ]
+        explicitlySetKeys.formUnion(syncedAppGroupKeys.filter { appGroup.object(forKey: $0) != nil })
+        appGroup.set(Array(explicitlySetKeys), forKey: Self.explicitKeysDefaultsKey)
+        appGroup.removeObject(forKey: "watchSync.lastSyncedSettingsData")
+        appGroup.set(true, forKey: migrationKey)
+        #endif
+    }
 
     @Published var accentColor: AccentColor {
         didSet {
-            guard Bundle.main.bundleIdentifier?.contains("Widget") != true else { return }
+            guard Self.isAppProcess else { return }
             appGroupUserDefaults?.setValue(accentColor.rawValue, forKey: "accentColor")
+            markExplicitlySet("accentColor")
         }
     }
 
-    /// Hex ("RRGGBB") backing `AccentColor.custom`, set via the Appearance color picker.
+    /// Hex ("RRGGBB") backing `AccentColor.custom`'s primary stop, set via the Appearance color picker.
     @Published var customAccentColorHex: String {
         didSet {
-            guard Bundle.main.bundleIdentifier?.contains("Widget") != true else { return }
+            guard Self.isAppProcess else { return }
             appGroupUserDefaults?.setValue(customAccentColorHex, forKey: "customAccentColorHex")
+            markExplicitlySet("customAccentColorHex")
         }
     }
-    
+
     /// Hex ("RRGGBB") of the user-picked app background, used when the "custom" color theme is active. Kept
     /// `@Published` (not `@AppStorage`) so dragging the color picker updates the background live everywhere.
     @Published var customBackgroundColorHex: String {
         didSet {
-            guard Bundle.main.bundleIdentifier?.contains("Widget") != true else { return }
+            guard Self.isAppProcess else { return }
             appGroupUserDefaults?.setValue(customBackgroundColorHex, forKey: "customBackgroundColorHex")
+            markExplicitlySet("customBackgroundColorHex")
         }
     }
 
-    // MARK: - Quran — @AppStorage
+    // MARK: - Quran - @AppStorage
 
     /// Big vs. small in-app Now Playing player. An in-app UI preference, not shared with the widget/watch.
     @AppStorage("nowPlayingExpanded") var nowPlayingExpanded: Bool = false
@@ -134,27 +228,45 @@ final class Settings: ObservableObject {
     @AppStorage("reciterId") var reciterId: String = ""
 
     @AppStorage("favoriteReciterIDsData") private var favoriteReciterIDsData = Data()
+    /// Memoized like `favoriteSurahs`: `isReciterFavorite` runs inside a `.filter` over the whole
+    /// reciter list per body pass, which used to be a full JSON decode per element.
+    private static var favoriteReciterIDsCache: (data: Data, value: [String])?
     var favoriteReciterIDs: [String] {
         get {
-            (try? Self.decoder.decode([String].self, from: favoriteReciterIDsData)) ?? []
+            if let cached = Self.favoriteReciterIDsCache, cached.data == favoriteReciterIDsData {
+                return cached.value
+            }
+            let decoded = (try? Self.decoder.decode([String].self, from: favoriteReciterIDsData)) ?? []
+            Self.favoriteReciterIDsCache = (favoriteReciterIDsData, decoded)
+            return decoded
         }
         set {
             let normalized = Array(NSOrderedSet(array: newValue.compactMap {
                 let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.isEmpty ? nil : trimmed
             })) as? [String] ?? []
-            favoriteReciterIDsData = (try? Self.encoder.encode(normalized)) ?? Data()
+            let encoded = (try? Self.encoder.encode(normalized)) ?? Data()
+            Self.favoriteReciterIDsCache = (encoded, normalized)
+            favoriteReciterIDsData = encoded
         }
     }
 
     @AppStorage("favoriteQiraahTagsData") private var favoriteQiraahTagsData = Data()
+    private static var favoriteQiraahTagsCache: (data: Data, value: [String])?
     var favoriteQiraahTags: [String] {
         get {
-            (try? Self.decoder.decode([String].self, from: favoriteQiraahTagsData)) ?? []
+            if let cached = Self.favoriteQiraahTagsCache, cached.data == favoriteQiraahTagsData {
+                return cached.value
+            }
+            let decoded = (try? Self.decoder.decode([String].self, from: favoriteQiraahTagsData)) ?? []
+            Self.favoriteQiraahTagsCache = (favoriteQiraahTagsData, decoded)
+            return decoded
         }
         set {
             let normalized = Array(NSOrderedSet(array: newValue.map(Self.normalizeLegacyRiwayahTag))) as? [String] ?? []
-            favoriteQiraahTagsData = (try? Self.encoder.encode(normalized)) ?? Data()
+            let encoded = (try? Self.encoder.encode(normalized)) ?? Data()
+            Self.favoriteQiraahTagsCache = (encoded, normalized)
+            favoriteQiraahTagsData = encoded
         }
     }
 
@@ -200,18 +312,37 @@ final class Settings: ObservableObject {
     @AppStorage("reciteType") var reciteType: String = "Continue to Next"
 
     @AppStorage("favoriteSurahsData") private var favoriteSurahsData = Data()
+    /// Decoded-favorites memo. These getters are read from every surah row's body and from
+    /// `QuranView.searchDisplayContext` on every render - without the memo each read re-ran a full
+    /// JSONDecoder pass, so scrolling the list decoded the same bytes once per visible row per frame.
+    private static var favoriteSurahsCache: (data: Data, value: [Int])?
     var favoriteSurahs: [Int] {
         get {
-            (try? Self.decoder.decode([Int].self, from: favoriteSurahsData)) ?? []
+            if let cached = Self.favoriteSurahsCache, cached.data == favoriteSurahsData {
+                return cached.value
+            }
+            let decoded = (try? Self.decoder.decode([Int].self, from: favoriteSurahsData)) ?? []
+            Self.favoriteSurahsCache = (favoriteSurahsData, decoded)
+            return decoded
         }
         set {
-            favoriteSurahsData = (try? Self.encoder.encode(newValue)) ?? Data()
+            let encoded = (try? Self.encoder.encode(newValue)) ?? Data()
+            Self.favoriteSurahsCache = (encoded, newValue)
+            favoriteSurahsData = encoded
         }
     }
 
     @AppStorage("khatmCompletedAyahsData") var khatmCompletedAyahsData = Data()
     @AppStorage("automaticKhatmCompletion") var automaticKhatmCompletion = true
+    /// The Quran Planner's plan (goal + per-day bookkeeping), iOS-only UI in QuranPlannerView.swift.
+    /// Declared here because extensions can't add stored properties; harmless on the other targets.
+    @AppStorage("quranPlanData") var quranPlanData = Data()
     var khatmCompletedAyahSetCache: Set<String> = []
+    /// Int-keyed mirror of `khatmCompletedAyahSetCache` (surah * 1000 + ayah). `isKhatmAyahComplete`
+    /// runs per ayah row per render while scrolling in khatm mode - the mirror answers it without
+    /// building and hashing a "surah:ayah" String each call. Maintained by every mutation site in
+    /// SettingsQuran.swift; the String set stays authoritative for persistence.
+    var khatmCompletedAyahIntCache: Set<Int> = []
     var khatmCompletedSurahCountsCache: [Int: Int] = [:]
     var khatmProgressSaveTask: Task<Void, Never>?
     /// Bumped on every khatm mark. The single debounce task re-arms itself while this keeps changing, so a
@@ -231,23 +362,42 @@ final class Settings: ObservableObject {
     }
 
     @AppStorage("bookmarkedAyahsData") private var bookmarkedAyahsData = Data()
+    /// Same memo shape as `favoriteSurahs` - `SurahAyahRow.isBookmarked` reads this per row body.
+    private static var bookmarkedAyahsCache: (data: Data, value: [BookmarkedAyah])?
     var bookmarkedAyahs: [BookmarkedAyah] {
         get {
-            (try? Self.decoder.decode([BookmarkedAyah].self, from: bookmarkedAyahsData)) ?? []
+            if let cached = Self.bookmarkedAyahsCache, cached.data == bookmarkedAyahsData {
+                return cached.value
+            }
+            let decoded = (try? Self.decoder.decode([BookmarkedAyah].self, from: bookmarkedAyahsData)) ?? []
+            Self.bookmarkedAyahsCache = (bookmarkedAyahsData, decoded)
+            return decoded
         }
         set {
-            bookmarkedAyahsData = (try? Self.encoder.encode(newValue)) ?? Data()
+            let encoded = (try? Self.encoder.encode(newValue)) ?? Data()
+            Self.bookmarkedAyahsCache = (encoded, newValue)
+            bookmarkedAyahsData = encoded
         }
     }
 
     @AppStorage("showBookmarks") var showBookmarks = true
     @AppStorage("showFavorites") var showFavorites = true
-    /// One master grid toggle (driven by the toolbar button) for every list on the Quran tab except the
-    /// summary: bookmarked ayahs, favorite surahs, and the surah / juz browse list.
-    @AppStorage("quranGridMode") var quranGridMode = false
+
     /// Reads a surah as swipeable mushaf pages instead of a scrolling ayah list. Toggled from the Quran tab's
-    /// toolbar, but only takes effect inside SurahView — the surah browse list itself is unchanged.
+    /// toolbar, but only takes effect inside SurahView - the surah browse list itself is unchanged.
     @AppStorage("quranPageMode") var quranPageMode = false
+    /// Reading mode shrinks each mushaf page's Arabic until the whole page fits on screen, the way a printed
+    /// mushaf sets it. Off, the page renders at the chosen font size and scrolls.
+    @AppStorage("mushafFitPage") var mushafFitPage = true
+
+    /// What page mode draws as each page's BODY text. "arabic" (default) is the mushaf itself; the English
+    /// options replace the page's text wholesale - same canonical page boundaries, same fit-to-page - with
+    /// the transliteration, The Clear Quran, or Saheeh International. Headings follow the page's language.
+    @AppStorage("mushafPageLanguage") var mushafPageLanguage: String = MushafPageLanguage.arabic.rawValue
+
+    var resolvedMushafPageLanguage: MushafPageLanguage {
+        MushafPageLanguage(rawValue: mushafPageLanguage) ?? .arabic
+    }
     /// Shows the spelled-out pronunciation aid above muqatta'at ayahs (e.g. أَلِفۡ لَآم مِيٓمۡ). Off by default.
     @AppStorage("showMuqattaatHelper") var showMuqattaatHelper = false
 
@@ -271,14 +421,76 @@ final class Settings: ObservableObject {
 
     var groupBySurah: Bool { quranSortMode == .surah }
     /// In Khatm mode, the Surah/Juz toggle (which replaces the Asc/Desc control). When on, surahs are grouped
-    /// under juz headers, each surah shown once in the juz it *starts* in — so juz that no surah opens (e.g.
+    /// under juz headers, each surah shown once in the juz it *starts* in - so juz that no surah opens (e.g.
     /// juz 2, 5) appear empty.
     @AppStorage("khatmGroupByJuz") var khatmGroupByJuz: Bool = false
     @AppStorage("searchForSurahs") var searchForSurahs: Bool = true
-    @AppStorage("ignoreSilentLettersInQuranSearch") var ignoreSilentLettersInQuranSearch: Bool = true
+    // Silent-letter-insensitive Arabic ayah search is ALWAYS on (was `ignoreSilentLettersInQuranSearch`,
+    // a toggle removed by request - the recitation-style fold is strictly additive, so there is no
+    // reason to turn it off). The old UserDefaults key is simply orphaned.
 
     @AppStorage("lastReadSurah") var lastReadSurah: Int = 0
     @AppStorage("lastReadAyah") var lastReadAyah: Int = 0
+
+    /// Debounced last-read bookkeeping for the mushaf pager.
+    ///
+    /// Recording the last-read position used to run inline on EVERY page turn, and it is expensive twice over:
+    /// the `@AppStorage` writes fire `objectWillChange` (re-rendering every Settings-observing view, including
+    /// all mounted pages), and `refreshQuranWidgets()` does a synchronous widget-snapshot disk write plus
+    /// `WidgetCenter.reloadAllTimelines()`. None of that needs to happen mid-flip - only where the reader
+    /// *stops* matters - so page turns note the position here and the write settles once the flipping pauses.
+    /// `flushPendingLastRead()` runs on backgrounding so a quick exit can't lose the position.
+    private var pendingLastRead: (surah: Int, ayah: Int)?
+    private var pendingLastReadWorkItem: DispatchWorkItem?
+
+    func noteLastRead(surah: Int, ayah: Int) {
+        guard saveLastReadAyah else { return }
+        guard lastReadSurah != surah || lastReadAyah != ayah else { return }
+        pendingLastRead = (surah, ayah)
+
+        pendingLastReadWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.flushPendingLastRead() }
+        pendingLastReadWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+    }
+
+    func flushPendingLastRead() {
+        pendingLastReadWorkItem?.cancel()
+        pendingLastReadWorkItem = nil
+        guard let pending = pendingLastRead else { return }
+        pendingLastRead = nil
+
+        lastReadSurah = pending.surah
+        lastReadAyah = pending.ayah
+        refreshQuranWidgets()
+    }
+
+    // MARK: - Surah stats (times opened / played)
+    // A tiny [surahID: count] map JSON-encoded in one key each - at most 114 small entries, so it costs
+    // almost nothing in memory and is only decoded when a surah header is shown.
+    @AppStorage("surahOpenCountsData") private var surahOpenCountsData: Data = Data()
+    @AppStorage("surahPlayCountsData") private var surahPlayCountsData: Data = Data()
+
+    private func decodeSurahCounts(_ data: Data) -> [Int: Int] {
+        data.isEmpty ? [:] : ((try? Self.decoder.decode([Int: Int].self, from: data)) ?? [:])
+    }
+
+    func surahOpenCount(_ surahID: Int) -> Int { decodeSurahCounts(surahOpenCountsData)[surahID] ?? 0 }
+    func surahPlayCount(_ surahID: Int) -> Int { decodeSurahCounts(surahPlayCountsData)[surahID] ?? 0 }
+
+    func recordSurahOpened(_ surahID: Int) {
+        guard (1...114).contains(surahID) else { return }
+        var counts = decodeSurahCounts(surahOpenCountsData)
+        counts[surahID, default: 0] += 1
+        if let data = try? Self.encoder.encode(counts) { surahOpenCountsData = data }
+    }
+
+    func recordSurahPlayed(_ surahID: Int) {
+        guard (1...114).contains(surahID) else { return }
+        var counts = decodeSurahCounts(surahPlayCountsData)
+        counts[surahID, default: 0] += 1
+        if let data = try? Self.encoder.encode(counts) { surahPlayCountsData = data }
+    }
 
     /// When off, the app neither saves nor shows the "Last Read Ayah" / "Last Listened Surah" sections.
     @AppStorage("saveLastReadAyah") var saveLastReadAyah: Bool = true
@@ -292,54 +504,16 @@ final class Settings: ObservableObject {
     @AppStorage("quranSummaryMode") var quranSummaryMode: Bool = true
     /// Day key (yyyy-MM-dd) for which the Ayah of the Day card has been hidden via "Hide for Today".
     @AppStorage("ayahOfTheDayHiddenDate") var ayahOfTheDayHiddenDate: String = ""
+    /// A shuffled replacement for TODAY's Ayah of the Day, as "dayKey|surahID|ayahID". Stale days no
+    /// longer match the key and are ignored, so the deterministic pick quietly resumes tomorrow.
+    @AppStorage("ayahOfTheDayOverride") var ayahOfTheDayOverride: String = ""
 
-    @AppStorage("lastListenedAyahData") private var lastListenedAyahData: Data?
-    var lastListenedAyah: LastListenedAyah? {
-        get {
-            guard let data = lastListenedAyahData else { return nil }
-            do {
-                return try Self.decoder.decode(LastListenedAyah.self, from: data)
-            } catch {
-                logger.debug("Failed to decode last listened ayah: \(error)")
-                return nil
-            }
-        }
-        set {
-            if let newValue = newValue {
-                do {
-                    lastListenedAyahData = try Self.encoder.encode(newValue)
-                } catch {
-                    logger.debug("Failed to encode last listened ayah: \(error)")
-                }
-            } else {
-                lastListenedAyahData = nil
-            }
-        }
-    }
-
-    @AppStorage("lastListenedSurahData") private var lastListenedSurahData: Data?
-    var lastListenedSurah: LastListenedSurah? {
-        get {
-            guard let data = lastListenedSurahData else { return nil }
-            do {
-                return try Self.decoder.decode(LastListenedSurah.self, from: data)
-            } catch {
-                logger.debug("Failed to decode last listened surah: \(error)")
-                return nil
-            }
-        }
-        set {
-            if let newValue = newValue {
-                do {
-                    lastListenedSurahData = try Self.encoder.encode(newValue)
-                } catch {
-                    logger.debug("Failed to encode last listened surah: \(error)")
-                }
-            } else {
-                lastListenedSurahData = nil
-            }
-        }
-    }
+    // The TYPED accessors over these two stores (`lastListenedAyah` / `lastListenedSurah`) live in
+    // SettingsQuran.swift: they name Quran model types, and this core file stays free of every domain's
+    // types except the prayer engine it structurally contains. Only the raw `Data` storage lives here
+    // (stored properties can't move to extensions); internal so the extension can reach it.
+    @AppStorage("lastListenedAyahData") var lastListenedAyahData: Data?
+    @AppStorage("lastListenedSurahData") var lastListenedSurahData: Data?
 
     /// Which qiraah/riwayah to show for Arabic text. Empty or "Hafs" = Hafs an Asim (default). Transliteration and translations only apply to Hafs.
     @AppStorage("displayQiraah") var displayQiraah: String = ""
@@ -407,30 +581,182 @@ final class Settings: ObservableObject {
     @AppStorage("showFullSurahRow") var showFullSurahRow: Bool = false
 
     @AppStorage("quranSearchHistoryData") private var quranSearchHistoryData = Data()
+    /// Memoized: the Quran search bar reads this per render while focused (per keystroke).
+    private static var quranSearchHistoryCache: (data: Data, value: [String])?
     var quranSearchHistory: [String] {
         get {
-            (try? Self.decoder.decode([String].self, from: quranSearchHistoryData)) ?? []
+            if let cached = Self.quranSearchHistoryCache, cached.data == quranSearchHistoryData {
+                return cached.value
+            }
+            let decoded = (try? Self.decoder.decode([String].self, from: quranSearchHistoryData)) ?? []
+            Self.quranSearchHistoryCache = (quranSearchHistoryData, decoded)
+            return decoded
         }
         set {
-            quranSearchHistoryData = (try? Self.encoder.encode(Array(newValue.prefix(10)))) ?? Data()
+            let capped = Array(newValue.prefix(10))
+            let encoded = (try? Self.encoder.encode(capped)) ?? Data()
+            Self.quranSearchHistoryCache = (encoded, capped)
+            quranSearchHistoryData = encoded
         }
     }
 
+    // The Hadith tab's recent searches - the Quran search history's exact twin (chips over the search bar).
+    @AppStorage("hadithSearchHistoryData") private var hadithSearchHistoryData = Data()
+    /// Memoized like `favoriteSurahs`: the chips row stays mounted and reads this on every render pass.
+    private static var hadithSearchHistoryCache: (data: Data, value: [String])?
+    var hadithSearchHistory: [String] {
+        get {
+            if let cached = Self.hadithSearchHistoryCache, cached.data == hadithSearchHistoryData {
+                return cached.value
+            }
+            let decoded = (try? Self.decoder.decode([String].self, from: hadithSearchHistoryData)) ?? []
+            Self.hadithSearchHistoryCache = (hadithSearchHistoryData, decoded)
+            return decoded
+        }
+        set {
+            let capped = Array(newValue.prefix(10))
+            let encoded = (try? Self.encoder.encode(capped)) ?? Data()
+            Self.hadithSearchHistoryCache = (encoded, capped)
+            hadithSearchHistoryData = encoded
+        }
+    }
+
+    func addHadithSearchHistory(_ query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        var history = hadithSearchHistory.filter {
+            $0.caseInsensitiveCompare(trimmed) != .orderedSame
+        }
+        history.insert(trimmed, at: 0)
+        hadithSearchHistory = Array(history.prefix(10))
+    }
+
+    func removeHadithSearchHistory(_ query: String) {
+        hadithSearchHistory.removeAll { $0.caseInsensitiveCompare(query) == .orderedSame }
+    }
+
     @AppStorage("englishFontSize") var englishFontSize: Double = Double(UIFont.preferredFont(forTextStyle: .body).pointSize)
+    
+    // MARK: - Hadith display
+
+    /// Which parts of a hadith render in the Hadith tab (both default on; hiding one gives a pure-Arabic or
+    /// pure-English reading experience).
+    @AppStorage("showHadithArabic") var showHadithArabic = true
+    @AppStorage("showHadithEnglish") var showHadithEnglish = true
+    /// Hadith's own "Highlight Allah" toggle, split from the Quran's `highlightAllahNames` so the two
+    /// readers can differ. Seeded from the Quran toggle once in `init` so the split changes nothing
+    /// until the user actually flips it.
+    @AppStorage("highlightAllahNamesHadith") var highlightAllahNamesHadith: Bool = false
+    /// Show the narrator ("It is narrated on the authority of...") line above the English text.
+    @AppStorage("showHadithNarrator") var showHadithNarrator = true
+    /// Hadith text sizes, independent of the Quran's own sliders.
+    @AppStorage("hadithArabicFontSize") var hadithArabicFontSize: Double = Double(UIFont.preferredFont(forTextStyle: .body).pointSize + 4)
+    @AppStorage("hadithEnglishFontSize") var hadithEnglishFontSize: Double = Double(UIFont.preferredFont(forTextStyle: .body).pointSize)
 
     // MARK: - Arabic letters & 99 Names
+    
+    /// THE grid toggle, app-wide: the Quran tab's lists, the Arabic alphabet, the 99 Names, and the Islam
+    /// resources all follow this one switch - flipping it anywhere flips it everywhere. (The key keeps its
+    /// historical name so existing users' Quran preference carries over. The retired per-screen
+    /// `arabicDisplayMode` / `namesDisplayMode` strings are no longer migrated - those screens default to
+    /// list until re-toggled.)
+    @AppStorage("quranGridMode") var gridMode = false
+    
+    /// Per-screen grid choices (Arabic Alphabet / 99 Names / Islam tab; the Hadith tab and the Quran tab
+    /// own theirs). -1 = "not chosen yet": falls back to the app-wide `gridMode`, so existing users keep
+    /// their current look until they flip that screen's own toggle - after which each grid icon controls
+    /// only its own screen.
+    @AppStorage("gridModeArabicRaw") var gridModeArabicRaw: Int = -1
+    @AppStorage("gridModeNamesRaw") var gridModeNamesRaw: Int = -1
+    @AppStorage("gridModeIslamRaw") var gridModeIslamRaw: Int = -1
+
+    var arabicGridMode: Bool {
+        get { gridModeArabicRaw == -1 ? gridMode : gridModeArabicRaw == 1 }
+        set { gridModeArabicRaw = newValue ? 1 : 0 }
+    }
+
+    var namesGridMode: Bool {
+        get { gridModeNamesRaw == -1 ? gridMode : gridModeNamesRaw == 1 }
+        set { gridModeNamesRaw = newValue ? 1 : 0 }
+    }
+
+    var islamGridMode: Bool {
+        get { gridModeIslamRaw == -1 ? gridMode : gridModeIslamRaw == 1 }
+        set { gridModeIslamRaw = newValue ? 1 : 0 }
+    }
     
     @AppStorage("THEfontArabic") var fontArabic: String = "KFGQPCHAFSUthmanicScript-Regula"
     @AppStorage("fontArabicSize") var fontArabicSize: Double = Double(UIFont.preferredFont(forTextStyle: .title1).pointSize)
     @AppStorage("useFontArabic") var useFontArabic = true
 
+    /// The Arabic face for the NON-Quran Arabic screens (Hadith, Adhkar, Duas, 99 Names, Arabic Alphabet).
+    /// Independent of the Quran's own font picker.
+    enum IslamArabicFace: String, CaseIterable {
+        case uthmani, indopak, basic
+
+        /// Outside the Quran, "Uthmani" is ALWAYS the Qiraat Uthmani face - never the Hafs Quran face,
+        /// which is reserved for the mushaf itself.
+        var fontName: String {
+            switch self {
+            case .uthmani: return Settings.qiraatUthmaniFontName
+            case .indopak: return Settings.indopakFontName
+            case .basic: return Settings.systemArabicFontName
+            }
+        }
+    }
+
+    /// Raw storage for `islamArabicFace`. Empty means "not chosen yet" - the legacy two-way
+    /// Quranic-vs-Basic toggle (`useFontArabic`) seeds the richer choice on first read.
+    @AppStorage("islamArabicFontFace") var islamArabicFaceRaw: String = ""
+
+    var islamArabicFace: IslamArabicFace {
+        get {
+            if let face = IslamArabicFace(rawValue: islamArabicFaceRaw) { return face }
+            return useFontArabic ? .uthmani : .basic
+        }
+        set {
+            islamArabicFaceRaw = newValue.rawValue
+            // Keep the legacy flag in step - the watch sync channel still speaks Quranic-vs-Basic.
+            useFontArabic = newValue != .basic
+        }
+    }
+
+    /// True when the Quran Arabic font picker is set to "Basic" (the standard Apple system font).
+    var quranUsesSystemArabicFont: Bool { fontArabic == Settings.systemArabicFontName }
+
+    /// True when Quran Arabic renders in a real bundled face (Uthmani / Qiraat / IndoPak) rather than the system
+    /// font. Views pass this to `arabicFontDesign(custom:)` so the app-wide rounded design skips the bundled faces
+    /// but still applies when "Basic" is selected. See the note in `Globals.swift`.
+    var quranUsesCustomArabicFace: Bool { !quranUsesSystemArabicFont }
+
+    /// Same question for the non-Quran Arabic screens (Hadith, Adhkar, Duas, 99 Names, Arabic Alphabet):
+    /// true whenever their three-way face picker is on a real bundled face rather than "Basic".
+    var islamUsesCustomArabicFace: Bool { islamArabicFace != .basic }
+
+    /// The Arabic font for the non-Quran Arabic screens, straight from the three-way face choice:
+    /// Uthmani (the Qiraat face - never the Hafs Quran face), IndoPak, or Basic (system).
+    var nonQuranArabicFontName: String { islamArabicFace.fontName }
+
     // MARK: - Arabic Alphabet screen size
+    
+    static let randomReciterName = "Random Reciter"
+    static let hafsUthmaniFontName = "KFGQPCHAFSUthmanicScript-Regula"
+    static let qiraatUthmaniFontName = "KFGQPCQUMBULUthmanicScript-Regu"
+    static let indopakFontName = "Al_Mushaf"
+    /// Sentinel `fontArabic` value meaning "use the standard Apple system font" for Quran Arabic. It is not a
+    /// real installed font, so any stray `.custom(_)` with it falls back to the system font anyway.
+    static let systemArabicFontName = "AlIslamSystemArabicFont"
 
     /// The Arabic Alphabet screens (ArabicView / ArabicLetterView) expose a size slider. This is its position
     /// as an index into `arabicLetterDynamicTypeSizes`. The views apply the result as a Dynamic-Type *floor*
     /// so text only ever grows from the device size, and the custom Arabic glyphs (built with `relativeTo:`)
     /// grow along with every other label.
     @AppStorage("arabicLetterSizeIndex") var arabicLetterSizeIndex: Int = 0
+
+    /// Hides the English readings ("ba", "bi", "bu") under the tashkeel glyphs on the Arabic Alphabet screens, so
+    /// the marks can be practised from the Arabic alone rather than read off the transliteration.
+    @AppStorage("hideEnglishInArabicLetters") var hideEnglishInArabicLetters: Bool = false
 
     /// Starts at `.xSmall`, not `.large`: a floor is a *minimum*, so anchoring it at `.large` silently forced
     /// the alphabet up to the default text size for anyone whose system Dynamic Type is set smaller. The
@@ -446,16 +772,25 @@ final class Settings: ObservableObject {
     /// A custom Arabic font that scales with Dynamic Type (so the Arabic Alphabet size slider affects it).
     /// `base` is the point size at the default (`.large`) content size.
     func scalableArabicFont(base: CGFloat, relativeTo style: Font.TextStyle) -> Font {
-        .custom(fontArabic, size: base, relativeTo: style)
+        Font.arabic(fontArabic, size: base, relativeTo: style)
     }
 
     @AppStorage("favoriteLetterData") private var favoriteLetterData = Data()
+    /// Memoized: the alphabet rows call `isLetterFavorite` per row per render.
+    private static var favoriteLettersCache: (data: Data, value: [LetterData])?
     var favoriteLetters: [LetterData] {
         get {
-            (try? Self.decoder.decode([LetterData].self, from: favoriteLetterData)) ?? []
+            if let cached = Self.favoriteLettersCache, cached.data == favoriteLetterData {
+                return cached.value
+            }
+            let decoded = (try? Self.decoder.decode([LetterData].self, from: favoriteLetterData)) ?? []
+            Self.favoriteLettersCache = (favoriteLetterData, decoded)
+            return decoded
         }
         set {
-            favoriteLetterData = (try? Self.encoder.encode(newValue)) ?? Data()
+            let encoded = (try? Self.encoder.encode(newValue)) ?? Data()
+            Self.favoriteLettersCache = (encoded, newValue)
+            favoriteLetterData = encoded
         }
     }
     
@@ -473,6 +808,24 @@ final class Settings: ObservableObject {
         favoriteLetters.contains { $0.id == letterData.id }
     }
     
+    /// Pinned Islam-tab resources, stored as the destination enum's raw values, comma-joined (a dozen short
+    /// identifiers - a Codable blob would be ceremony).
+    @AppStorage("favoriteIslamResources") private var favoriteIslamResourcesRaw = ""
+
+    func isIslamResourceFavorite(_ id: String) -> Bool {
+        favoriteIslamResourcesRaw.components(separatedBy: ",").contains(id)
+    }
+
+    func toggleIslamResourceFavorite(_ id: String) {
+        var ids = favoriteIslamResourcesRaw.components(separatedBy: ",").filter { !$0.isEmpty }
+        if let index = ids.firstIndex(of: id) {
+            ids.remove(at: index)
+        } else {
+            ids.append(id)
+        }
+        favoriteIslamResourcesRaw = ids.joined(separator: ",")
+    }
+
     @AppStorage("favoriteNameNumbersData") private var favoriteNameNumbersData = Data()
     var favoriteNameNumbers: [Int] {
         get {
@@ -505,7 +858,7 @@ final class Settings: ObservableObject {
         // Single scalar walk: fold each Arabic scalar through the canonical map (dagger alif → alif, hamza
         // carriers → bare letters, teh marbuta → heh, …) and drop unwanted punctuation/marks in the SAME
         // pass. Replaces the old 22 sequential `replacingOccurrences` scans (each a full-string pass +
-        // allocation) plus a separate filter pass — this runs on every keystroke query and ~7×/ayah during
+        // allocation) plus a separate filter pass - this runs on every keystroke query and ~7×/ayah during
         // index build, so collapsing 23 passes into 1 is a real win. Behavior is identical: all map keys are
         // single scalars, normalization still happens before the unwanted-char filter, lowercasing after.
         var built = ""
@@ -614,9 +967,19 @@ final class Settings: ObservableObject {
 
     // MARK: - Global helpers (not Quran- or Adhan-specific)
 
+    #if os(iOS)
+    /// One reused, prepared generator: allocating a fresh `UIImpactFeedbackGenerator` per tap added
+    /// latency/jitter on the highest-frequency taps in the app (the tasbih counter). Re-preparing after
+    /// each impact keeps the Taptic Engine warm for the next one.
+    private static let impactGenerator = UIImpactFeedbackGenerator(style: .light)
+    #endif
+
     func hapticFeedback() {
         #if os(iOS)
-        if hapticOn { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+        if hapticOn {
+            Self.impactGenerator.impactOccurred()
+            Self.impactGenerator.prepare()
+        }
         #endif
 
         #if os(watchOS)

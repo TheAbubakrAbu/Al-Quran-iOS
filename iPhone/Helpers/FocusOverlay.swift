@@ -1,10 +1,13 @@
-#if os(iOS)
+// Imported unconditionally: the `focusableImage` modifier at the bottom of this file lives OUTSIDE the iOS-only
+// block (the screens that use it build for the watch too), so SwiftUI has to be in scope on every platform.
 import SwiftUI
+
+#if os(iOS)
 
 // MARK: - Fullscreen focus overlay
 
 /// One thing shown as large as the screen allows: an Arabic letter, a surah name, or one of the 99 Names.
-/// `arabic` is the hero — everything else is supporting text under it.
+/// `arabic` is the hero - everything else is supporting text under it.
 struct FocusItem: Identifiable, Equatable {
     let id: String
     let arabic: String
@@ -17,6 +20,9 @@ struct FocusItem: Identifiable, Equatable {
     let shareText: String
     /// Letters from non-Arabic scripts (پ, چ, ژ …) aren't in the Quranic font, so they must fall back.
     let allowsQuranicFont: Bool
+    /// An asset name. When set, the hero is that image - pinch/double-tap to zoom - instead of Arabic text,
+    /// and the caption sits under it. This is what makes every diagram in the app openable full screen.
+    let imageName: String?
 
     init(
         id: String,
@@ -27,7 +33,8 @@ struct FocusItem: Identifiable, Equatable {
         secondaryArabic: String? = nil,
         shareLabel: String,
         shareText: String,
-        allowsQuranicFont: Bool = true
+        allowsQuranicFont: Bool = true,
+        imageName: String? = nil
     ) {
         self.id = id
         self.arabic = arabic
@@ -38,6 +45,7 @@ struct FocusItem: Identifiable, Equatable {
         self.shareLabel = shareLabel
         self.shareText = shareText
         self.allowsQuranicFont = allowsQuranicFont
+        self.imageName = imageName
     }
 }
 
@@ -64,16 +72,21 @@ final class FocusOverlayPresenter: ObservableObject {
     }
 }
 
-/// Sits at the top of the app's root `ZStack` — not a sheet, so it can cover the tab bar and animate as a
+/// Sits at the top of the app's root `ZStack` - not a sheet, so it can cover the tab bar and animate as a
 /// plain cross-fade instead of the system's slide-up.
 struct FocusOverlayHost: View {
-    @EnvironmentObject private var settings: Settings
+    @ObservedObject private var settings = Settings.shared
     @ObservedObject private var presenter = FocusOverlayPresenter.shared
 
     @State private var showingActivityView = false
 
     private var useQuranicFont: Bool {
         settings.useFontArabic && (presenter.item?.allowsQuranicFont ?? false)
+    }
+
+    /// Whether the hero glyph resolves to a bundled face, and so must opt out of the app-wide rounded design.
+    private var usesCustomArabicFace: Bool {
+        useQuranicFont && settings.quranUsesCustomArabicFace
     }
 
     var body: some View {
@@ -105,7 +118,7 @@ struct FocusOverlayHost: View {
             // just overflows and clips the glyph.
             .dynamicTypeSize(.large)
             .sheet(isPresented: $showingActivityView) {
-                ActivityView(activityItems: [item.shareText])
+                ActivityView(activityItems: shareItems(item))
             }
         }
     }
@@ -131,9 +144,19 @@ struct FocusOverlayHost: View {
 
     @ViewBuilder
     private func hero(_ item: FocusItem) -> some View {
+        if let imageName = item.imageName {
+            ZoomableImage(imageName: imageName)
+        } else {
+            textHero(item)
+        }
+    }
+
+    @ViewBuilder
+    private func textHero(_ item: FocusItem) -> some View {
         VStack(spacing: 20) {
             Text(item.arabic)
-                .font(useQuranicFont ? .custom(settings.fontArabic, size: 130) : .system(size: 110))
+                .font(useQuranicFont ? Font.arabic(settings.fontArabic, size: 130) : .system(size: 110))
+                .arabicFontDesign(custom: usesCustomArabicFace)
                 .foregroundStyle(settings.accentColor.color)
                 .multilineTextAlignment(.center)
                 .minimumScaleFactor(0.15)
@@ -142,7 +165,8 @@ struct FocusOverlayHost: View {
 
             if let secondaryArabic = item.secondaryArabic {
                 Text(secondaryArabic)
-                    .font(useQuranicFont ? .custom(settings.fontArabic, size: 34) : .system(size: 30))
+                    .font(useQuranicFont ? Font.arabic(settings.fontArabic, size: 34) : .system(size: 30))
+                    .arabicFontDesign(custom: usesCustomArabicFace)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .minimumScaleFactor(0.5)
@@ -184,7 +208,12 @@ struct FocusOverlayHost: View {
         HStack(spacing: 12) {
             Button {
                 settings.hapticFeedback()
-                UIPasteboard.general.string = item.arabic
+                // An image copies as an image; everything else copies its Arabic.
+                if let imageName = item.imageName, let image = UIImage(named: imageName) {
+                    UIPasteboard.general.image = image
+                } else {
+                    UIPasteboard.general.string = item.arabic
+                }
             } label: {
                 Label("Copy", systemImage: "doc.on.doc")
                     .font(.subheadline.weight(.semibold))
@@ -207,6 +236,80 @@ struct FocusOverlayHost: View {
         .buttonStyle(.plain)
         .foregroundStyle(settings.accentColor.color)
     }
+
+    /// What the share sheet sends: the image itself for an image item, the text otherwise.
+    private func shareItems(_ item: FocusItem) -> [Any] {
+        if let imageName = item.imageName, let image = UIImage(named: imageName) {
+            return [image]
+        }
+        return [item.shareText]
+    }
+}
+
+// MARK: - Zoomable image
+
+/// The image hero: pinch to zoom, drag to pan, double-tap to toggle between fit and 2.5×. Scale is clamped so
+/// the image can't be shrunk away or blown up past legibility, and it springs back to fit when zoomed out.
+struct ZoomableImage: View {
+    let imageName: String
+
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    private let minScale: CGFloat = 1
+    private let maxScale: CGFloat = 5
+
+    var body: some View {
+        Image(imageName)
+            .resizable()
+            .scaledToFit()
+            .scaleEffect(scale)
+            .offset(offset)
+            .gesture(
+                // Panning only makes sense once you're zoomed in; at fit scale the drag would just slide the
+                // image around inside empty space.
+                DragGesture()
+                    .onChanged { value in
+                        guard scale > 1 else { return }
+                        offset = CGSize(
+                            width: lastOffset.width + value.translation.width,
+                            height: lastOffset.height + value.translation.height
+                        )
+                    }
+                    .onEnded { _ in lastOffset = offset }
+            )
+            .simultaneousGesture(
+                MagnificationGesture()
+                    .onChanged { value in
+                        scale = min(max(lastScale * value, minScale), maxScale)
+                    }
+                    .onEnded { _ in
+                        lastScale = scale
+                        if scale <= 1 { resetZoom() }
+                    }
+            )
+            .onTapGesture(count: 2) {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if scale > 1 {
+                        resetZoom()
+                    } else {
+                        scale = 2.5
+                        lastScale = 2.5
+                    }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .frame(maxWidth: .infinity)
+    }
+
+    private func resetZoom() {
+        scale = 1
+        lastScale = 1
+        offset = .zero
+        lastOffset = .zero
+    }
 }
 
 // MARK: - Sharing
@@ -215,16 +318,25 @@ struct FocusOverlayHost: View {
 struct ActivityView: UIViewControllerRepresentable {
     let activityItems: [Any]
     var applicationActivities: [UIActivity]? = nil
+    /// Called when the activity sheet finishes; `completed` is false when the user cancelled. Lets a caller
+    /// (e.g. the Share Ayah sheet) dismiss itself only after a REAL share, not on cancel.
+    var onComplete: ((_ completed: Bool) -> Void)? = nil
+
     func makeUIViewController(context: Context) -> UIActivityViewController {
         let vc = UIActivityViewController(activityItems: activityItems, applicationActivities: applicationActivities)
         vc.modalPresentationStyle = .formSheet
+        if let onComplete {
+            vc.completionWithItemsHandler = { _, completed, _, _ in
+                onComplete(completed)
+            }
+        }
         return vc
     }
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
-/// Shares from a context-menu button. A `.sheet` can't be used there — the menu's host row is gone by the
-/// time the action runs — so present the activity controller on the topmost view controller instead.
+/// Shares from a context-menu button. A `.sheet` can't be used there - the menu's host row is gone by the
+/// time the action runs - so present the activity controller on the topmost view controller instead.
 @MainActor
 func presentSystemShareSheet(items: [Any]) {
     let scene = UIApplication.shared.connectedScenes
@@ -248,8 +360,8 @@ func presentSystemShareSheet(items: [Any]) {
 
 // MARK: - Focus items for each kind of content
 //
-// Only the kinds this file can build on its own. Content types that live outside Helpers — a Quran `Surah`,
-// say — declare their own `FocusItem` factory next to the model, so this file drops into an app that has no
+// Only the kinds this file can build on its own. Content types that live outside Helpers - a Quran `Surah`,
+// say - declare their own `FocusItem` factory next to the model, so this file drops into an app that has no
 // Quran (Al-Adhan) without dragging the Quran folder along.
 
 extension FocusItem {
@@ -260,14 +372,39 @@ extension FocusItem {
             title: data.transliteration,
             subtitle: data.name,
             footnote: data.weightRule,
-            secondaryArabic: data.forms.prefix(3).joined(separator: "   "),
+            // `forms` is [final, medial, initial]; reversed so this RTL-rendered text puts the initial form on the right.
+            secondaryArabic: data.forms.prefix(3).reversed().joined(separator: "   "),
             shareLabel: "Share Letter",
-            shareText: """
-            \(data.letter) — \(data.transliteration)
-            Name: \(data.name)
-            Forms: \(data.forms.prefix(3).joined(separator: " "))
-            """,
+            // Always share as "English - Arabic", e.g. "Baa - ب".
+            shareText: "\(data.transliteration) - \(data.letter)",
             allowsQuranicFont: !data.isNonArabicScriptLetter
+        )
+    }
+
+    /// Any asset image, blown up full screen and zoomable.
+    static func image(_ assetName: String, title: String, subtitle: String? = nil) -> FocusItem {
+        FocusItem(
+            id: "image-\(assetName)",
+            arabic: "",
+            title: title,
+            subtitle: subtitle,
+            shareLabel: "Share Image",
+            shareText: title,
+            imageName: assetName
+        )
+    }
+
+    /// An Arabic numeral, so the numbers open full screen like the letters do.
+    static func number(_ data: (number: String, name: String, transliteration: String, englishNumber: String)) -> FocusItem {
+        FocusItem(
+            id: "number-\(data.englishNumber)",
+            arabic: data.number,
+            title: data.transliteration,
+            subtitle: data.name,
+            footnote: "Number \(data.englishNumber)",
+            secondaryArabic: data.englishNumber,
+            shareLabel: "Share Number",
+            shareText: "\(data.transliteration) - \(data.number)"
         )
     }
 
@@ -280,14 +417,38 @@ extension FocusItem {
             footnote: "First found: \(name.firstFoundShort)",
             secondaryArabic: name.numberArabic,
             shareLabel: "Share Name",
-            shareText: """
-            \(name.name.removeDiacriticsFromLastLetter()) — \(name.transliteration)
-            Meaning: \(name.meaning)
-            First Found: \(name.firstFoundShort)
-
-            \(name.desc)
-            """
+            // Always share as "English - Arabic", e.g. "Ar-Rahman - الرحمن".
+            shareText: "\(name.transliteration) - \(name.name.removeDiacriticsFromLastLetter())"
         )
     }
 }
+
 #endif
+
+// MARK: - Presenting
+
+// Outside the `#if os(iOS)` above: the screens that carry these images (Tajweed, Pillars) build for the watch
+// too, so the modifier has to EXIST there or every call site fails to compile. There's no focus overlay on
+// watchOS - no room for one - so it's a no-op there rather than a per-call-site `#if`.
+extension View {
+    /// Makes an inline image open full screen (zoomable, shareable) on tap. Attach it to the `Image` itself:
+    ///
+    ///     Image("Makharij1").resizable().scaledToFit().focusableImage("Makharij1", title: "Makharij")
+    ///
+    /// The whole image is the hit target, so it's easy to hit - the diagrams in Pillars and Tajweed are far too
+    /// small to read inline, and this is the way out of that.
+    @ViewBuilder
+    func focusableImage(_ assetName: String, title: String, subtitle: String? = nil) -> some View {
+        #if os(iOS)
+        contentShape(Rectangle())
+            .onTapGesture {
+                Settings.shared.hapticFeedback()
+                FocusOverlayPresenter.shared.present(.image(assetName, title: title, subtitle: subtitle))
+            }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("\(title). Open full screen")
+        #else
+        self
+        #endif
+    }
+}

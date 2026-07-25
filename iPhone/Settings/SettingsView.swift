@@ -1,13 +1,43 @@
 import SwiftUI
 
+#if os(iOS)
+/// One row of the Settings tab's search index. Each entry deep-links to the SCREEN that owns the
+/// setting; the path caption shows where the row will land, so "highlight allah" finds both the Quran
+/// and the Hadith toggles.
+///
+/// The index is COMPOSED from per-screen entry lists declared as extensions of this type AT THE BOTTOM
+/// OF THE FILE THAT OWNS EACH SCREEN (`quranEntries` in SettingsQuranView.swift, `hadithEntries` in
+/// SettingsHadithView.swift, `adhanEntries`/`notificationEntries`/`prayerCalculationEntries` in
+/// SettingsAdhanView.swift). Adding or removing a setting means editing the list in the SAME file as
+/// the control - there is no central registry to remember.
+struct SettingsSearchEntry: Identifiable {
+    let title: String
+    let path: String
+    let keywords: String
+    let destination: Destination
+
+    var id: String { path + title }
+
+    enum Destination {
+        case quranSettings
+        case reciters
+        case credits
+    }
+}
+#endif
+
 struct SettingsView: View {
-    @EnvironmentObject var settings: Settings
-    @EnvironmentObject var quranData: QuranData
-    
+    @ObservedObject var settings = Settings.shared
+    @ObservedObject var quranData = QuranData.shared
+
     @State private var showingCredits = false
     @State private var selectedDestination: SettingsDestination? = SettingsView.defaultDestination
     @State private var hasSetDefaultSelection = false
     @State private var showResetConfirmation = false
+    @State private var confirmEraseEverything = false
+    @State private var settingsSearchText = ""
+    /// Apple Music-style: true while scrolling down, minimizing the floating search bar.
+    @State private var barsCollapsed = false
 
     /// The destination shown when nothing is explicitly selected (single source of truth).
     private static let defaultDestination: SettingsDestination = .quranSettings
@@ -66,17 +96,46 @@ struct SettingsView: View {
     private var settingsList: some View {
         List {
             Group {
-                quranSection
-                appearanceSection
-                resetSection
-                creditsSection
-
-                AlIslamAppsSection()
+                #if os(iOS)
+                if !settingsSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    settingsSearchResultsSection
+                } else {
+                    standardSettingsSections
+                }
+                #else
+                standardSettingsSections
+                #endif
             }
             .themedListRowBackground()
         }
+        #if os(iOS)
+        // The search bar floats at the bottom, exactly like every other searchable screen: Apple
+        // Music-style minimize on scroll-down, restore on scroll-up (or while typing).
+        .collapseBarsOnScroll($barsCollapsed)
+        .adaptiveSafeArea(edge: .bottom) {
+            VStack(spacing: SafeAreaInsetVStackSpacing.standard) {
+                SearchBar(text: $settingsSearchText.animation(.easeInOut))
+                    .padding([.horizontal, .top], -8)
+                    .minimizedBarStyle(barsCollapsed)
+            }
+            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: barsCollapsed)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 8)
+            .background(Color.white.opacity(0.00001))
+        }
+        #endif
         .navigationTitle("Settings")
         .applyConditionalListStyle()
+    }
+
+    @ViewBuilder
+    private var standardSettingsSections: some View {
+        quranSection
+        appearanceSection
+        resetSection
+        creditsSection
+
+        AlIslamAppsSection()
     }
 
     #if os(iOS)
@@ -107,12 +166,80 @@ struct SettingsView: View {
     }
     #endif
 
+    #if os(iOS)
+    // MARK: - Settings search
+    //
+    // The index is COMPOSED from per-screen entry lists that live NEXT TO the screens they describe
+    // (see `SettingsSearchEntry`) - this file only concatenates them. To add/remove a setting's entry,
+    // edit the `SettingsSearchEntry` extension at the bottom of the file that owns the control.
+
+    private static let settingsSearchIndex: [SettingsSearchEntry] =
+        SettingsSearchEntry.quranEntries
+        + [
+            // About (owned by this file's credits link).
+            .init(title: "Credits & Contact", path: "Credits", keywords: "about version website email review", destination: .credits)
+        ]
+
+    @ViewBuilder
+    private func searchDestinationView(_ destination: SettingsSearchEntry.Destination) -> some View {
+        switch destination {
+        case .quranSettings: SettingsQuranView()
+        case .reciters: ReciterListView()
+        case .credits: CreditsView()
+        }
+    }
+
+    private var settingsSearchResults: [SettingsSearchEntry] {
+        let query = settingsSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return [] }
+        let terms = query.split(separator: " ").map(String.init)
+        return Self.settingsSearchIndex.filter { entry in
+            let blob = "\(entry.title) \(entry.path) \(entry.keywords)".lowercased()
+            return terms.allSatisfy { blob.contains($0) }
+        }
+    }
+
+    @ViewBuilder
+    private var settingsSearchResultsSection: some View {
+        let results = settingsSearchResults
+        Section(header: SectionPillHeader(title: "SETTING RESULTS", count: results.count)) {
+            if results.isEmpty {
+                Text("No settings match your search.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(results) { entry in
+                NavigationLink(destination: LazyDestination { searchDestinationView(entry.destination) }) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HighlightedSnippet(
+                            source: entry.title,
+                            term: settingsSearchText,
+                            font: .subheadline,
+                            accent: settings.accentColor.color,
+                            fg: .primary
+                        )
+
+                        Text(entry.path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+    #endif
+
     private func resourceLink<Destination: View>(
         title: String,
         systemImage: String,
-        @ViewBuilder destination: () -> Destination
+        @ViewBuilder destination: @escaping () -> Destination
     ) -> some View {
-        NavigationLink(destination: destination()) {
+        // LazyDestination, same as IslamView: building the destination eagerly meant every body pass of this
+        // tab constructed the full Adhan/Quran/Notification settings trees - on the watch, where TabView
+        // re-evaluates neighbouring tabs on every swipe, that WAS the tab-switch lag into Settings.
+        NavigationLink(destination: LazyDestination(build: destination)) {
             toolLabel(title, systemImage: systemImage)
         }
         .tint(settings.accentColor.color)
@@ -156,20 +283,44 @@ struct SettingsView: View {
                     .font(.subheadline)
                     .foregroundColor(.red)
             }
+            // Two very different things, so they're two buttons rather than one that quietly picks for you:
+            // the everyday "put the options back" and the "make it as if I'd never installed this".
             .confirmationDialog(
                 "Reset All Settings?",
                 isPresented: $showResetConfirmation,
                 titleVisibility: .visible
             ) {
-                Button("Reset All Settings", role: .destructive) {
+                Button("Reset Settings, Keep My Content") {
                     settings.hapticFeedback()
                     withAnimation {
-                        settings.resetAllSettings()
+                        settings.resetAllSettings(keepingContent: true)
+                    }
+                }
+
+                Button("Erase Everything", role: .destructive) {
+                    settings.hapticFeedback()
+                    confirmEraseEverything = true
+                }
+
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Reset restores every setting (appearance and Quran options) to its default and keeps your bookmarks, favorites, khatm progress, and saved location.\n\nErase removes those too.")
+            }
+            // A second confirmation, because this one cannot be undone.
+            .confirmationDialog(
+                "Erase Everything?",
+                isPresented: $confirmEraseEverything,
+                titleVisibility: .visible
+            ) {
+                Button("Erase Everything", role: .destructive) {
+                    settings.hapticFeedback()
+                    withAnimation {
+                        settings.resetAllSettings(keepingContent: false)
                     }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This restores every setting (appearance, prayer, and Quran options) to its default. Your bookmarks, favorites, khatm progress, and saved location are kept.")
+                Text("This deletes your bookmarks, favorite surahs, letters and names, khatm progress, reading and listening positions, search history, and saved locations - leaving the app exactly as it was on a fresh install. This cannot be undone.")
             }
         }
         #endif
@@ -276,17 +427,23 @@ struct SettingsView: View {
 
     private var websiteRow: some View {
         HStack {
+            // The watch drops the "Website:" label - the 40mm screen has no room for a label column, and the
+            // URL names itself.
+            #if os(iOS)
             Text("Website: ")
                 .font(.subheadline)
                 .multilineTextAlignment(.leading)
                 .frame(width: glyphWidth)
+            #endif
 
             if let url = URL(string: "https://abubakrelmallah.com/") {
                 Link("abubakrelmallah.com", destination: url)
                     .font(.subheadline)
                     .foregroundColor(settings.accentColor.color)
                     .multilineTextAlignment(.leading)
+                    #if os(iOS)
                     .padding(.leading, -4)
+                    #endif
             }
         }
         #if os(iOS)
@@ -309,16 +466,21 @@ struct SettingsView: View {
 
     private var contactRow: some View {
         HStack {
+            // Same as the website row: no "Contact:" label on the watch, the address speaks for itself.
+            #if os(iOS)
             Text("Contact: ")
                 .font(.subheadline)
                 .multilineTextAlignment(.leading)
                 .frame(width: glyphWidth)
+            #endif
 
             Text("ammelmallah@icloud.com")
                 .font(.subheadline)
                 .foregroundColor(settings.accentColor.color)
                 .multilineTextAlignment(.leading)
+                #if os(iOS)
                 .padding(.leading, -4)
+                #endif
         }
         #if os(iOS)
         .contextMenu {
@@ -342,7 +504,9 @@ struct SettingsView: View {
     private func leaveReview() {
         settings.hapticFeedback()
 
-        withAnimation(.smooth()) {
+        // No withAnimation: opening a URL animates nothing, and the empty transaction leaked a
+        // .smooth() curve onto any incidental state change on the same runloop tick.
+        do {
             if let url = URL(string: "itms-apps://itunes.apple.com/app/id6449729655?action=write-review") {
                 UIApplication.shared.open(url)
             }
@@ -352,7 +516,7 @@ struct SettingsView: View {
     private func openAppSettings() {
         settings.hapticFeedback()
 
-        withAnimation(.smooth()) {
+        do {
             if let url = URL(string: UIApplication.openSettingsURLString) {
                 UIApplication.shared.open(url, options: [:], completionHandler: nil)
             }
@@ -379,7 +543,21 @@ struct SettingsView: View {
 }
 
 struct SettingsAppearanceView: View {
-    @EnvironmentObject var settings: Settings
+    @ObservedObject var settings = Settings.shared
+
+    // Accent-swatch grid metrics. The watch gets fewer, smaller swatches with tighter gutters so each circle
+    // actually FITS its column (see the note on the grid below); the phone keeps the roomier original.
+    #if os(watchOS)
+    private static let swatchColumns = 4
+    private static let swatchDiameter: CGFloat = 22
+    private static let swatchSpacing: CGFloat = 6
+    private static let swatchGridVerticalPadding: CGFloat = 4
+    #else
+    private static let swatchColumns = 4
+    private static let swatchDiameter: CGFloat = 30
+    private static let swatchSpacing: CGFloat = 12
+    private static let swatchGridVerticalPadding: CGFloat = 16
+    #endif
 
     /// Reads/writes the stored custom hex; picking a color also switches the active accent to `.custom`.
     private var customAccentColorBinding: Binding<Color> {
@@ -440,13 +618,13 @@ struct SettingsAppearanceView: View {
             .font(.subheadline)
             .pickerStyle(SegmentedPickerStyle())
             .onChange(of: settings.colorSchemeString) { _ in settings.hapticFeedback() }
-            
+
             Text("System follows your device. Light theme in Light Mode, Dark theme in Dark Mode. Other themes are ignored.")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .padding(.vertical, 2)
         }
-         
+
         VStack(alignment: .leading) {
             HStack(spacing: 12) {
                 ColorPicker("", selection: customBackgroundColorBinding, supportsOpacity: false)
@@ -469,22 +647,27 @@ struct SettingsAppearanceView: View {
                 .padding(.vertical, 2)
         }
         #endif
-        
+
         VStack(alignment: .leading) {
-            LazyVGrid(columns: [
-                GridItem(.flexible(), spacing: 12),
-                GridItem(.flexible(), spacing: 12),
-                GridItem(.flexible(), spacing: 12),
-                GridItem(.flexible(), spacing: 12),
-            ], spacing: 12) {
+            // Sized per platform. A watch list row is only ~120pt wide, so four fixed-width columns with 12pt
+            // gutters gave each cell LESS room than the 30pt circle it had to hold: the swatches overflowed
+            // their cells, the grid grew its row heights to compensate, and `.padding(.vertical)` piled 32pt on
+            // top - which is the "random huge padding" on the watch. The phone has the width for the original
+            // layout, so it keeps it.
+            LazyVGrid(columns: Array(
+                repeating: GridItem(.flexible(), spacing: Self.swatchSpacing),
+                count: Self.swatchColumns
+            ), spacing: Self.swatchSpacing) {
                 ForEach(accentColors, id: \.self) { accentColor in
+                    // Every preset is a single colour, so a plain circle is right here.
                     Circle()
                         .fill(accentColor.color)
-                        .frame(width: 30, height: 30)
+                        .frame(width: Self.swatchDiameter, height: Self.swatchDiameter)
                         .overlay(
                             Circle()
-                                .stroke(settings.accentColor == accentColor ? Color.primary : Color.clear, lineWidth: 1)
+                                .stroke(settings.accentColor == accentColor ? Color.primary : Color.clear, lineWidth: 2)
                         )
+                        .accessibilityLabel(accentColor.displayName)
                         .onTapGesture {
                             settings.hapticFeedback()
 
@@ -494,7 +677,7 @@ struct SettingsAppearanceView: View {
                         }
                 }
             }
-            .padding(.vertical)
+            .padding(.vertical, Self.swatchGridVerticalPadding)
 
             #if os(iOS)
             // One line: color well, label, then a toggle tinted with the custom color itself (not the accent).
@@ -513,8 +696,9 @@ struct SettingsAppearanceView: View {
             }
             .padding(.horizontal, 24)
             .onChange(of: settings.accentColor) { _ in settings.hapticFeedback() }
+
             #endif
-            
+
             #if os(iOS)
             Text("Anas ibn Malik (may Allah be pleased with him) said, “The most beloved of colors to the Messenger of Allah (peace be upon him) was green.”")
                 .font(.caption)
@@ -523,7 +707,7 @@ struct SettingsAppearanceView: View {
                 .padding(.top, 10)
             #endif
         }
-        
+
         #if os(iOS)
         VStack(alignment: .leading) {
             Toggle("Default List View", isOn: $settings.defaultView.animation(.easeInOut))
@@ -536,7 +720,7 @@ struct SettingsAppearanceView: View {
                 .padding(.vertical, 2)
         }
         #endif
-        
+
         VStack(alignment: .leading) {
             Toggle("Haptic Feedback", isOn: $settings.hapticOn.animation(.easeInOut))
                 .font(.subheadline)
@@ -546,10 +730,10 @@ struct SettingsAppearanceView: View {
 }
 
 struct VersionNumber: View {
-    @EnvironmentObject var settings: Settings
-    
+    @ObservedObject var settings = Settings.shared
+
     var width: CGFloat?
-    
+
     var body: some View {
         HStack {
             if let width = width {
@@ -558,7 +742,7 @@ struct VersionNumber: View {
             } else {
                 Text("Version")
             }
-            
+
             Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")
                 .foregroundColor(settings.accentColor.color)
                 .padding(.leading, -4)

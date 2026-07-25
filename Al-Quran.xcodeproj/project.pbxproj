@@ -8,102 +8,138 @@
 
 /* Begin PBXBuildFile section */
 		720DEC6A2D24581D006EA342 /* CreditsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 720DEC692D24581D006EA342 /* CreditsView.swift */; };
-		723CE3B42FAF124000E83F5A /* QiraahDuri.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE35A2FAF113700E83F5A /* QiraahDuri.json */; };
-		723CE3B52FAF124000E83F5A /* QiraahWarsh.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3582FAF113700E83F5A /* QiraahWarsh.json */; };
-		723CE3B62FAF124000E83F5A /* QiraahQunbul.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3572FAF113700E83F5A /* QiraahQunbul.json */; };
-		723CE3B82FAF124000E83F5A /* QiraahShubah.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3552FAF113700E83F5A /* QiraahShubah.json */; };
-		723CE3B92FAF124000E83F5A /* NamesOfAllah.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3532FAF113700E83F5A /* NamesOfAllah.json */; };
-		723CE3BA2FAF124000E83F5A /* QiraahQaloon.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3592FAF113700E83F5A /* QiraahQaloon.json */; };
-		723CE3BB2FAF124000E83F5A /* QiraahBuzzi.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3562FAF113700E83F5A /* QiraahBuzzi.json */; };
-		723CE3BC2FAF124000E83F5A /* QiraahSusi.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE35B2FAF113700E83F5A /* QiraahSusi.json */; };
-		723CE3BD2FAF124000E83F5A /* QiraahDuri.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE35A2FAF113700E83F5A /* QiraahDuri.json */; };
-		723CE3BE2FAF124000E83F5A /* QiraahWarsh.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3582FAF113700E83F5A /* QiraahWarsh.json */; };
-		723CE3BF2FAF124000E83F5A /* QiraahQunbul.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3572FAF113700E83F5A /* QiraahQunbul.json */; };
-		723CE3C12FAF124000E83F5A /* QiraahShubah.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3552FAF113700E83F5A /* QiraahShubah.json */; };
-		723CE3C22FAF124000E83F5A /* NamesOfAllah.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3532FAF113700E83F5A /* NamesOfAllah.json */; };
-		723CE3C32FAF124000E83F5A /* QiraahQaloon.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3592FAF113700E83F5A /* QiraahQaloon.json */; };
-		723CE3C42FAF124000E83F5A /* QiraahBuzzi.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3562FAF113700E83F5A /* QiraahBuzzi.json */; };
-		723CE3C52FAF124000E83F5A /* QiraahSusi.json in Resources */ = {isa = PBXBuildFile; fileRef = 723CE35B2FAF113700E83F5A /* QiraahSusi.json */; };
-		723CE3C62FAF124500E83F5A /* Qiraat.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 723CE34F2FAF113700E83F5A /* Qiraat.ttf */; };
-		723CE3C72FAF124500E83F5A /* Indopak.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3512FAF113700E83F5A /* Indopak.ttf */; };
-		723CE3C82FAF124500E83F5A /* Uthmani.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3502FAF113700E83F5A /* Uthmani.ttf */; };
-		723CE3C92FAF124500E83F5A /* Indopak.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3512FAF113700E83F5A /* Indopak.ttf */; };
-		723CE3CA2FAF124500E83F5A /* Qiraat.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 723CE34F2FAF113700E83F5A /* Qiraat.ttf */; };
-		723CE3CB2FAF124500E83F5A /* Uthmani.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3502FAF113700E83F5A /* Uthmani.ttf */; };
-		724D09542FEFACF2002C32AB /* Muqattaat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09452FEFACF2002C32AB /* Muqattaat.swift */; };
-		724D09552FEFACF2002C32AB /* TajweedRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09442FEFACF2002C32AB /* TajweedRules.swift */; };
-		724D09562FEFACF2002C32AB /* TajweedLegendView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D094C2FEFACF2002C32AB /* TajweedLegendView.swift */; };
-		724D09572FEFACF2002C32AB /* SurahHeaders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09492FEFACF2002C32AB /* SurahHeaders.swift */; };
-		724D09582FEFACF2002C32AB /* QuranPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D094F2FEFACF2002C32AB /* QuranPlayer.swift */; };
-		724D09592FEFACF2002C32AB /* QuranView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09462FEFACF2002C32AB /* QuranView.swift */; };
-		724D095A2FEFACF2002C32AB /* SurahRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09472FEFACF2002C32AB /* SurahRows.swift */; };
-		724D095B2FEFACF2002C32AB /* QuranStructs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09422FEFACF2002C32AB /* QuranStructs.swift */; };
-		724D095C2FEFACF2002C32AB /* ProfanityFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09512FEFACF2002C32AB /* ProfanityFilter.swift */; };
-		724D095D2FEFACF2002C32AB /* QuranData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09432FEFACF2002C32AB /* QuranData.swift */; };
-		724D095E2FEFACF2002C32AB /* ShareAyah.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D094D2FEFACF2002C32AB /* ShareAyah.swift */; };
-		724D095F2FEFACF2002C32AB /* CustomRangeSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D094E2FEFACF2002C32AB /* CustomRangeSheet.swift */; };
-		724D09602FEFACF2002C32AB /* AyahRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D094B2FEFACF2002C32AB /* AyahRow.swift */; };
-		724D09612FEFACF2002C32AB /* QuranShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09522FEFACF2002C32AB /* QuranShortcuts.swift */; };
-		724D09622FEFACF2002C32AB /* ContextMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09482FEFACF2002C32AB /* ContextMenu.swift */; };
-		724D09632FEFACF2002C32AB /* SurahView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D094A2FEFACF2002C32AB /* SurahView.swift */; };
-		724D09642FEFACF2002C32AB /* NowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09502FEFACF2002C32AB /* NowPlayingView.swift */; };
-		724D09652FEFACF2002C32AB /* Muqattaat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09452FEFACF2002C32AB /* Muqattaat.swift */; };
-		724D09662FEFACF2002C32AB /* TajweedRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09442FEFACF2002C32AB /* TajweedRules.swift */; };
-		724D09672FEFACF2002C32AB /* TajweedLegendView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D094C2FEFACF2002C32AB /* TajweedLegendView.swift */; };
-		724D09682FEFACF2002C32AB /* SurahHeaders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09492FEFACF2002C32AB /* SurahHeaders.swift */; };
-		724D09692FEFACF2002C32AB /* QuranPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D094F2FEFACF2002C32AB /* QuranPlayer.swift */; };
-		724D096A2FEFACF2002C32AB /* QuranView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09462FEFACF2002C32AB /* QuranView.swift */; };
-		724D096B2FEFACF2002C32AB /* SurahRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09472FEFACF2002C32AB /* SurahRows.swift */; };
-		724D096C2FEFACF2002C32AB /* QuranStructs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09422FEFACF2002C32AB /* QuranStructs.swift */; };
-		724D096D2FEFACF2002C32AB /* ProfanityFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09512FEFACF2002C32AB /* ProfanityFilter.swift */; };
-		724D096E2FEFACF2002C32AB /* QuranData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09432FEFACF2002C32AB /* QuranData.swift */; };
-		724D096F2FEFACF2002C32AB /* ShareAyah.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D094D2FEFACF2002C32AB /* ShareAyah.swift */; };
-		724D09702FEFACF2002C32AB /* CustomRangeSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D094E2FEFACF2002C32AB /* CustomRangeSheet.swift */; };
-		724D09712FEFACF2002C32AB /* AyahRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D094B2FEFACF2002C32AB /* AyahRow.swift */; };
-		724D09722FEFACF2002C32AB /* QuranShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09522FEFACF2002C32AB /* QuranShortcuts.swift */; };
-		724D09732FEFACF2002C32AB /* ContextMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09482FEFACF2002C32AB /* ContextMenu.swift */; };
-		724D09742FEFACF2002C32AB /* SurahView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D094A2FEFACF2002C32AB /* SurahView.swift */; };
-		724D09752FEFACF2002C32AB /* NowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09502FEFACF2002C32AB /* NowPlayingView.swift */; };
-		724D09822FEFAD02002C32AB /* WallpaperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D097F2FEFAD02002C32AB /* WallpaperView.swift */; };
-		724D09832FEFAD02002C32AB /* IslamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09762FEFAD02002C32AB /* IslamView.swift */; };
-		724D09842FEFAD02002C32AB /* ArabicView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09772FEFAD02002C32AB /* ArabicView.swift */; };
-		724D09852FEFAD02002C32AB /* DuaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D097A2FEFAD02002C32AB /* DuaView.swift */; };
-		724D09862FEFAD02002C32AB /* TajweedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09782FEFAD02002C32AB /* TajweedView.swift */; };
-		724D09872FEFAD02002C32AB /* NamesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D097C2FEFAD02002C32AB /* NamesView.swift */; };
-		724D09882FEFAD02002C32AB /* PillarsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09802FEFAD02002C32AB /* PillarsView.swift */; };
-		724D09892FEFAD02002C32AB /* DateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D097D2FEFAD02002C32AB /* DateView.swift */; };
-		724D098A2FEFAD02002C32AB /* TasbihView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D097B2FEFAD02002C32AB /* TasbihView.swift */; };
-		724D098B2FEFAD02002C32AB /* AdhkarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09792FEFAD02002C32AB /* AdhkarView.swift */; };
-		724D098D2FEFAD02002C32AB /* WallpaperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D097F2FEFAD02002C32AB /* WallpaperView.swift */; };
-		724D098E2FEFAD02002C32AB /* IslamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09762FEFAD02002C32AB /* IslamView.swift */; };
-		724D098F2FEFAD02002C32AB /* ArabicView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09772FEFAD02002C32AB /* ArabicView.swift */; };
-		724D09902FEFAD02002C32AB /* DuaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D097A2FEFAD02002C32AB /* DuaView.swift */; };
-		724D09912FEFAD02002C32AB /* TajweedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09782FEFAD02002C32AB /* TajweedView.swift */; };
-		724D09922FEFAD02002C32AB /* NamesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D097C2FEFAD02002C32AB /* NamesView.swift */; };
-		724D09932FEFAD02002C32AB /* PillarsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09802FEFAD02002C32AB /* PillarsView.swift */; };
-		724D09942FEFAD02002C32AB /* DateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D097D2FEFAD02002C32AB /* DateView.swift */; };
-		724D09952FEFAD02002C32AB /* TasbihView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D097B2FEFAD02002C32AB /* TasbihView.swift */; };
-		724D09962FEFAD02002C32AB /* AdhkarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09792FEFAD02002C32AB /* AdhkarView.swift */; };
-		724D09982FEFAD0D002C32AB /* QuranData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09432FEFACF2002C32AB /* QuranData.swift */; };
-		724D09992FEFAD0D002C32AB /* Muqattaat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09452FEFACF2002C32AB /* Muqattaat.swift */; };
-		724D099A2FEFAD0D002C32AB /* TajweedRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09442FEFACF2002C32AB /* TajweedRules.swift */; };
-		724D099B2FEFAD0D002C32AB /* QuranStructs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D09422FEFACF2002C32AB /* QuranStructs.swift */; };
-		724D09A12FEFAD20002C32AB /* SearchBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D099D2FEFAD20002C32AB /* SearchBar.swift */; };
-		724D09A22FEFAD20002C32AB /* GlassEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D099F2FEFAD20002C32AB /* GlassEffect.swift */; };
-		724D09A32FEFAD20002C32AB /* ViewExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D099C2FEFAD20002C32AB /* ViewExtensions.swift */; };
-		724D09A42FEFAD20002C32AB /* Highlighted.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D099E2FEFAD20002C32AB /* Highlighted.swift */; };
-		724D09A52FEFAD20002C32AB /* SearchBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D099D2FEFAD20002C32AB /* SearchBar.swift */; };
-		724D09A62FEFAD20002C32AB /* GlassEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D099F2FEFAD20002C32AB /* GlassEffect.swift */; };
-		724D09A72FEFAD20002C32AB /* ViewExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D099C2FEFAD20002C32AB /* ViewExtensions.swift */; };
-		724D09A82FEFAD20002C32AB /* Highlighted.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D099E2FEFAD20002C32AB /* Highlighted.swift */; };
-		724D09A92FEFAF9D002C32AB /* Highlighted.swift in Sources */ = {isa = PBXBuildFile; fileRef = 724D099E2FEFAD20002C32AB /* Highlighted.swift */; };
 		72537C252F04361900829F59 /* AppReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72537C242F04361900829F59 /* AppReview.swift */; };
 		72574CD12E49F33800BFF138 /* AppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72574CD02E49F33800BFF138 /* AppIntents.swift */; };
 		72574CD22E49F33800BFF138 /* AppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72574CD02E49F33800BFF138 /* AppIntents.swift */; };
-		726705CC2FB82B07000A62A6 /* Quran.json in Resources */ = {isa = PBXBuildFile; fileRef = 726705CB2FB82B07000A62A6 /* Quran.json */; };
-		726705CD2FB82B07000A62A6 /* Quran.json in Resources */ = {isa = PBXBuildFile; fileRef = 726705CB2FB82B07000A62A6 /* Quran.json */; };
-		726CDCA72FFFB028004B77C5 /* FocusOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 726CDCA62FFFB028004B77C5 /* FocusOverlay.swift */; };
-		726CDCA82FFFB028004B77C5 /* FocusOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 726CDCA62FFFB028004B77C5 /* FocusOverlay.swift */; };
+		725C5F4B30142D5000DFEC8B /* Uthmani.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F4830142D5000DFEC8B /* Uthmani.ttf */; };
+		725C5F4C30142D5000DFEC8B /* QuranCommon.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F4A30142D5000DFEC8B /* QuranCommon.ttf */; };
+		725C5F4D30142D5000DFEC8B /* Qiraat.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F4730142D5000DFEC8B /* Qiraat.ttf */; };
+		725C5F4E30142D5000DFEC8B /* Indopak.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F4930142D5000DFEC8B /* Indopak.ttf */; };
+		725C5F4F30142D5000DFEC8B /* Uthmani.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F4830142D5000DFEC8B /* Uthmani.ttf */; };
+		725C5F5030142D5000DFEC8B /* QuranCommon.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F4A30142D5000DFEC8B /* QuranCommon.ttf */; };
+		725C5F5130142D5000DFEC8B /* Qiraat.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F4730142D5000DFEC8B /* Qiraat.ttf */; };
+		725C5F5230142D5000DFEC8B /* Indopak.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F4930142D5000DFEC8B /* Indopak.ttf */; };
+		725C5F5E30142D6900DFEC8B /* Quran.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5530142D6900DFEC8B /* Quran.json */; };
+		725C5F5F30142D6900DFEC8B /* QiraahBuzzi.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5730142D6900DFEC8B /* QiraahBuzzi.json */; };
+		725C5F6030142D6900DFEC8B /* QiraahSusi.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5C30142D6900DFEC8B /* QiraahSusi.json */; };
+		725C5F6130142D6900DFEC8B /* QiraahQaloon.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5A30142D6900DFEC8B /* QiraahQaloon.json */; };
+		725C5F6230142D6900DFEC8B /* QiraahWarsh.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5930142D6900DFEC8B /* QiraahWarsh.json */; };
+		725C5F6330142D6900DFEC8B /* NamesOfAllah.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5330142D6900DFEC8B /* NamesOfAllah.json */; };
+		725C5F6430142D6900DFEC8B /* QiraahShubah.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5630142D6900DFEC8B /* QiraahShubah.json */; };
+		725C5F6530142D6900DFEC8B /* QiraahDuri.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5B30142D6900DFEC8B /* QiraahDuri.json */; };
+		725C5F6630142D6900DFEC8B /* QiraahQunbul.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5830142D6900DFEC8B /* QiraahQunbul.json */; };
+		725C5F6730142D6900DFEC8B /* SurahInfos.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5430142D6900DFEC8B /* SurahInfos.json */; };
+		725C5F6830142D6900DFEC8B /* Quran.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5530142D6900DFEC8B /* Quran.json */; };
+		725C5F6930142D6900DFEC8B /* QiraahBuzzi.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5730142D6900DFEC8B /* QiraahBuzzi.json */; };
+		725C5F6A30142D6900DFEC8B /* QiraahSusi.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5C30142D6900DFEC8B /* QiraahSusi.json */; };
+		725C5F6B30142D6900DFEC8B /* QiraahQaloon.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5A30142D6900DFEC8B /* QiraahQaloon.json */; };
+		725C5F6C30142D6900DFEC8B /* QiraahWarsh.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5930142D6900DFEC8B /* QiraahWarsh.json */; };
+		725C5F6D30142D6900DFEC8B /* NamesOfAllah.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5330142D6900DFEC8B /* NamesOfAllah.json */; };
+		725C5F6E30142D6900DFEC8B /* QiraahShubah.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5630142D6900DFEC8B /* QiraahShubah.json */; };
+		725C5F6F30142D6900DFEC8B /* QiraahDuri.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5B30142D6900DFEC8B /* QiraahDuri.json */; };
+		725C5F7030142D6900DFEC8B /* QiraahQunbul.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5830142D6900DFEC8B /* QiraahQunbul.json */; };
+		725C5F7130142D6900DFEC8B /* SurahInfos.json in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F5430142D6900DFEC8B /* SurahInfos.json */; };
+		725C5F8C3014306900DFEC8B /* QuranData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F733014306900DFEC8B /* QuranData.swift */; };
+		725C5F8D3014306900DFEC8B /* TajweedRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F743014306900DFEC8B /* TajweedRules.swift */; };
+		725C5F8E3014306900DFEC8B /* Muqattaat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F753014306900DFEC8B /* Muqattaat.swift */; };
+		725C5F8F3014306900DFEC8B /* MushafPageFitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F783014306900DFEC8B /* MushafPageFitter.swift */; };
+		725C5F903014306900DFEC8B /* ShareAyah.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F853014306900DFEC8B /* ShareAyah.swift */; };
+		725C5F913014306900DFEC8B /* QuranHistoryRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F7A3014306900DFEC8B /* QuranHistoryRows.swift */; };
+		725C5F923014306900DFEC8B /* QuranStructs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F723014306900DFEC8B /* QuranStructs.swift */; };
+		725C5F933014306900DFEC8B /* SurahRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F793014306900DFEC8B /* SurahRows.swift */; };
+		725C5F943014306900DFEC8B /* QuranView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F763014306900DFEC8B /* QuranView.swift */; };
+		725C5F953014306900DFEC8B /* TajweedLegendView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F843014306900DFEC8B /* TajweedLegendView.swift */; };
+		725C5F963014306900DFEC8B /* QuranGlyphFonts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F7F3014306900DFEC8B /* QuranGlyphFonts.swift */; };
+		725C5F973014306900DFEC8B /* QuranShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F8A3014306900DFEC8B /* QuranShortcuts.swift */; };
+		725C5F983014306900DFEC8B /* QuranPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F873014306900DFEC8B /* QuranPlayer.swift */; };
+		725C5F993014306900DFEC8B /* CustomRangeSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F863014306900DFEC8B /* CustomRangeSheet.swift */; };
+		725C5F9A3014306900DFEC8B /* SurahHeaders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F7E3014306900DFEC8B /* SurahHeaders.swift */; };
+		725C5F9B3014306900DFEC8B /* ProfanityFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F893014306900DFEC8B /* ProfanityFilter.swift */; };
+		725C5F9C3014306900DFEC8B /* AyahSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F813014306900DFEC8B /* AyahSheets.swift */; };
+		725C5F9D3014306900DFEC8B /* NowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F883014306900DFEC8B /* NowPlayingView.swift */; };
+		725C5F9E3014306900DFEC8B /* SurahView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F803014306900DFEC8B /* SurahView.swift */; };
+		725C5F9F3014306900DFEC8B /* ComparisonSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F7C3014306900DFEC8B /* ComparisonSheets.swift */; };
+		725C5FA03014306900DFEC8B /* QuranPlannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F773014306900DFEC8B /* QuranPlannerView.swift */; };
+		725C5FA13014306900DFEC8B /* MushafReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F823014306900DFEC8B /* MushafReader.swift */; };
+		725C5FA23014306900DFEC8B /* ContextMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F7B3014306900DFEC8B /* ContextMenu.swift */; };
+		725C5FA33014306900DFEC8B /* AyahRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F833014306900DFEC8B /* AyahRow.swift */; };
+		725C5FA43014306900DFEC8B /* TafsirSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F7D3014306900DFEC8B /* TafsirSheets.swift */; };
+		725C5FA53014306900DFEC8B /* QuranData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F733014306900DFEC8B /* QuranData.swift */; };
+		725C5FA63014306900DFEC8B /* TajweedRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F743014306900DFEC8B /* TajweedRules.swift */; };
+		725C5FA73014306900DFEC8B /* Muqattaat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F753014306900DFEC8B /* Muqattaat.swift */; };
+		725C5FA83014306900DFEC8B /* MushafPageFitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F783014306900DFEC8B /* MushafPageFitter.swift */; };
+		725C5FA93014306900DFEC8B /* ShareAyah.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F853014306900DFEC8B /* ShareAyah.swift */; };
+		725C5FAA3014306900DFEC8B /* QuranHistoryRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F7A3014306900DFEC8B /* QuranHistoryRows.swift */; };
+		725C5FAB3014306900DFEC8B /* QuranStructs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F723014306900DFEC8B /* QuranStructs.swift */; };
+		725C5FAC3014306900DFEC8B /* SurahRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F793014306900DFEC8B /* SurahRows.swift */; };
+		725C5FAD3014306900DFEC8B /* QuranView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F763014306900DFEC8B /* QuranView.swift */; };
+		725C5FAE3014306900DFEC8B /* TajweedLegendView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F843014306900DFEC8B /* TajweedLegendView.swift */; };
+		725C5FAF3014306900DFEC8B /* QuranGlyphFonts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F7F3014306900DFEC8B /* QuranGlyphFonts.swift */; };
+		725C5FB03014306900DFEC8B /* QuranShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F8A3014306900DFEC8B /* QuranShortcuts.swift */; };
+		725C5FB13014306900DFEC8B /* QuranPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F873014306900DFEC8B /* QuranPlayer.swift */; };
+		725C5FB23014306900DFEC8B /* CustomRangeSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F863014306900DFEC8B /* CustomRangeSheet.swift */; };
+		725C5FB33014306900DFEC8B /* SurahHeaders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F7E3014306900DFEC8B /* SurahHeaders.swift */; };
+		725C5FB43014306900DFEC8B /* ProfanityFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F893014306900DFEC8B /* ProfanityFilter.swift */; };
+		725C5FB53014306900DFEC8B /* AyahSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F813014306900DFEC8B /* AyahSheets.swift */; };
+		725C5FB63014306900DFEC8B /* NowPlayingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F883014306900DFEC8B /* NowPlayingView.swift */; };
+		725C5FB73014306900DFEC8B /* SurahView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F803014306900DFEC8B /* SurahView.swift */; };
+		725C5FB83014306900DFEC8B /* ComparisonSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F7C3014306900DFEC8B /* ComparisonSheets.swift */; };
+		725C5FB93014306900DFEC8B /* QuranPlannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F773014306900DFEC8B /* QuranPlannerView.swift */; };
+		725C5FBA3014306900DFEC8B /* MushafReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F823014306900DFEC8B /* MushafReader.swift */; };
+		725C5FBB3014306900DFEC8B /* ContextMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F7B3014306900DFEC8B /* ContextMenu.swift */; };
+		725C5FBC3014306900DFEC8B /* AyahRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F833014306900DFEC8B /* AyahRow.swift */; };
+		725C5FBD3014306900DFEC8B /* TafsirSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F7D3014306900DFEC8B /* TafsirSheets.swift */; };
+		725C5FBE3014307A00DFEC8B /* QuranData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F733014306900DFEC8B /* QuranData.swift */; };
+		725C5FBF3014307A00DFEC8B /* QuranStructs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F723014306900DFEC8B /* QuranStructs.swift */; };
+		725C5FC03014307A00DFEC8B /* Muqattaat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F753014306900DFEC8B /* Muqattaat.swift */; };
+		725C5FC13014307A00DFEC8B /* TajweedRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5F743014306900DFEC8B /* TajweedRules.swift */; };
+		725C5FD5301430A300DFEC8B /* WallpaperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FCF301430A300DFEC8B /* WallpaperView.swift */; };
+		725C5FD6301430A300DFEC8B /* TajweedTopics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FC8301430A300DFEC8B /* TajweedTopics.swift */; };
+		725C5FD7301430A300DFEC8B /* ArabicLetterViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FC6301430A300DFEC8B /* ArabicLetterViews.swift */; };
+		725C5FD8301430A300DFEC8B /* BeliefsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FD1301430A300DFEC8B /* BeliefsViews.swift */; };
+		725C5FD9301430A300DFEC8B /* DateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FCD301430A300DFEC8B /* DateView.swift */; };
+		725C5FDA301430A300DFEC8B /* NamesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FCC301430A300DFEC8B /* NamesView.swift */; };
+		725C5FDB301430A300DFEC8B /* TajweedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FC7301430A300DFEC8B /* TajweedView.swift */; };
+		725C5FDC301430A300DFEC8B /* HowToGuides.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FD3301430A300DFEC8B /* HowToGuides.swift */; };
+		725C5FDD301430A300DFEC8B /* ArabicView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FC5301430A300DFEC8B /* ArabicView.swift */; };
+		725C5FDF301430A300DFEC8B /* PillarViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FD2301430A300DFEC8B /* PillarViews.swift */; };
+		725C5FE0301430A300DFEC8B /* AdhkarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FC9301430A300DFEC8B /* AdhkarView.swift */; };
+		725C5FE1301430A300DFEC8B /* IslamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FC4301430A300DFEC8B /* IslamView.swift */; };
+		725C5FE2301430A300DFEC8B /* TasbihView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FCB301430A300DFEC8B /* TasbihView.swift */; };
+		725C5FE3301430A300DFEC8B /* PillarsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FD0301430A300DFEC8B /* PillarsView.swift */; };
+		725C5FE4301430A300DFEC8B /* DuaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FCA301430A300DFEC8B /* DuaView.swift */; };
+		725C5FE5301430A300DFEC8B /* WallpaperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FCF301430A300DFEC8B /* WallpaperView.swift */; };
+		725C5FE6301430A300DFEC8B /* TajweedTopics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FC8301430A300DFEC8B /* TajweedTopics.swift */; };
+		725C5FE7301430A300DFEC8B /* ArabicLetterViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FC6301430A300DFEC8B /* ArabicLetterViews.swift */; };
+		725C5FE8301430A300DFEC8B /* BeliefsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FD1301430A300DFEC8B /* BeliefsViews.swift */; };
+		725C5FE9301430A300DFEC8B /* DateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FCD301430A300DFEC8B /* DateView.swift */; };
+		725C5FEA301430A300DFEC8B /* NamesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FCC301430A300DFEC8B /* NamesView.swift */; };
+		725C5FEB301430A300DFEC8B /* TajweedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FC7301430A300DFEC8B /* TajweedView.swift */; };
+		725C5FEC301430A300DFEC8B /* HowToGuides.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FD3301430A300DFEC8B /* HowToGuides.swift */; };
+		725C5FED301430A300DFEC8B /* ArabicView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FC5301430A300DFEC8B /* ArabicView.swift */; };
+		725C5FEF301430A300DFEC8B /* PillarViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FD2301430A300DFEC8B /* PillarViews.swift */; };
+		725C5FF0301430A300DFEC8B /* AdhkarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FC9301430A300DFEC8B /* AdhkarView.swift */; };
+		725C5FF1301430A300DFEC8B /* IslamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FC4301430A300DFEC8B /* IslamView.swift */; };
+		725C5FF2301430A300DFEC8B /* TasbihView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FCB301430A300DFEC8B /* TasbihView.swift */; };
+		725C5FF3301430A300DFEC8B /* PillarsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FD0301430A300DFEC8B /* PillarsView.swift */; };
+		725C5FF4301430A300DFEC8B /* DuaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FCA301430A300DFEC8B /* DuaView.swift */; };
+		725C5FFE3014310400DFEC8B /* Highlighted.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FFC3014310400DFEC8B /* Highlighted.swift */; };
+		725C5FFF3014310400DFEC8B /* SearchBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FF63014310400DFEC8B /* SearchBar.swift */; };
+		725C60003014310400DFEC8B /* SemanticSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FF73014310400DFEC8B /* SemanticSearch.swift */; };
+		725C60013014310400DFEC8B /* GlassEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FF93014310400DFEC8B /* GlassEffect.swift */; };
+		725C60023014310400DFEC8B /* OnDeviceAsk.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FF83014310400DFEC8B /* OnDeviceAsk.swift */; };
+		725C60033014310400DFEC8B /* ArabicSpeech.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FFB3014310400DFEC8B /* ArabicSpeech.swift */; };
+		725C60043014310400DFEC8B /* ViewExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FF53014310400DFEC8B /* ViewExtensions.swift */; };
+		725C60053014310400DFEC8B /* FocusOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FFA3014310400DFEC8B /* FocusOverlay.swift */; };
+		725C60063014310400DFEC8B /* Highlighted.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FFC3014310400DFEC8B /* Highlighted.swift */; };
+		725C60073014310400DFEC8B /* SearchBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FF63014310400DFEC8B /* SearchBar.swift */; };
+		725C60083014310400DFEC8B /* SemanticSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FF73014310400DFEC8B /* SemanticSearch.swift */; };
+		725C60093014310400DFEC8B /* GlassEffect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FF93014310400DFEC8B /* GlassEffect.swift */; };
+		725C600A3014310400DFEC8B /* OnDeviceAsk.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FF83014310400DFEC8B /* OnDeviceAsk.swift */; };
+		725C600B3014310400DFEC8B /* ArabicSpeech.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FFB3014310400DFEC8B /* ArabicSpeech.swift */; };
+		725C600C3014310400DFEC8B /* ViewExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FF53014310400DFEC8B /* ViewExtensions.swift */; };
+		725C600D3014310400DFEC8B /* FocusOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FFA3014310400DFEC8B /* FocusOverlay.swift */; };
+		725C600E3014311800DFEC8B /* Highlighted.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725C5FFC3014310400DFEC8B /* Highlighted.swift */; };
 		72827EB72E3D71BB00EBA534 /* SettingsQuranView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72827EB62E3D71BB00EBA534 /* SettingsQuranView.swift */; };
 		72827EB82E3D71BB00EBA534 /* SettingsQuranView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72827EB62E3D71BB00EBA534 /* SettingsQuranView.swift */; };
 		728D75A92F79C53600502B8A /* ArabicLetters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 728D75A82F79C53600502B8A /* ArabicLetters.swift */; };
@@ -115,8 +151,6 @@
 		728D76502F79E9D700502B8A /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 728D764E2F79E9D700502B8A /* AppDelegate.swift */; };
 		728E2EF02E6E062500F2C24C /* SettingsQuran.swift in Sources */ = {isa = PBXBuildFile; fileRef = 728E2EEF2E6E062500F2C24C /* SettingsQuran.swift */; };
 		728E2EF12E6E062500F2C24C /* SettingsQuran.swift in Sources */ = {isa = PBXBuildFile; fileRef = 728E2EEF2E6E062500F2C24C /* SettingsQuran.swift */; };
-		729764D62FE8E4F100691EF5 /* SurahInfos.json in Resources */ = {isa = PBXBuildFile; fileRef = 729764D52FE8E4F100691EF5 /* SurahInfos.json */; };
-		729764D72FE8E4F100691EF5 /* SurahInfos.json in Resources */ = {isa = PBXBuildFile; fileRef = 729764D52FE8E4F100691EF5 /* SurahInfos.json */; };
 		729764E32FE8E59B00691EF5 /* PreviewSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 729764DB2FE8E59B00691EF5 /* PreviewSupport.swift */; };
 		729764E82FE8E59B00691EF5 /* PreviewSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 729764DB2FE8E59B00691EF5 /* PreviewSupport.swift */; };
 		729765422FE8E67400691EF5 /* WatchConnectivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 729765412FE8E67300691EF5 /* WatchConnectivity.swift */; };
@@ -140,9 +174,6 @@
 		729E23812B367CA800E1E0DA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 729E23802B367CA800E1E0DA /* Assets.xcassets */; };
 		72BC6B342E3190B800ACD832 /* Globals.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72BC6B332E3190B800ACD832 /* Globals.swift */; };
 		72BC6B352E3190B800ACD832 /* Globals.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72BC6B332E3190B800ACD832 /* Globals.swift */; };
-		72E99E8A2FE8EC1C00CD0D8F /* Qiraat.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 723CE34F2FAF113700E83F5A /* Qiraat.ttf */; };
-		72E99E8B2FE8EC1C00CD0D8F /* Uthmani.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3502FAF113700E83F5A /* Uthmani.ttf */; };
-		72E99E8C2FE8EC1C00CD0D8F /* Indopak.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 723CE3512FAF113700E83F5A /* Indopak.ttf */; };
 		72F479B92B367DE200FCF22C /* LaunchScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72F479A82B367DE200FCF22C /* LaunchScreen.swift */; };
 		72F479C12B367DE200FCF22C /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72F479B42B367DE200FCF22C /* SettingsView.swift */; };
 		72F479C22B367DE200FCF22C /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72F479B52B367DE200FCF22C /* Settings.swift */; };
@@ -209,57 +240,74 @@
 
 /* Begin PBXFileReference section */
 		720DEC692D24581D006EA342 /* CreditsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreditsView.swift; sourceTree = "<group>"; };
-		723CE34F2FAF113700E83F5A /* Qiraat.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Qiraat.ttf; sourceTree = "<group>"; };
-		723CE3502FAF113700E83F5A /* Uthmani.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Uthmani.ttf; sourceTree = "<group>"; };
-		723CE3512FAF113700E83F5A /* Indopak.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Indopak.ttf; sourceTree = "<group>"; };
-		723CE3532FAF113700E83F5A /* NamesOfAllah.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = NamesOfAllah.json; sourceTree = "<group>"; };
-		723CE3552FAF113700E83F5A /* QiraahShubah.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahShubah.json; sourceTree = "<group>"; };
-		723CE3562FAF113700E83F5A /* QiraahBuzzi.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahBuzzi.json; sourceTree = "<group>"; };
-		723CE3572FAF113700E83F5A /* QiraahQunbul.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahQunbul.json; sourceTree = "<group>"; };
-		723CE3582FAF113700E83F5A /* QiraahWarsh.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahWarsh.json; sourceTree = "<group>"; };
-		723CE3592FAF113700E83F5A /* QiraahQaloon.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahQaloon.json; sourceTree = "<group>"; };
-		723CE35A2FAF113700E83F5A /* QiraahDuri.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahDuri.json; sourceTree = "<group>"; };
-		723CE35B2FAF113700E83F5A /* QiraahSusi.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahSusi.json; sourceTree = "<group>"; };
-		724D09422FEFACF2002C32AB /* QuranStructs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranStructs.swift; sourceTree = "<group>"; };
-		724D09432FEFACF2002C32AB /* QuranData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranData.swift; sourceTree = "<group>"; };
-		724D09442FEFACF2002C32AB /* TajweedRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TajweedRules.swift; sourceTree = "<group>"; };
-		724D09452FEFACF2002C32AB /* Muqattaat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Muqattaat.swift; sourceTree = "<group>"; };
-		724D09462FEFACF2002C32AB /* QuranView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranView.swift; sourceTree = "<group>"; };
-		724D09472FEFACF2002C32AB /* SurahRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurahRows.swift; sourceTree = "<group>"; };
-		724D09482FEFACF2002C32AB /* ContextMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextMenu.swift; sourceTree = "<group>"; };
-		724D09492FEFACF2002C32AB /* SurahHeaders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurahHeaders.swift; sourceTree = "<group>"; };
-		724D094A2FEFACF2002C32AB /* SurahView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurahView.swift; sourceTree = "<group>"; };
-		724D094B2FEFACF2002C32AB /* AyahRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AyahRow.swift; sourceTree = "<group>"; };
-		724D094C2FEFACF2002C32AB /* TajweedLegendView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TajweedLegendView.swift; sourceTree = "<group>"; };
-		724D094D2FEFACF2002C32AB /* ShareAyah.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareAyah.swift; sourceTree = "<group>"; };
-		724D094E2FEFACF2002C32AB /* CustomRangeSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomRangeSheet.swift; sourceTree = "<group>"; };
-		724D094F2FEFACF2002C32AB /* QuranPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranPlayer.swift; sourceTree = "<group>"; };
-		724D09502FEFACF2002C32AB /* NowPlayingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingView.swift; sourceTree = "<group>"; };
-		724D09512FEFACF2002C32AB /* ProfanityFilter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfanityFilter.swift; sourceTree = "<group>"; };
-		724D09522FEFACF2002C32AB /* QuranShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranShortcuts.swift; sourceTree = "<group>"; };
-		724D09762FEFAD02002C32AB /* IslamView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IslamView.swift; sourceTree = "<group>"; };
-		724D09772FEFAD02002C32AB /* ArabicView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArabicView.swift; sourceTree = "<group>"; };
-		724D09782FEFAD02002C32AB /* TajweedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TajweedView.swift; sourceTree = "<group>"; };
-		724D09792FEFAD02002C32AB /* AdhkarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdhkarView.swift; sourceTree = "<group>"; };
-		724D097A2FEFAD02002C32AB /* DuaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuaView.swift; sourceTree = "<group>"; };
-		724D097B2FEFAD02002C32AB /* TasbihView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasbihView.swift; sourceTree = "<group>"; };
-		724D097C2FEFAD02002C32AB /* NamesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NamesView.swift; sourceTree = "<group>"; };
-		724D097D2FEFAD02002C32AB /* DateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateView.swift; sourceTree = "<group>"; };
-		724D097F2FEFAD02002C32AB /* WallpaperView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperView.swift; sourceTree = "<group>"; };
-		724D09802FEFAD02002C32AB /* PillarsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PillarsView.swift; sourceTree = "<group>"; };
-		724D099C2FEFAD20002C32AB /* ViewExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewExtensions.swift; sourceTree = "<group>"; };
-		724D099D2FEFAD20002C32AB /* SearchBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchBar.swift; sourceTree = "<group>"; };
-		724D099E2FEFAD20002C32AB /* Highlighted.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Highlighted.swift; sourceTree = "<group>"; };
-		724D099F2FEFAD20002C32AB /* GlassEffect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassEffect.swift; sourceTree = "<group>"; };
 		72537C242F04361900829F59 /* AppReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppReview.swift; sourceTree = "<group>"; };
 		72574CD02E49F33800BFF138 /* AppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntents.swift; sourceTree = "<group>"; };
-		726705CB2FB82B07000A62A6 /* Quran.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Quran.json; sourceTree = "<group>"; };
-		726CDCA62FFFB028004B77C5 /* FocusOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusOverlay.swift; sourceTree = "<group>"; };
+		725C5F4730142D5000DFEC8B /* Qiraat.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Qiraat.ttf; sourceTree = "<group>"; };
+		725C5F4830142D5000DFEC8B /* Uthmani.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Uthmani.ttf; sourceTree = "<group>"; };
+		725C5F4930142D5000DFEC8B /* Indopak.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Indopak.ttf; sourceTree = "<group>"; };
+		725C5F4A30142D5000DFEC8B /* QuranCommon.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = QuranCommon.ttf; sourceTree = "<group>"; };
+		725C5F5330142D6900DFEC8B /* NamesOfAllah.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = NamesOfAllah.json; sourceTree = "<group>"; };
+		725C5F5430142D6900DFEC8B /* SurahInfos.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = SurahInfos.json; sourceTree = "<group>"; };
+		725C5F5530142D6900DFEC8B /* Quran.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Quran.json; sourceTree = "<group>"; };
+		725C5F5630142D6900DFEC8B /* QiraahShubah.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahShubah.json; sourceTree = "<group>"; };
+		725C5F5730142D6900DFEC8B /* QiraahBuzzi.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahBuzzi.json; sourceTree = "<group>"; };
+		725C5F5830142D6900DFEC8B /* QiraahQunbul.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahQunbul.json; sourceTree = "<group>"; };
+		725C5F5930142D6900DFEC8B /* QiraahWarsh.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahWarsh.json; sourceTree = "<group>"; };
+		725C5F5A30142D6900DFEC8B /* QiraahQaloon.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahQaloon.json; sourceTree = "<group>"; };
+		725C5F5B30142D6900DFEC8B /* QiraahDuri.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahDuri.json; sourceTree = "<group>"; };
+		725C5F5C30142D6900DFEC8B /* QiraahSusi.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = QiraahSusi.json; sourceTree = "<group>"; };
+		725C5F723014306900DFEC8B /* QuranStructs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranStructs.swift; sourceTree = "<group>"; };
+		725C5F733014306900DFEC8B /* QuranData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranData.swift; sourceTree = "<group>"; };
+		725C5F743014306900DFEC8B /* TajweedRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TajweedRules.swift; sourceTree = "<group>"; };
+		725C5F753014306900DFEC8B /* Muqattaat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Muqattaat.swift; sourceTree = "<group>"; };
+		725C5F763014306900DFEC8B /* QuranView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranView.swift; sourceTree = "<group>"; };
+		725C5F773014306900DFEC8B /* QuranPlannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranPlannerView.swift; sourceTree = "<group>"; };
+		725C5F783014306900DFEC8B /* MushafPageFitter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MushafPageFitter.swift; sourceTree = "<group>"; };
+		725C5F793014306900DFEC8B /* SurahRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurahRows.swift; sourceTree = "<group>"; };
+		725C5F7A3014306900DFEC8B /* QuranHistoryRows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranHistoryRows.swift; sourceTree = "<group>"; };
+		725C5F7B3014306900DFEC8B /* ContextMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextMenu.swift; sourceTree = "<group>"; };
+		725C5F7C3014306900DFEC8B /* ComparisonSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComparisonSheets.swift; sourceTree = "<group>"; };
+		725C5F7D3014306900DFEC8B /* TafsirSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TafsirSheets.swift; sourceTree = "<group>"; };
+		725C5F7E3014306900DFEC8B /* SurahHeaders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurahHeaders.swift; sourceTree = "<group>"; };
+		725C5F7F3014306900DFEC8B /* QuranGlyphFonts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranGlyphFonts.swift; sourceTree = "<group>"; };
+		725C5F803014306900DFEC8B /* SurahView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurahView.swift; sourceTree = "<group>"; };
+		725C5F813014306900DFEC8B /* AyahSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AyahSheets.swift; sourceTree = "<group>"; };
+		725C5F823014306900DFEC8B /* MushafReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MushafReader.swift; sourceTree = "<group>"; };
+		725C5F833014306900DFEC8B /* AyahRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AyahRow.swift; sourceTree = "<group>"; };
+		725C5F843014306900DFEC8B /* TajweedLegendView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TajweedLegendView.swift; sourceTree = "<group>"; };
+		725C5F853014306900DFEC8B /* ShareAyah.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareAyah.swift; sourceTree = "<group>"; };
+		725C5F863014306900DFEC8B /* CustomRangeSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomRangeSheet.swift; sourceTree = "<group>"; };
+		725C5F873014306900DFEC8B /* QuranPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranPlayer.swift; sourceTree = "<group>"; };
+		725C5F883014306900DFEC8B /* NowPlayingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingView.swift; sourceTree = "<group>"; };
+		725C5F893014306900DFEC8B /* ProfanityFilter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfanityFilter.swift; sourceTree = "<group>"; };
+		725C5F8A3014306900DFEC8B /* QuranShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuranShortcuts.swift; sourceTree = "<group>"; };
+		725C5FC4301430A300DFEC8B /* IslamView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IslamView.swift; sourceTree = "<group>"; };
+		725C5FC5301430A300DFEC8B /* ArabicView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArabicView.swift; sourceTree = "<group>"; };
+		725C5FC6301430A300DFEC8B /* ArabicLetterViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArabicLetterViews.swift; sourceTree = "<group>"; };
+		725C5FC7301430A300DFEC8B /* TajweedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TajweedView.swift; sourceTree = "<group>"; };
+		725C5FC8301430A300DFEC8B /* TajweedTopics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TajweedTopics.swift; sourceTree = "<group>"; };
+		725C5FC9301430A300DFEC8B /* AdhkarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdhkarView.swift; sourceTree = "<group>"; };
+		725C5FCA301430A300DFEC8B /* DuaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuaView.swift; sourceTree = "<group>"; };
+		725C5FCB301430A300DFEC8B /* TasbihView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasbihView.swift; sourceTree = "<group>"; };
+		725C5FCC301430A300DFEC8B /* NamesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NamesView.swift; sourceTree = "<group>"; };
+		725C5FCD301430A300DFEC8B /* DateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateView.swift; sourceTree = "<group>"; };
+		725C5FCF301430A300DFEC8B /* WallpaperView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperView.swift; sourceTree = "<group>"; };
+		725C5FD0301430A300DFEC8B /* PillarsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PillarsView.swift; sourceTree = "<group>"; };
+		725C5FD1301430A300DFEC8B /* BeliefsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeliefsViews.swift; sourceTree = "<group>"; };
+		725C5FD2301430A300DFEC8B /* PillarViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PillarViews.swift; sourceTree = "<group>"; };
+		725C5FD3301430A300DFEC8B /* HowToGuides.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HowToGuides.swift; sourceTree = "<group>"; };
+		725C5FF53014310400DFEC8B /* ViewExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewExtensions.swift; sourceTree = "<group>"; };
+		725C5FF63014310400DFEC8B /* SearchBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchBar.swift; sourceTree = "<group>"; };
+		725C5FF73014310400DFEC8B /* SemanticSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticSearch.swift; sourceTree = "<group>"; };
+		725C5FF83014310400DFEC8B /* OnDeviceAsk.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnDeviceAsk.swift; sourceTree = "<group>"; };
+		725C5FF93014310400DFEC8B /* GlassEffect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassEffect.swift; sourceTree = "<group>"; };
+		725C5FFA3014310400DFEC8B /* FocusOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusOverlay.swift; sourceTree = "<group>"; };
+		725C5FFB3014310400DFEC8B /* ArabicSpeech.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArabicSpeech.swift; sourceTree = "<group>"; };
+		725C5FFC3014310400DFEC8B /* Highlighted.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Highlighted.swift; sourceTree = "<group>"; };
 		72827EB62E3D71BB00EBA534 /* SettingsQuranView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsQuranView.swift; sourceTree = "<group>"; };
 		728D75A82F79C53600502B8A /* ArabicLetters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArabicLetters.swift; sourceTree = "<group>"; };
 		728D764E2F79E9D700502B8A /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		728E2EEF2E6E062500F2C24C /* SettingsQuran.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsQuran.swift; sourceTree = "<group>"; };
-		729764D52FE8E4F100691EF5 /* SurahInfos.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = SurahInfos.json; sourceTree = "<group>"; };
 		729764DB2FE8E59B00691EF5 /* PreviewSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSupport.swift; sourceTree = "<group>"; };
 		729765412FE8E67300691EF5 /* WatchConnectivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchConnectivity.swift; sourceTree = "<group>"; };
 		729765482FE8E79500691EF5 /* Widget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = Widget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -316,87 +364,104 @@
 		723CE3522FAF113700E83F5A /* Fonts */ = {
 			isa = PBXGroup;
 			children = (
-				723CE34F2FAF113700E83F5A /* Qiraat.ttf */,
-				723CE3502FAF113700E83F5A /* Uthmani.ttf */,
-				723CE3512FAF113700E83F5A /* Indopak.ttf */,
+				725C5F4730142D5000DFEC8B /* Qiraat.ttf */,
+				725C5F4830142D5000DFEC8B /* Uthmani.ttf */,
+				725C5F4930142D5000DFEC8B /* Indopak.ttf */,
+				725C5F4A30142D5000DFEC8B /* QuranCommon.ttf */,
 			);
 			path = Fonts;
-			sourceTree = "<group>";
-		};
-		723CE35C2FAF113700E83F5A /* Qiraat */ = {
-			isa = PBXGroup;
-			children = (
-				723CE3552FAF113700E83F5A /* QiraahShubah.json */,
-				723CE3562FAF113700E83F5A /* QiraahBuzzi.json */,
-				723CE3572FAF113700E83F5A /* QiraahQunbul.json */,
-				723CE3582FAF113700E83F5A /* QiraahWarsh.json */,
-				723CE3592FAF113700E83F5A /* QiraahQaloon.json */,
-				723CE35A2FAF113700E83F5A /* QiraahDuri.json */,
-				723CE35B2FAF113700E83F5A /* QiraahSusi.json */,
-			);
-			path = Qiraat;
 			sourceTree = "<group>";
 		};
 		723CE35D2FAF113700E83F5A /* JSONs */ = {
 			isa = PBXGroup;
 			children = (
-				723CE3532FAF113700E83F5A /* NamesOfAllah.json */,
-				729764D52FE8E4F100691EF5 /* SurahInfos.json */,
-				726705CB2FB82B07000A62A6 /* Quran.json */,
-				723CE35C2FAF113700E83F5A /* Qiraat */,
+				725C5F5330142D6900DFEC8B /* NamesOfAllah.json */,
+				725C5F5430142D6900DFEC8B /* SurahInfos.json */,
+				725C5F5530142D6900DFEC8B /* Quran.json */,
+				725C5F5D30142D6900DFEC8B /* Qiraat */,
 			);
 			path = JSONs;
 			sourceTree = "<group>";
 		};
-		724D09532FEFACF2002C32AB /* Quran */ = {
+		725C5F5D30142D6900DFEC8B /* Qiraat */ = {
 			isa = PBXGroup;
 			children = (
-				724D09422FEFACF2002C32AB /* QuranStructs.swift */,
-				724D09432FEFACF2002C32AB /* QuranData.swift */,
-				724D09442FEFACF2002C32AB /* TajweedRules.swift */,
-				724D09452FEFACF2002C32AB /* Muqattaat.swift */,
-				724D09462FEFACF2002C32AB /* QuranView.swift */,
-				724D09472FEFACF2002C32AB /* SurahRows.swift */,
-				724D09482FEFACF2002C32AB /* ContextMenu.swift */,
-				724D09492FEFACF2002C32AB /* SurahHeaders.swift */,
-				724D094A2FEFACF2002C32AB /* SurahView.swift */,
-				724D094B2FEFACF2002C32AB /* AyahRow.swift */,
-				724D094C2FEFACF2002C32AB /* TajweedLegendView.swift */,
-				724D094D2FEFACF2002C32AB /* ShareAyah.swift */,
-				724D094E2FEFACF2002C32AB /* CustomRangeSheet.swift */,
-				724D094F2FEFACF2002C32AB /* QuranPlayer.swift */,
-				724D09502FEFACF2002C32AB /* NowPlayingView.swift */,
-				724D09512FEFACF2002C32AB /* ProfanityFilter.swift */,
-				724D09522FEFACF2002C32AB /* QuranShortcuts.swift */,
+				725C5F5630142D6900DFEC8B /* QiraahShubah.json */,
+				725C5F5730142D6900DFEC8B /* QiraahBuzzi.json */,
+				725C5F5830142D6900DFEC8B /* QiraahQunbul.json */,
+				725C5F5930142D6900DFEC8B /* QiraahWarsh.json */,
+				725C5F5A30142D6900DFEC8B /* QiraahQaloon.json */,
+				725C5F5B30142D6900DFEC8B /* QiraahDuri.json */,
+				725C5F5C30142D6900DFEC8B /* QiraahSusi.json */,
+			);
+			path = Qiraat;
+			sourceTree = "<group>";
+		};
+		725C5F8B3014306900DFEC8B /* Quran */ = {
+			isa = PBXGroup;
+			children = (
+				725C5F723014306900DFEC8B /* QuranStructs.swift */,
+				725C5F733014306900DFEC8B /* QuranData.swift */,
+				725C5F743014306900DFEC8B /* TajweedRules.swift */,
+				725C5F753014306900DFEC8B /* Muqattaat.swift */,
+				725C5F763014306900DFEC8B /* QuranView.swift */,
+				725C5F773014306900DFEC8B /* QuranPlannerView.swift */,
+				725C5F783014306900DFEC8B /* MushafPageFitter.swift */,
+				725C5F793014306900DFEC8B /* SurahRows.swift */,
+				725C5F7A3014306900DFEC8B /* QuranHistoryRows.swift */,
+				725C5F7B3014306900DFEC8B /* ContextMenu.swift */,
+				725C5F7C3014306900DFEC8B /* ComparisonSheets.swift */,
+				725C5F7D3014306900DFEC8B /* TafsirSheets.swift */,
+				725C5F7E3014306900DFEC8B /* SurahHeaders.swift */,
+				725C5F7F3014306900DFEC8B /* QuranGlyphFonts.swift */,
+				725C5F803014306900DFEC8B /* SurahView.swift */,
+				725C5F813014306900DFEC8B /* AyahSheets.swift */,
+				725C5F823014306900DFEC8B /* MushafReader.swift */,
+				725C5F833014306900DFEC8B /* AyahRow.swift */,
+				725C5F843014306900DFEC8B /* TajweedLegendView.swift */,
+				725C5F853014306900DFEC8B /* ShareAyah.swift */,
+				725C5F863014306900DFEC8B /* CustomRangeSheet.swift */,
+				725C5F873014306900DFEC8B /* QuranPlayer.swift */,
+				725C5F883014306900DFEC8B /* NowPlayingView.swift */,
+				725C5F893014306900DFEC8B /* ProfanityFilter.swift */,
+				725C5F8A3014306900DFEC8B /* QuranShortcuts.swift */,
 			);
 			path = Quran;
 			sourceTree = "<group>";
 		};
-		724D09812FEFAD02002C32AB /* Islam */ = {
+		725C5FD4301430A300DFEC8B /* Islam */ = {
 			isa = PBXGroup;
 			children = (
-				724D09762FEFAD02002C32AB /* IslamView.swift */,
-				724D09772FEFAD02002C32AB /* ArabicView.swift */,
-				724D09782FEFAD02002C32AB /* TajweedView.swift */,
-				724D09792FEFAD02002C32AB /* AdhkarView.swift */,
-				724D097A2FEFAD02002C32AB /* DuaView.swift */,
-				724D097B2FEFAD02002C32AB /* TasbihView.swift */,
-				724D097C2FEFAD02002C32AB /* NamesView.swift */,
-				724D097D2FEFAD02002C32AB /* DateView.swift */,
-				724D097F2FEFAD02002C32AB /* WallpaperView.swift */,
-				724D09802FEFAD02002C32AB /* PillarsView.swift */,
+				725C5FC4301430A300DFEC8B /* IslamView.swift */,
+				725C5FC5301430A300DFEC8B /* ArabicView.swift */,
+				725C5FC6301430A300DFEC8B /* ArabicLetterViews.swift */,
+				725C5FC7301430A300DFEC8B /* TajweedView.swift */,
+				725C5FC8301430A300DFEC8B /* TajweedTopics.swift */,
+				725C5FC9301430A300DFEC8B /* AdhkarView.swift */,
+				725C5FCA301430A300DFEC8B /* DuaView.swift */,
+				725C5FCB301430A300DFEC8B /* TasbihView.swift */,
+				725C5FCC301430A300DFEC8B /* NamesView.swift */,
+				725C5FCD301430A300DFEC8B /* DateView.swift */,
+				725C5FCF301430A300DFEC8B /* WallpaperView.swift */,
+				725C5FD0301430A300DFEC8B /* PillarsView.swift */,
+				725C5FD1301430A300DFEC8B /* BeliefsViews.swift */,
+				725C5FD2301430A300DFEC8B /* PillarViews.swift */,
+				725C5FD3301430A300DFEC8B /* HowToGuides.swift */,
 			);
 			path = Islam;
 			sourceTree = "<group>";
 		};
-		724D09A02FEFAD20002C32AB /* Helpers */ = {
+		725C5FFD3014310400DFEC8B /* Helpers */ = {
 			isa = PBXGroup;
 			children = (
-				724D099C2FEFAD20002C32AB /* ViewExtensions.swift */,
-				724D099D2FEFAD20002C32AB /* SearchBar.swift */,
-				724D099E2FEFAD20002C32AB /* Highlighted.swift */,
-				724D099F2FEFAD20002C32AB /* GlassEffect.swift */,
-				726CDCA62FFFB028004B77C5 /* FocusOverlay.swift */,
+				725C5FF53014310400DFEC8B /* ViewExtensions.swift */,
+				725C5FF63014310400DFEC8B /* SearchBar.swift */,
+				725C5FF73014310400DFEC8B /* SemanticSearch.swift */,
+				725C5FF83014310400DFEC8B /* OnDeviceAsk.swift */,
+				725C5FF93014310400DFEC8B /* GlassEffect.swift */,
+				725C5FFA3014310400DFEC8B /* FocusOverlay.swift */,
+				725C5FFB3014310400DFEC8B /* ArabicSpeech.swift */,
+				725C5FFC3014310400DFEC8B /* Highlighted.swift */,
 			);
 			path = Helpers;
 			sourceTree = "<group>";
@@ -468,10 +533,10 @@
 				72537C242F04361900829F59 /* AppReview.swift */,
 				72F47A1A2B36BF0300FCF22C /* SplashScreen.swift */,
 				72F479A82B367DE200FCF22C /* LaunchScreen.swift */,
-				724D09532FEFACF2002C32AB /* Quran */,
-				724D09812FEFAD02002C32AB /* Islam */,
+				725C5F8B3014306900DFEC8B /* Quran */,
+				725C5FD4301430A300DFEC8B /* Islam */,
 				72F479B32B367DE200FCF22C /* Settings */,
-				724D09A02FEFAD20002C32AB /* Helpers */,
+				725C5FFD3014310400DFEC8B /* Helpers */,
 			);
 			path = iPhone;
 			sourceTree = "<group>";
@@ -608,9 +673,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				72E99E8A2FE8EC1C00CD0D8F /* Qiraat.ttf in Resources */,
-				72E99E8B2FE8EC1C00CD0D8F /* Uthmani.ttf in Resources */,
-				72E99E8C2FE8EC1C00CD0D8F /* Indopak.ttf in Resources */,
 				7297658A2FE8E81200691EF5 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -620,19 +682,20 @@
 			buildActionMask = 2147483647;
 			files = (
 				729E23812B367CA800E1E0DA /* Assets.xcassets in Resources */,
-				723CE3B42FAF124000E83F5A /* QiraahDuri.json in Resources */,
-				723CE3B52FAF124000E83F5A /* QiraahWarsh.json in Resources */,
-				723CE3B62FAF124000E83F5A /* QiraahQunbul.json in Resources */,
-				723CE3C62FAF124500E83F5A /* Qiraat.ttf in Resources */,
-				723CE3C72FAF124500E83F5A /* Indopak.ttf in Resources */,
-				723CE3C82FAF124500E83F5A /* Uthmani.ttf in Resources */,
-				723CE3B82FAF124000E83F5A /* QiraahShubah.json in Resources */,
-				726705CD2FB82B07000A62A6 /* Quran.json in Resources */,
-				723CE3B92FAF124000E83F5A /* NamesOfAllah.json in Resources */,
-				723CE3BA2FAF124000E83F5A /* QiraahQaloon.json in Resources */,
-				729764D72FE8E4F100691EF5 /* SurahInfos.json in Resources */,
-				723CE3BB2FAF124000E83F5A /* QiraahBuzzi.json in Resources */,
-				723CE3BC2FAF124000E83F5A /* QiraahSusi.json in Resources */,
+				725C5F4F30142D5000DFEC8B /* Uthmani.ttf in Resources */,
+				725C5F5030142D5000DFEC8B /* QuranCommon.ttf in Resources */,
+				725C5F5130142D5000DFEC8B /* Qiraat.ttf in Resources */,
+				725C5F5E30142D6900DFEC8B /* Quran.json in Resources */,
+				725C5F5F30142D6900DFEC8B /* QiraahBuzzi.json in Resources */,
+				725C5F6030142D6900DFEC8B /* QiraahSusi.json in Resources */,
+				725C5F6130142D6900DFEC8B /* QiraahQaloon.json in Resources */,
+				725C5F6230142D6900DFEC8B /* QiraahWarsh.json in Resources */,
+				725C5F6330142D6900DFEC8B /* NamesOfAllah.json in Resources */,
+				725C5F6430142D6900DFEC8B /* QiraahShubah.json in Resources */,
+				725C5F6530142D6900DFEC8B /* QiraahDuri.json in Resources */,
+				725C5F6630142D6900DFEC8B /* QiraahQunbul.json in Resources */,
+				725C5F6730142D6900DFEC8B /* SurahInfos.json in Resources */,
+				725C5F5230142D5000DFEC8B /* Indopak.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -641,19 +704,20 @@
 			buildActionMask = 2147483647;
 			files = (
 				72F47A1C2B38E49100FCF22C /* Assets.xcassets in Resources */,
-				723CE3BD2FAF124000E83F5A /* QiraahDuri.json in Resources */,
-				723CE3BE2FAF124000E83F5A /* QiraahWarsh.json in Resources */,
-				723CE3BF2FAF124000E83F5A /* QiraahQunbul.json in Resources */,
-				723CE3C92FAF124500E83F5A /* Indopak.ttf in Resources */,
-				723CE3CA2FAF124500E83F5A /* Qiraat.ttf in Resources */,
-				723CE3CB2FAF124500E83F5A /* Uthmani.ttf in Resources */,
-				723CE3C12FAF124000E83F5A /* QiraahShubah.json in Resources */,
-				726705CC2FB82B07000A62A6 /* Quran.json in Resources */,
-				723CE3C22FAF124000E83F5A /* NamesOfAllah.json in Resources */,
-				723CE3C32FAF124000E83F5A /* QiraahQaloon.json in Resources */,
-				729764D62FE8E4F100691EF5 /* SurahInfos.json in Resources */,
-				723CE3C42FAF124000E83F5A /* QiraahBuzzi.json in Resources */,
-				723CE3C52FAF124000E83F5A /* QiraahSusi.json in Resources */,
+				725C5F4B30142D5000DFEC8B /* Uthmani.ttf in Resources */,
+				725C5F4C30142D5000DFEC8B /* QuranCommon.ttf in Resources */,
+				725C5F4D30142D5000DFEC8B /* Qiraat.ttf in Resources */,
+				725C5F6830142D6900DFEC8B /* Quran.json in Resources */,
+				725C5F6930142D6900DFEC8B /* QiraahBuzzi.json in Resources */,
+				725C5F6A30142D6900DFEC8B /* QiraahSusi.json in Resources */,
+				725C5F6B30142D6900DFEC8B /* QiraahQaloon.json in Resources */,
+				725C5F6C30142D6900DFEC8B /* QiraahWarsh.json in Resources */,
+				725C5F6D30142D6900DFEC8B /* NamesOfAllah.json in Resources */,
+				725C5F6E30142D6900DFEC8B /* QiraahShubah.json in Resources */,
+				725C5F6F30142D6900DFEC8B /* QiraahDuri.json in Resources */,
+				725C5F7030142D6900DFEC8B /* QiraahQunbul.json in Resources */,
+				725C5F7130142D6900DFEC8B /* SurahInfos.json in Resources */,
+				725C5F4E30142D5000DFEC8B /* Indopak.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -671,15 +735,15 @@
 				729765932FE8E95E00691EF5 /* ArabicLetters.swift in Sources */,
 				729765922FE8E8DA00691EF5 /* SettingsQuran.swift in Sources */,
 				729765912FE8E8C200691EF5 /* Globals.swift in Sources */,
-				724D09982FEFAD0D002C32AB /* QuranData.swift in Sources */,
-				724D09992FEFAD0D002C32AB /* Muqattaat.swift in Sources */,
-				724D099A2FEFAD0D002C32AB /* TajweedRules.swift in Sources */,
-				724D099B2FEFAD0D002C32AB /* QuranStructs.swift in Sources */,
 				729765822FE8E7FD00691EF5 /* LastReadAyahWidget.swift in Sources */,
 				729765832FE8E7FD00691EF5 /* QuranProvider.swift in Sources */,
-				724D09A92FEFAF9D002C32AB /* Highlighted.swift in Sources */,
 				729765842FE8E7FD00691EF5 /* QuranWidgetSnapshot.swift in Sources */,
 				729765852FE8E7FD00691EF5 /* LastListenedAyahWidget.swift in Sources */,
+				725C5FBE3014307A00DFEC8B /* QuranData.swift in Sources */,
+				725C5FBF3014307A00DFEC8B /* QuranStructs.swift in Sources */,
+				725C600E3014311800DFEC8B /* Highlighted.swift in Sources */,
+				725C5FC03014307A00DFEC8B /* Muqattaat.swift in Sources */,
+				725C5FC13014307A00DFEC8B /* TajweedRules.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -697,44 +761,60 @@
 				72F479C22B367DE200FCF22C /* Settings.swift in Sources */,
 				729764E82FE8E59B00691EF5 /* PreviewSupport.swift in Sources */,
 				720DEC6A2D24581D006EA342 /* CreditsView.swift in Sources */,
-				724D09652FEFACF2002C32AB /* Muqattaat.swift in Sources */,
-				724D09662FEFACF2002C32AB /* TajweedRules.swift in Sources */,
-				724D09672FEFACF2002C32AB /* TajweedLegendView.swift in Sources */,
-				724D09682FEFACF2002C32AB /* SurahHeaders.swift in Sources */,
-				724D09692FEFACF2002C32AB /* QuranPlayer.swift in Sources */,
-				724D096A2FEFACF2002C32AB /* QuranView.swift in Sources */,
-				724D096B2FEFACF2002C32AB /* SurahRows.swift in Sources */,
-				724D096C2FEFACF2002C32AB /* QuranStructs.swift in Sources */,
-				724D096D2FEFACF2002C32AB /* ProfanityFilter.swift in Sources */,
-				724D09822FEFAD02002C32AB /* WallpaperView.swift in Sources */,
-				724D09832FEFAD02002C32AB /* IslamView.swift in Sources */,
-				724D09842FEFAD02002C32AB /* ArabicView.swift in Sources */,
-				724D09852FEFAD02002C32AB /* DuaView.swift in Sources */,
-				724D09862FEFAD02002C32AB /* TajweedView.swift in Sources */,
-				724D09872FEFAD02002C32AB /* NamesView.swift in Sources */,
-				724D09882FEFAD02002C32AB /* PillarsView.swift in Sources */,
-				724D09892FEFAD02002C32AB /* DateView.swift in Sources */,
-				724D098A2FEFAD02002C32AB /* TasbihView.swift in Sources */,
-				724D098B2FEFAD02002C32AB /* AdhkarView.swift in Sources */,
-				724D096E2FEFACF2002C32AB /* QuranData.swift in Sources */,
-				724D096F2FEFACF2002C32AB /* ShareAyah.swift in Sources */,
-				726CDCA82FFFB028004B77C5 /* FocusOverlay.swift in Sources */,
-				724D09702FEFACF2002C32AB /* CustomRangeSheet.swift in Sources */,
-				724D09712FEFACF2002C32AB /* AyahRow.swift in Sources */,
-				724D09722FEFACF2002C32AB /* QuranShortcuts.swift in Sources */,
-				724D09732FEFACF2002C32AB /* ContextMenu.swift in Sources */,
-				724D09742FEFACF2002C32AB /* SurahView.swift in Sources */,
-				724D09752FEFACF2002C32AB /* NowPlayingView.swift in Sources */,
 				72827EB72E3D71BB00EBA534 /* SettingsQuranView.swift in Sources */,
 				729765882FE8E80A00691EF5 /* QuranWidgetSnapshot.swift in Sources */,
 				72537C252F04361900829F59 /* AppReview.swift in Sources */,
+				725C5FA53014306900DFEC8B /* QuranData.swift in Sources */,
+				725C5FA63014306900DFEC8B /* TajweedRules.swift in Sources */,
+				725C5FA73014306900DFEC8B /* Muqattaat.swift in Sources */,
+				725C5FA83014306900DFEC8B /* MushafPageFitter.swift in Sources */,
+				725C5FA93014306900DFEC8B /* ShareAyah.swift in Sources */,
+				725C5FAA3014306900DFEC8B /* QuranHistoryRows.swift in Sources */,
+				725C5FAB3014306900DFEC8B /* QuranStructs.swift in Sources */,
+				725C5FAC3014306900DFEC8B /* SurahRows.swift in Sources */,
+				725C5FAD3014306900DFEC8B /* QuranView.swift in Sources */,
+				725C5FAE3014306900DFEC8B /* TajweedLegendView.swift in Sources */,
+				725C5FAF3014306900DFEC8B /* QuranGlyphFonts.swift in Sources */,
+				725C5FB03014306900DFEC8B /* QuranShortcuts.swift in Sources */,
+				725C5FB13014306900DFEC8B /* QuranPlayer.swift in Sources */,
+				725C5FB23014306900DFEC8B /* CustomRangeSheet.swift in Sources */,
+				725C5FB33014306900DFEC8B /* SurahHeaders.swift in Sources */,
+				725C5FB43014306900DFEC8B /* ProfanityFilter.swift in Sources */,
+				725C5FB53014306900DFEC8B /* AyahSheets.swift in Sources */,
+				725C5FB63014306900DFEC8B /* NowPlayingView.swift in Sources */,
+				725C5FB73014306900DFEC8B /* SurahView.swift in Sources */,
+				725C5FB83014306900DFEC8B /* ComparisonSheets.swift in Sources */,
+				725C5FB93014306900DFEC8B /* QuranPlannerView.swift in Sources */,
+				725C5FBA3014306900DFEC8B /* MushafReader.swift in Sources */,
+				725C5FBB3014306900DFEC8B /* ContextMenu.swift in Sources */,
+				725C5FBC3014306900DFEC8B /* AyahRow.swift in Sources */,
+				725C5FBD3014306900DFEC8B /* TafsirSheets.swift in Sources */,
+				725C5FD5301430A300DFEC8B /* WallpaperView.swift in Sources */,
+				725C5FD6301430A300DFEC8B /* TajweedTopics.swift in Sources */,
+				725C5FD7301430A300DFEC8B /* ArabicLetterViews.swift in Sources */,
+				725C60063014310400DFEC8B /* Highlighted.swift in Sources */,
+				725C60073014310400DFEC8B /* SearchBar.swift in Sources */,
+				725C60083014310400DFEC8B /* SemanticSearch.swift in Sources */,
+				725C60093014310400DFEC8B /* GlassEffect.swift in Sources */,
+				725C600A3014310400DFEC8B /* OnDeviceAsk.swift in Sources */,
+				725C600B3014310400DFEC8B /* ArabicSpeech.swift in Sources */,
+				725C600C3014310400DFEC8B /* ViewExtensions.swift in Sources */,
+				725C600D3014310400DFEC8B /* FocusOverlay.swift in Sources */,
+				725C5FD8301430A300DFEC8B /* BeliefsViews.swift in Sources */,
+				725C5FD9301430A300DFEC8B /* DateView.swift in Sources */,
+				725C5FDA301430A300DFEC8B /* NamesView.swift in Sources */,
+				725C5FDB301430A300DFEC8B /* TajweedView.swift in Sources */,
+				725C5FDC301430A300DFEC8B /* HowToGuides.swift in Sources */,
+				725C5FDD301430A300DFEC8B /* ArabicView.swift in Sources */,
+				725C5FDF301430A300DFEC8B /* PillarViews.swift in Sources */,
+				725C5FE0301430A300DFEC8B /* AdhkarView.swift in Sources */,
+				725C5FE1301430A300DFEC8B /* IslamView.swift in Sources */,
+				725C5FE2301430A300DFEC8B /* TasbihView.swift in Sources */,
+				725C5FE3301430A300DFEC8B /* PillarsView.swift in Sources */,
+				725C5FE4301430A300DFEC8B /* DuaView.swift in Sources */,
 				728D76502F79E9D700502B8A /* AppDelegate.swift in Sources */,
 				728D75A92F79C53600502B8A /* ArabicLetters.swift in Sources */,
 				729765422FE8E67400691EF5 /* WatchConnectivity.swift in Sources */,
-				724D09A52FEFAD20002C32AB /* SearchBar.swift in Sources */,
-				724D09A62FEFAD20002C32AB /* GlassEffect.swift in Sources */,
-				724D09A72FEFAD20002C32AB /* ViewExtensions.swift in Sources */,
-				724D09A82FEFAD20002C32AB /* Highlighted.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -752,44 +832,60 @@
 				728D75BF2F79CF5100502B8A /* CreditsView.swift in Sources */,
 				729764E32FE8E59B00691EF5 /* PreviewSupport.swift in Sources */,
 				728D75E72F79D2FA00502B8A /* SplashScreen.swift in Sources */,
-				724D09542FEFACF2002C32AB /* Muqattaat.swift in Sources */,
-				724D09552FEFACF2002C32AB /* TajweedRules.swift in Sources */,
-				724D09562FEFACF2002C32AB /* TajweedLegendView.swift in Sources */,
-				724D09572FEFACF2002C32AB /* SurahHeaders.swift in Sources */,
-				724D09582FEFACF2002C32AB /* QuranPlayer.swift in Sources */,
-				724D09592FEFACF2002C32AB /* QuranView.swift in Sources */,
-				724D095A2FEFACF2002C32AB /* SurahRows.swift in Sources */,
-				724D095B2FEFACF2002C32AB /* QuranStructs.swift in Sources */,
-				724D095C2FEFACF2002C32AB /* ProfanityFilter.swift in Sources */,
-				724D098D2FEFAD02002C32AB /* WallpaperView.swift in Sources */,
-				724D098E2FEFAD02002C32AB /* IslamView.swift in Sources */,
-				724D098F2FEFAD02002C32AB /* ArabicView.swift in Sources */,
-				724D09902FEFAD02002C32AB /* DuaView.swift in Sources */,
-				724D09912FEFAD02002C32AB /* TajweedView.swift in Sources */,
-				724D09922FEFAD02002C32AB /* NamesView.swift in Sources */,
-				724D09932FEFAD02002C32AB /* PillarsView.swift in Sources */,
-				724D09942FEFAD02002C32AB /* DateView.swift in Sources */,
-				724D09952FEFAD02002C32AB /* TasbihView.swift in Sources */,
-				724D09962FEFAD02002C32AB /* AdhkarView.swift in Sources */,
-				724D095D2FEFACF2002C32AB /* QuranData.swift in Sources */,
-				724D095E2FEFACF2002C32AB /* ShareAyah.swift in Sources */,
-				726CDCA72FFFB028004B77C5 /* FocusOverlay.swift in Sources */,
-				724D095F2FEFACF2002C32AB /* CustomRangeSheet.swift in Sources */,
-				724D09602FEFACF2002C32AB /* AyahRow.swift in Sources */,
-				724D09612FEFACF2002C32AB /* QuranShortcuts.swift in Sources */,
-				724D09622FEFACF2002C32AB /* ContextMenu.swift in Sources */,
-				724D09632FEFACF2002C32AB /* SurahView.swift in Sources */,
-				724D09642FEFACF2002C32AB /* NowPlayingView.swift in Sources */,
 				728D764F2F79E9D700502B8A /* AppDelegate.swift in Sources */,
 				729765892FE8E80A00691EF5 /* QuranWidgetSnapshot.swift in Sources */,
 				72574CD12E49F33800BFF138 /* AppIntents.swift in Sources */,
+				725C5F8C3014306900DFEC8B /* QuranData.swift in Sources */,
+				725C5F8D3014306900DFEC8B /* TajweedRules.swift in Sources */,
+				725C5F8E3014306900DFEC8B /* Muqattaat.swift in Sources */,
+				725C5F8F3014306900DFEC8B /* MushafPageFitter.swift in Sources */,
+				725C5F903014306900DFEC8B /* ShareAyah.swift in Sources */,
+				725C5F913014306900DFEC8B /* QuranHistoryRows.swift in Sources */,
+				725C5F923014306900DFEC8B /* QuranStructs.swift in Sources */,
+				725C5F933014306900DFEC8B /* SurahRows.swift in Sources */,
+				725C5F943014306900DFEC8B /* QuranView.swift in Sources */,
+				725C5F953014306900DFEC8B /* TajweedLegendView.swift in Sources */,
+				725C5F963014306900DFEC8B /* QuranGlyphFonts.swift in Sources */,
+				725C5F973014306900DFEC8B /* QuranShortcuts.swift in Sources */,
+				725C5F983014306900DFEC8B /* QuranPlayer.swift in Sources */,
+				725C5F993014306900DFEC8B /* CustomRangeSheet.swift in Sources */,
+				725C5F9A3014306900DFEC8B /* SurahHeaders.swift in Sources */,
+				725C5F9B3014306900DFEC8B /* ProfanityFilter.swift in Sources */,
+				725C5F9C3014306900DFEC8B /* AyahSheets.swift in Sources */,
+				725C5F9D3014306900DFEC8B /* NowPlayingView.swift in Sources */,
+				725C5F9E3014306900DFEC8B /* SurahView.swift in Sources */,
+				725C5F9F3014306900DFEC8B /* ComparisonSheets.swift in Sources */,
+				725C5FA03014306900DFEC8B /* QuranPlannerView.swift in Sources */,
+				725C5FA13014306900DFEC8B /* MushafReader.swift in Sources */,
+				725C5FA23014306900DFEC8B /* ContextMenu.swift in Sources */,
+				725C5FA33014306900DFEC8B /* AyahRow.swift in Sources */,
+				725C5FA43014306900DFEC8B /* TafsirSheets.swift in Sources */,
+				725C5FE5301430A300DFEC8B /* WallpaperView.swift in Sources */,
+				725C5FE6301430A300DFEC8B /* TajweedTopics.swift in Sources */,
+				725C5FE7301430A300DFEC8B /* ArabicLetterViews.swift in Sources */,
+				725C5FFE3014310400DFEC8B /* Highlighted.swift in Sources */,
+				725C5FFF3014310400DFEC8B /* SearchBar.swift in Sources */,
+				725C60003014310400DFEC8B /* SemanticSearch.swift in Sources */,
+				725C60013014310400DFEC8B /* GlassEffect.swift in Sources */,
+				725C60023014310400DFEC8B /* OnDeviceAsk.swift in Sources */,
+				725C60033014310400DFEC8B /* ArabicSpeech.swift in Sources */,
+				725C60043014310400DFEC8B /* ViewExtensions.swift in Sources */,
+				725C60053014310400DFEC8B /* FocusOverlay.swift in Sources */,
+				725C5FE8301430A300DFEC8B /* BeliefsViews.swift in Sources */,
+				725C5FE9301430A300DFEC8B /* DateView.swift in Sources */,
+				725C5FEA301430A300DFEC8B /* NamesView.swift in Sources */,
+				725C5FEB301430A300DFEC8B /* TajweedView.swift in Sources */,
+				725C5FEC301430A300DFEC8B /* HowToGuides.swift in Sources */,
+				725C5FED301430A300DFEC8B /* ArabicView.swift in Sources */,
+				725C5FEF301430A300DFEC8B /* PillarViews.swift in Sources */,
+				725C5FF0301430A300DFEC8B /* AdhkarView.swift in Sources */,
+				725C5FF1301430A300DFEC8B /* IslamView.swift in Sources */,
+				725C5FF2301430A300DFEC8B /* TasbihView.swift in Sources */,
+				725C5FF3301430A300DFEC8B /* PillarsView.swift in Sources */,
+				725C5FF4301430A300DFEC8B /* DuaView.swift in Sources */,
 				72827EB82E3D71BB00EBA534 /* SettingsQuranView.swift in Sources */,
 				728E2EF12E6E062500F2C24C /* SettingsQuran.swift in Sources */,
 				729765432FE8E67400691EF5 /* WatchConnectivity.swift in Sources */,
-				724D09A12FEFAD20002C32AB /* SearchBar.swift in Sources */,
-				724D09A22FEFAD20002C32AB /* GlassEffect.swift in Sources */,
-				724D09A32FEFAD20002C32AB /* ViewExtensions.swift in Sources */,
-				724D09A42FEFAD20002C32AB /* Highlighted.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

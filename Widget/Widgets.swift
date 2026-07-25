@@ -17,18 +17,25 @@ extension View {
     /// Home-screen (system) widgets get the default system background; lock-screen (accessory) widgets
     /// stay clear so the system can apply its own vibrant treatment. `legacyPadding` restores the manual
     /// padding these widgets relied on before iOS 17.
+    ///
+    /// Every widget goes through here, so this is also where the app-wide rounded design is applied to the widget
+    /// tree (the app's own root modifier can't reach an extension). Arabic in a widget opts back out at its own
+    /// call site, the same as in the app.
     @ViewBuilder
     func widgetContainerBackground(accessory: Bool = false, legacyPadding: Bool = false) -> some View {
-        if #available(iOS 17.0, *) {
-            if accessory {
-                containerBackground(.clear, for: .widget)
+        Group {
+            if #available(iOS 17.0, *) {
+                if accessory {
+                    containerBackground(.clear, for: .widget)
+                } else {
+                    containerBackground(.background, for: .widget)
+                }
+            } else if legacyPadding {
+                padding()
             } else {
-                containerBackground(.background, for: .widget)
+                self
             }
-        } else if legacyPadding {
-            padding()
-        } else {
-            self
         }
+        .appFontDesign()
     }
 }

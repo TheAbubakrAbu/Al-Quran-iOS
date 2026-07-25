@@ -2,26 +2,32 @@ import SwiftUI
 import Foundation
 
 struct AyahRow: View, Equatable {
-    @EnvironmentObject var settings: Settings
-    @EnvironmentObject var quranData: QuranData
-    @EnvironmentObject var quranPlayer: QuranPlayer
-    
+    @ObservedObject var settings = Settings.shared
+    @ObservedObject var quranData = QuranData.shared
+    /// NOT @ObservedObject: the player is used only inside action closures plus the one
+    /// `isPlayingThis` input below. Observing it re-ran EVERY visible row's body once per ayah while
+    /// a surah played (`currentAyahNumber` publishes each advance), bypassing `.equatable()` -
+    /// observation invalidates independently of input comparison. The parent passes `isPlayingThis`
+    /// instead, so an ayah advance re-renders exactly the two rows whose tint changes.
+    private var quranPlayer: QuranPlayer { .shared }
+
     @State private var ayahBeginnerMode = false
-    
+
     #if os(iOS)
     @State private var showingAyahSheet = false
     @State private var showTafsirSheet = false
-    
+
     @State private var showingNoteSheet = false
     @State private var draftNote: String = ""
     @State private var showCustomRangeSheet = false
     @State private var showQiraahComparisonSheet = false
     @State private var showEnglishComparisonSheet = false
+    @State private var showSelectTextSheet = false
     #endif
     #if os(watchOS)
     @State private var showWatchPlaybackDialog = false
     #endif
-    
+
     let surah: Surah
     let ayah: Ayah
     /// When non-nil (e.g. comparison mode), use this qiraah for Arabic instead of global setting.
@@ -30,6 +36,25 @@ struct AyahRow: View, Equatable {
 
     @Binding var scrollDown: Int?
     @Binding var searchText: String
+    /// The search term that travelled with the navigation that OPENED this surah - highlights this row's
+    /// matched snippet in accent (exactly like an active search) without any filtering, until the reader
+    /// touches the row and the parent clears it. Empty for every row but the arrival target.
+    var arrivalTerm: String = ""
+
+    /// The shared attention-highlight lands on this ayah - draw a persistent (grey) tint distinct from the
+    /// player's accent tint. Set by opening to an ayah, switching reading modes, or tapping the ayah.
+    var isHighlighted: Bool = false
+    /// Tapping the row (when not searching) toggles the shared highlight.
+    var onToggleHighlight: (() -> Void)? = nil
+
+    /// Multi-select mode: the reader is picking several ayahs for a bulk action (share/copy/bookmark/note/
+    /// beginner). Taps toggle membership instead of highlighting, and a checkmark circle leads the row.
+    var isSelecting: Bool = false
+    var isSelected: Bool = false
+    /// Bulk "Beginner" action: render this ayah's Arabic letter-by-letter even though the global beginner
+    /// mode (and this row's own context-menu toggle) are off.
+    var forceBeginner: Bool = false
+    var onToggleSelection: (() -> Void)? = nil
 
     /// Fired when the ayah's actual text block (Arabic / translations) scrolls into view, not just the
     /// row's number/menu header. Drives last-read tracking and automatic khatm marking so an ayah only
@@ -37,7 +62,22 @@ struct AyahRow: View, Equatable {
     var onAyahTextAppear: (() -> Void)? = nil
     var onAyahTextDisappear: (() -> Void)? = nil
 
+    /// True when the player is currently on this exact ayah - drives the accent playing tint. Passed
+    /// in (and compared in `==`) rather than read from an observed player; see the note on `quranPlayer`.
+    var isPlayingThis: Bool = false
+
     @State private var showRespectAlert = false
+
+    /// Whether any of this ayah's action sheets/dialogs is open - drives the "keep it lit until the sheet is
+    /// gone" tint. watchOS has none of these sheets, so it's always false there.
+    private var anyAyahSheetOpen: Bool {
+        #if os(iOS)
+        showingAyahSheet || showTafsirSheet || showingNoteSheet || showCustomRangeSheet
+            || showQiraahComparisonSheet || showEnglishComparisonSheet || showSelectTextSheet
+        #else
+        false
+        #endif
+    }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.surah == rhs.surah &&
@@ -45,6 +85,12 @@ struct AyahRow: View, Equatable {
         lhs.comparisonQiraahOverride == rhs.comparisonQiraahOverride &&
         lhs.renderSettingsSignature == rhs.renderSettingsSignature &&
         lhs.scrollDown == rhs.scrollDown &&
+        lhs.isHighlighted == rhs.isHighlighted &&
+        lhs.isPlayingThis == rhs.isPlayingThis &&
+        lhs.arrivalTerm == rhs.arrivalTerm &&
+        lhs.isSelecting == rhs.isSelecting &&
+        lhs.isSelected == rhs.isSelected &&
+        lhs.forceBeginner == rhs.forceBeginner &&
         lhs.searchText == rhs.searchText
     }
 
@@ -74,24 +120,23 @@ struct AyahRow: View, Equatable {
         return cache
     }()
 
-    
+
     func containsProfanity(_ text: String) -> Bool {
-        let t = text.folding(options: [.diacriticInsensitive, .widthInsensitive], locale: .current).lowercased()
-        return profanityFilter.contains { !$0.isEmpty && t.contains($0) }
+        textContainsProfanity(text)
     }
-    
+
     private func isNoteAllowed(_ text: String) -> Bool {
         !containsProfanity(text)
     }
-    
+
     private var bookmarkIndex: Int? {
         settings.bookmarkIndex(surah: surah.id, ayah: ayah.id)
     }
-    
+
     private var bookmark: BookmarkedAyah? {
         settings.bookmarkedAyah(surah: surah.id, ayah: ayah.id)
     }
-    
+
     private var isBookmarkedHere: Bool { bookmarkIndex != nil }
     private var currentNote: String {
         settings.bookmarkNoteText(surah: surah.id, ayah: ayah.id)
@@ -113,7 +158,7 @@ struct AyahRow: View, Equatable {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !settings.isKhatmAyahComplete(surah: surah.id, ayah: ayah.id)
     }
-    
+
     private func setNote(_ text: String?) {
         settings.setBookmarkNote(surah: surah.id, ayah: ayah.id, note: text)
     }
@@ -121,15 +166,15 @@ struct AyahRow: View, Equatable {
     private func removeNote() {
         settings.removeBookmarkNote(surah: surah.id, ayah: ayah.id)
     }
-    
+
     private func spacedArabic(_ text: String) -> String {
-        (settings.beginnerMode || ayahBeginnerMode) ? text.map { String($0) }.joined(separator: " ") : text
+        (settings.beginnerMode || ayahBeginnerMode || forceBeginner) ? text.map { String($0) }.joined(separator: " ") : text
     }
 
     private func arabicDisplayText() -> String {
         let clean = settings.cleanArabicText
         let qiraahKey = comparisonQiraahOverride ?? (settings.displayQiraahForArabic ?? "Hafs")
-        let key = "\(surah.id):\(ayah.id)|\(clean ? 1 : 0)|\((settings.beginnerMode || ayahBeginnerMode) ? 1 : 0)|\(qiraahKey)"
+        let key = "\(surah.id):\(ayah.id)|\(clean ? 1 : 0)|\((settings.beginnerMode || ayahBeginnerMode || forceBeginner) ? 1 : 0)|\(qiraahKey)"
 
         if let cached = Self.arabicDisplayCache.object(forKey: key as NSString) {
             return cached as String
@@ -220,7 +265,11 @@ struct AyahRow: View, Equatable {
     @ViewBuilder
     private func muqattaatPronunciationBlock() -> some View {
         if settings.showArabicText, let p = Muqattaat.pronunciation(surah: surah.id, ayah: ayah.id) {
-            let arabicFont = Font.custom(settings.fontArabic, size: settings.fontArabicSize * 0.62)
+            // "Basic" renders these names with the system face, which should stay rounded like the rest of the UI.
+            let usesCustomFace = settings.quranUsesCustomArabicFace
+            let arabicFont: Font = usesCustomFace
+                ? Font.arabic(settings.fontArabic, size: settings.fontArabicSize * 0.62)
+                : .system(size: settings.fontArabicSize * 0.62, design: .rounded)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("ACTUAL PRONUNCIATION")
@@ -241,11 +290,33 @@ struct AyahRow: View, Equatable {
                 if settings.showMuqattaatHelper {
                     Text(p.individualLetters)
                         .font(arabicFont)
+                        .arabicFontDesign(custom: usesCustomFace)
                         .foregroundColor(.primary)
                         .frame(maxWidth: .infinity, alignment: .trailing)
 
                     muqattaatNamesView(p, font: arabicFont)
+                        .arabicFontDesign(custom: usesCustomFace)
                         .frame(maxWidth: .infinity, alignment: .trailing)
+
+                    Divider()
+                        .padding(.vertical, 2)
+
+                    // The letter count, plus the elongation - but only the elongation these particular letters
+                    // actually carry. Ṭā-Hā has no maddah sign on either name, so it is 2 counts, not 6.
+                    HStack(spacing: 8) {
+                        Text("\(p.letters.count) \(p.letters.count == 1 ? "letter" : "letters")")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(.secondary)
+
+                        Spacer()
+
+                        if let maddDescription = p.maddDescription {
+                            Text(maddDescription)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -277,15 +348,13 @@ struct AyahRow: View, Equatable {
     }
 
     private var tajweedAnimationKey: String {
-        let categorySignature = TajweedLegendCategory.allCases
-            .map { settings.isTajweedCategoryVisible($0) ? "1" : "0" }
-            .joined()
+        let categorySignature = settings.tajweedCategoryVisibilitySignature
         let qiraahKey = comparisonQiraahOverride ?? settings.displayQiraah
         return [
             settings.showTajweedColors ? "1" : "0",
             settings.highlightAllahNames ? "1" : "0",
             settings.cleanArabicText ? "1" : "0",
-            (settings.beginnerMode || ayahBeginnerMode) ? "1" : "0",
+            (settings.beginnerMode || ayahBeginnerMode || forceBeginner) ? "1" : "0",
             qiraahKey,
             categorySignature
         ].joined(separator: "|")
@@ -305,36 +374,58 @@ struct AyahRow: View, Equatable {
         } else {
             settings.isHafsDisplay
         }
-        let hasSearch = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // The active in-list search term, or - when this row is a search hit the reader just navigated
+        // to - the term that travelled with the navigation. Either colors the matched snippet in accent.
+        let activeTerm: String = {
+            let live = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !live.isEmpty { return searchText }
+            return arrivalTerm
+        }()
+        let hasSearch = !activeTerm.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let normalizedQuery = hasSearch
-            ? settings.cleanSearch(searchText, whitespace: true).removingArabicDiacriticsAndSigns
+            ? settings.cleanSearch(activeTerm, whitespace: true).removingArabicDiacriticsAndSigns
             : ""
         let matchSources = hasSearch ? normalizedMatchSources() : nil
 
-        let mArabic = matchSources?.arabic.contains(normalizedQuery) ?? false
         let mTranslit = matchSources?.transliteration.contains(normalizedQuery) ?? false
         let mSaheeh = matchSources?.saheeh.contains(normalizedQuery) ?? false
         let mMustafa = matchSources?.mustafa.contains(normalizedQuery) ?? false
+        // Guarantee a highlight: the LIST FILTER that put this row on screen normalizes differently than these
+        // per-field checks (it also strips silent letters), so a row can match the filter while none of the
+        // fields' exact-contains checks fire. When that happens, force the always-shown Arabic field to
+        // guarantee at least one highlighted span (HighlightedSnippet's closest-match fallback) - a searched
+        // ayah on screen must never render with nothing highlighted.
+        let rawArabicMatch = matchSources?.arabic.contains(normalizedQuery) ?? false
+        let anyFieldMatched = rawArabicMatch || mTranslit || mSaheeh || mMustafa
+        let mArabic = rawArabicMatch || (hasSearch && !anyFieldMatched)
 
         let showArabic = settings.showArabicText || mArabic
         let showTranslit = hafsOnly && (settings.showTransliteration || mTranslit)
         let showEnglishSaheeh = hafsOnly && (settings.showEnglishSaheeh || mSaheeh)
         let showEnglishMustafa = hafsOnly && (settings.showEnglishMustafa || mMustafa)
-        let highlightQuery = hasSearch ? queryForInlineHighlight(searchText) : ""
+        let highlightQuery = hasSearch ? queryForInlineHighlight(activeTerm) : ""
         let fontSizeEN = settings.englishFontSize
-        
+
+        // `isPlayingThis` is the input property - see its declaration.
+        // The persistent attention tint (grey), separate from the accent playing tint: shown when this ayah is
+        // the shared highlight OR while one of its action sheets is open (keep the selection lit until the
+        // sheet is gone). The accent playing tint always wins when this ayah is being recited. In multi-select
+        // mode, a SELECTED row gets the accent tint instead.
+        let showSelectionTint = isSelecting && isSelected
+        let showAttentionTint = !isPlayingThis && !isSelecting && (isHighlighted || anyAyahSheetOpen)
+
         ZStack {
-            if let currentSurah = quranPlayer.currentSurahNumber, let currentAyah = quranPlayer.currentAyahNumber, currentSurah == surah.id {
+            if isPlayingThis || showAttentionTint || showSelectionTint {
                 RoundedRectangle(cornerRadius: 24)
                     .fill(
-                        currentAyah == ayah.id
+                        isPlayingThis || showSelectionTint
                         ? settings.accentColor.color.opacity(settings.defaultView ? 0.15 : 0.25)
-                        : .clear
+                        : Color.secondary.opacity(0.18)
                     )
                     .padding(.horizontal, -12)
                     .padding(.vertical, ayahHighlightBackgroundVerticalPadding)
             }
-            
+
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 4) {
                     ZStack(alignment: .topTrailing) {
@@ -363,9 +454,9 @@ struct AyahRow: View, Equatable {
                                 .offset(x: 8, y: -6)
                         }
                     }
-                    
+
                     Spacer()
-                    
+
                     #if os(iOS)
                     if shouldShowManualKhatmButton {
                         Button {
@@ -410,7 +501,7 @@ struct AyahRow: View, Equatable {
                                 .frame(width: 28, height: 28)
                         }
                     }
-                    
+
                     Menu {
                         Text("Ayah Actions")
                             .foregroundStyle(.secondary)
@@ -439,6 +530,10 @@ struct AyahRow: View, Equatable {
                             ayahNumber: ayah.id
                         )
                         .smallMediumSheetPresentation()
+                    }
+                    .sheet(isPresented: $showSelectTextSheet) {
+                        SelectAyahTextSheet(surah: surah, ayah: ayah)
+                            .smallMediumSheetPresentation()
                     }
                     .sheet(isPresented: $showQiraahComparisonSheet) {
                         AyahQiraahComparisonSheet(surahNumber: surah.id, ayahNumber: ayah.id)
@@ -494,7 +589,7 @@ struct AyahRow: View, Equatable {
                 }
                 .padding(.bottom, settings.showArabicText ? 8 : 2)
                 .padding(.trailing, 1)
-                
+
                 ayahTextBlock(
                     showArabic: showArabic,
                     showTranslit: showTranslit,
@@ -512,18 +607,51 @@ struct AyahRow: View, Equatable {
             }
         }
         .lineLimit(nil)
+        // Multi-select: content slides right to make room for the leading checkmark circle.
+        .padding(.leading, isSelecting ? 32 : 0)
+        .overlay(alignment: .leading) {
+            if isSelecting {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? settings.accentColor.color : Color.secondary)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: isSelecting)
         .contentShape(Rectangle())
         .onTapGesture {
-            if !searchText.isEmpty {
+            if isSelecting {
+                // Multi-select mode: a tap anywhere on the row toggles its membership.
+                settings.hapticFeedback()
+                onToggleSelection?()
+            } else if !searchText.isEmpty {
                 settings.hapticFeedback()
                 withAnimation {
                     scrollDown = ayah.id
                 }
+            } else if let onToggleHighlight {
+                // Not searching: tapping an ayah marks it (and tapping the marked ayah again clears it).
+                settings.hapticFeedback()
+                onToggleHighlight()
             }
         }
         #if os(iOS)
         .contextMenu {
             menuBlock(isBookmarked: isBookmarked, includePlaybackOptions: true)
+        }
+        // The tap-to-scroll jump, as a swipe too: while searching, swipe the result row to scroll down
+        // to that ayah in the full list.
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button {
+                    settings.hapticFeedback()
+                    withAnimation {
+                        scrollDown = ayah.id
+                    }
+                } label: {
+                    Label("Scroll Down", systemImage: "arrow.down.to.line")
+                }
+                .tint(settings.accentColor.color)
+            }
         }
         #endif
         .confirmationDialog("Note not saved", isPresented: $showRespectAlert, titleVisibility: .visible) {
@@ -611,7 +739,7 @@ struct AyahRow: View, Equatable {
         }
         #endif
     }
-    
+
     @ViewBuilder
     private func ayahTextBlock(
         showArabic: Bool,
@@ -635,7 +763,7 @@ struct AyahRow: View, Equatable {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "note.text")
                         .foregroundColor(settings.accentColor.color)
-                    
+
                     Text(currentNote)
                         .font(.callout)
                         .foregroundColor(.primary)
@@ -663,14 +791,20 @@ struct AyahRow: View, Equatable {
             muqattaatPronunciationBlock()
 
             if showArabic {
-                let beginner = settings.beginnerMode || ayahBeginnerMode
+                let beginner = settings.beginnerMode || ayahBeginnerMode || forceBeginner
                 let arabicSource = arabicDisplayText()
-                let arabicFont: Font = settings.removeArabicDots
-                    ? .system(size: settings.fontArabicSize)
+                // "Basic" font (and the dots-removed mode) render with the standard Apple system font. The design is
+                // named explicitly rather than inherited, because this view opts out of the app-wide rounded design
+                // below (its ayah-number suffix always uses a bundled face, which that design would clobber).
+                let useSystemArabic = settings.removeArabicDots || settings.quranUsesSystemArabicFont
+                let arabicFont: Font = useSystemArabic
+                    ? .system(size: settings.fontArabicSize, design: .rounded)
                     : .custom(
                         ayahArabicFontName(for: comparisonQiraahOverride ?? settings.displayQiraahForArabic),
                         size: settings.fontArabicSize
                     )
+                // The ayah-end marker is always the Hafs Uthmani face: that font is what renders the digits as the
+                // circled-flower ornament, so falling back to the system font here would print bare digits instead.
                 let suffixFont: Font = .custom(Settings.hafsUthmaniFontName, size: settings.fontArabicSize)
 
                 HighlightedSnippet(
@@ -687,6 +821,7 @@ struct AyahRow: View, Equatable {
                     highlightAllahNames: settings.highlightAllahNames,
                     guaranteeMatch: matchedArabic
                 )
+                .arabicFontDesign(custom: true)
                 .id(tajweedAnimationKey)
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -721,7 +856,7 @@ struct AyahRow: View, Equatable {
                         highlightAllahNames: settings.highlightAllahNames,
                         guaranteeMatch: matchedSaheeh
                     )
-                    Text("— Saheeh International")
+                    Text("- Saheeh International")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -742,7 +877,7 @@ struct AyahRow: View, Equatable {
                         highlightAllahNames: settings.highlightAllahNames,
                         guaranteeMatch: matchedMustafa
                     )
-                    Text("— Clear Quran (Mustafa Khattab)")
+                    Text("- Clear Quran (Mustafa Khattab)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -798,7 +933,7 @@ struct AyahRow: View, Equatable {
             } label: {
                 Label("Repeat Ayah", systemImage: "repeat")
             }
-            
+
             Button {
                 settings.hapticFeedback()
                 showCustomRangeSheet = true
@@ -812,7 +947,7 @@ struct AyahRow: View, Equatable {
             } label: {
                 Label("Play From Ayah", systemImage: "play.circle.fill")
             }
-            
+
             Button {
                 settings.hapticFeedback()
                 quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id)
@@ -860,7 +995,7 @@ struct AyahRow: View, Equatable {
             } label: {
                 Label("Play From Ayah", systemImage: "play.circle.fill")
             }
-            
+
             Button {
                 settings.hapticFeedback()
                 quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id)
@@ -921,6 +1056,21 @@ struct AyahRow: View, Equatable {
         }()
 
         VStack(alignment: .leading) {
+            // While searching within the surah, the row's TAP scrolls down to the ayah in the full list -
+            // the same jump offered here for discoverability (and as a swipe action on the row).
+            if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button {
+                    settings.hapticFeedback()
+                    withAnimation {
+                        scrollDown = ayah.id
+                    }
+                } label: {
+                    Label("Scroll Down to Ayah", systemImage: "arrow.down.to.line")
+                }
+
+                Divider()
+            }
+
             Button(role: isBookmarked ? .destructive : nil) {
                 settings.hapticFeedback()
                 toggleBookmarkWithNoteGuard()
@@ -930,7 +1080,7 @@ struct AyahRow: View, Equatable {
                     systemImage: isBookmarked ? "bookmark.fill" : "bookmark"
                 )
             }
-            
+
             Button {
                 settings.hapticFeedback()
                 if !isBookmarked {
@@ -966,7 +1116,7 @@ struct AyahRow: View, Equatable {
                 canShowQiraah: settings.showQiraahDetails,
                 canShowTranslation: canCompareEnglishText
             )
-            
+
             if settings.showArabicText && !settings.beginnerMode {
                 Button {
                     settings.hapticFeedback()
@@ -980,12 +1130,19 @@ struct AyahRow: View, Equatable {
                           : "textformat.size.ar")
                 }
             }
-            
+
             Divider()
-            
+
             if includePlaybackOptions && settings.isHafsDisplay {
                 contextPlaybackMenuBlock()
                 Divider()
+            }
+
+            Button {
+                settings.hapticFeedback()
+                showSelectTextSheet = true
+            } label: {
+                Label("Select Text", systemImage: "highlighter")
             }
 
             Button {

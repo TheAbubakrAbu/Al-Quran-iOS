@@ -1,5 +1,97 @@
 import SwiftUI
 
+// MARK: - Apple Music-style bar minimization
+//
+// The system tab bar minimizes natively on iOS 26 (`tabBarMinimizeBehavior`); the app's custom glass bars
+// mimic it by watching scroll direction (iOS 18+) and shrinking while the user scrolls down, re-expanding
+// on scroll-up or at the top. Everything below no-ops on older OSes and on watchOS.
+
+/// What the collapse watcher reads from the scroll geometry each change.
+struct ScrollCollapseMetrics: Equatable {
+    let offset: CGFloat
+    let distanceFromBottom: CGFloat
+}
+
+extension View {
+    /// Watches this scroll view's direction and drives `collapsed`: true while scrolling down, false on
+    /// scroll-up or near either END of the content. Attach to the `List`/`ScrollView` whose bars should
+    /// minimize. iOS 18+; on earlier OSes `collapsed` simply never becomes true.
+    @ViewBuilder
+    func collapseBarsOnScroll(_ collapsed: Binding<Bool>) -> some View {
+        #if os(iOS)
+        if #available(iOS 18.0, *) {
+            self.onScrollGeometryChange(for: ScrollCollapseMetrics.self) { geometry in
+                ScrollCollapseMetrics(
+                    offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                    distanceFromBottom: geometry.contentSize.height + geometry.contentInsets.bottom
+                        - (geometry.contentOffset.y + geometry.containerSize.height)
+                )
+            } action: { oldValue, newValue in
+                // Near the top OR the bottom the bars always expand, and no further toggling happens there.
+                // The bottom half of this matters doubly: collapsing/expanding a bar CHANGES the bottom
+                // inset, which re-fires this watcher - near the end of a surah that fed back into an
+                // oscillation of collapse/expand springs (the end-of-surah lag). Inside the end zones the
+                // early return breaks the loop.
+                if newValue.offset <= 24 || newValue.distanceFromBottom <= 140 {
+                    if collapsed.wrappedValue {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                            collapsed.wrappedValue = false
+                        }
+                    }
+                    return
+                }
+                let delta = newValue.offset - oldValue.offset
+                // Jitter gate: ignore sub-2pt wobble (bounce, precision) so the bars don't flicker.
+                guard abs(delta) > 2 else { return }
+                let shouldCollapse = delta > 0
+                if shouldCollapse != collapsed.wrappedValue {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        collapsed.wrappedValue = shouldCollapse
+                    }
+                }
+            }
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+
+    /// The minimized look for a custom glass bar: scaled toward its bottom edge and slightly faded, the same
+    /// visual language as the iOS 26 minimized tab bar. Pair with `collapsibleBarRow` for the bar's
+    /// secondary rows.
+    ///
+    /// CURRENTLY OFF: the bars keep full size while scrolling. To bring the shrink back, uncomment the
+    /// three modifiers below (0.75 is the agreed minimized scale).
+    func minimizedBarStyle(_ collapsed: Bool) -> some View {
+        self
+            // .scaleEffect(collapsed ? 0.75 : 1, anchor: .bottom)
+            // .opacity(collapsed ? 0.65 : 1)
+            // .animation(.spring(response: 0.35, dampingFraction: 0.85), value: collapsed)
+    }
+
+    /// Collapses a bar's secondary row (font pickers, sliders) without unmounting it. Liquid Glass
+    /// surfaces cannot participate in view insertion/removal transitions - mid-flight they snapshot as
+    /// black boxes, which is exactly the blocky black flash that appeared when scrolling up re-expanded
+    /// a minimized bar. So the row is never inserted or removed: it stays mounted and simply loses its
+    /// height, opacity, and hit-testing while the bar is minimized. No transition, no snapshot, no flash.
+    ///
+    /// CURRENTLY OFF alongside `minimizedBarStyle`: with the shrink disabled the secondary rows stay
+    /// visible too. Uncomment the modifiers below to restore the collapse.
+    func collapsibleBarRow(_ collapsed: Bool) -> some View {
+        self
+            // .frame(height: collapsed ? 0 : nil)
+            // .clipped()
+            // .opacity(collapsed ? 0 : 1)
+            // The row appears and disappears with NO animation of its own: the glass picker snaps in and
+            // out while the bar's scale/fade (minimizedBarStyle) provides the motion. `nil` here overrides
+            // the ambient `withAnimation` the scroll watcher wraps the state change in.
+            // .animation(nil, value: collapsed)
+            // .allowsHitTesting(!collapsed)
+    }
+}
+
 extension View {
     @ViewBuilder
     func adaptiveSafeArea<InsetContent: View>(edge: VerticalEdge, @ViewBuilder content: () -> InsetContent) -> some View {
@@ -25,7 +117,7 @@ extension View {
     }
 
     /// Tints list rows for the Sepia / Gray reading themes. Apply this to the rows/sections INSIDE a `List`
-    /// (not to the `List` itself) — `.listRowBackground` only propagates when attached to row content, which
+    /// (not to the `List` itself) - `.listRowBackground` only propagates when attached to row content, which
     /// is why the list-level version in `ConditionalListStyle` couldn't color the cells.
     func themedListRowBackground() -> some View {
         modifier(ThemedListRowBackground())
@@ -78,9 +170,36 @@ enum SafeAreaInsetVStackSpacing {
     }
 }
 
+/// The now-playing bar's narrow seam between shared chrome and whichever module owns playback.
+///
+/// Lives in HELPERS - not next to QuranPlayer - so shared files never name a Quran type: this is what
+/// lets the Adhan/Hadith/Islam folders plus Helpers compile in sibling apps (Al-Adhan, Al-Hadith) that
+/// don't ship the Quran module at all. Apps WITH recitation wire it up from their player: QuranPlayer's
+/// `isPlaying`/`isPaused` didSets call `update(showsBar:)`, and `QuranPlayer.init` installs `barContent`.
+/// Apps without simply never touch it - the flag stays false, the closure stays nil, everything compiles.
+///
+/// Publishes only when the bar actually appears or disappears (the narrow slice, NOT the whole player:
+/// this wraps every list in the app, and observing `QuranPlayer` re-rendered all of them on every
+/// per-ayah publish during recitation). Main-thread by the same convention as the player's publishes.
+final class PlaybackVisibility: ObservableObject {
+    static let shared = PlaybackVisibility()
+    private init() {}
+
+    @Published private(set) var showsNowPlaying = false
+
+    /// The bar view itself, installed once by the module that owns it (`QuranPlayer.init` returns
+    /// `AnyView(NowPlayingView())`). Nil means this app has no bar.
+    var barContent: (() -> AnyView)? = nil
+
+    func update(showsBar: Bool) {
+        guard showsBar != showsNowPlaying else { return }
+        showsNowPlaying = showsBar
+    }
+}
+
 struct ConditionalListStyle: ViewModifier {
-    @EnvironmentObject private var settings: Settings
-    @EnvironmentObject private var quranPlayer: QuranPlayer
+    @ObservedObject private var settings = Settings.shared
+    @ObservedObject private var playback = PlaybackVisibility.shared
     @Environment(\.colorScheme) private var systemColorScheme
     @Environment(\.customColorScheme) private var customColorScheme
 
@@ -92,7 +211,7 @@ struct ConditionalListStyle: ViewModifier {
     }
 
     private var shouldShowNowPlaying: Bool {
-        quranPlayer.isPlaying || quranPlayer.isPaused
+        playback.showsNowPlaying
     }
 
     func body(content: Content) -> some View {
@@ -108,14 +227,14 @@ struct ConditionalListStyle: ViewModifier {
         .tint(settings.accentColor.color)
         .dismissKeyboardOnScroll()
         .topContentMargin(topContentMargin)
-        // Force the theme's light/dark base here (not just at the app root) so sheets — which are their own
-        // presentation contexts and don't inherit the root's preferredColorScheme — also adopt the theme.
+        // Force the theme's light/dark base here (not just at the app root) so sheets - which are their own
+        // presentation contexts and don't inherit the root's preferredColorScheme - also adopt the theme.
         .preferredColorScheme(settings.colorScheme)
         #if os(iOS)
         .safeAreaInset(edge: .bottom) {
-            if !disableNowPlayingInset && shouldShowNowPlaying {
+            if !disableNowPlayingInset && shouldShowNowPlaying, let bar = playback.barContent {
                 VStack(spacing: SafeAreaInsetVStackSpacing.standard) {
-                    NowPlayingView()
+                    bar()
                 }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 8)
@@ -128,7 +247,7 @@ struct ConditionalListStyle: ViewModifier {
 
     #if os(iOS)
     // Single, structurally-constant modifier chain (only the VALUES change with the theme). Switching to/from
-    // Sepia/Gray used to flip between if/else branches, which changed the view tree and recreated the List —
+    // Sepia/Gray used to flip between if/else branches, which changed the view tree and recreated the List - 
     // scrolling it back to the top. Keeping one branch preserves the List, so no theme change resets scroll.
     // (Row colors are handled separately by `themedListRowBackground()` applied inside each List.)
     @ViewBuilder
@@ -160,7 +279,7 @@ struct ConditionalListStyle: ViewModifier {
 /// Paints the per-row background for the Sepia / Gray reading themes. Must be applied to rows/sections inside
 /// a `List` so `.listRowBackground` actually reaches the cells. No-op for Light/Dark/System (system colors).
 struct ThemedListRowBackground: ViewModifier {
-    @EnvironmentObject private var settings: Settings
+    @ObservedObject private var settings = Settings.shared
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -178,10 +297,10 @@ struct DismissKeyboardOnScrollModifier: ViewModifier {
             #if os(iOS)
             if #available(iOS 16.0, *) {
                 // Keep `.immediately` (both `.immediately` and `.interactively` showed a weird lurch). The
-                // lurch isn't the dismiss mode — it's the bottom safe-area bar re-animating its position on a
+                // lurch isn't the dismiss mode - it's the bottom safe-area bar re-animating its position on a
                 // curve that fights the keyboard's. That's fixed at the bar itself: the search-bar container
                 // strips its inherited animation transaction (see QuranView `bottomControls`) so it snaps with
-                // the keyboard instead of easing separately — the same `.transaction { $0.animation = nil }`
+                // the keyboard instead of easing separately - the same `.transaction { $0.animation = nil }`
                 // fix used in NowPlayingView.
                 content.scrollDismissesKeyboard(.immediately)
             } else {
@@ -201,5 +320,155 @@ struct DismissKeyboardOnScrollModifier: ViewModifier {
         #if os(iOS)
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         #endif
+    }
+}
+
+extension View {
+    /// The corner favorite star every grid tile shares: a small overlay (never part of the tile's own
+    /// stack, so it costs no layout) tucked into the top-trailing corner with a hair of breathing room.
+    /// The visible glyph is small; the tap target is padded well past it.
+    func gridFavoriteStar(
+        isFavorite: Bool,
+        accent: Color,
+        accessibilityName: String,
+        onToggle: @escaping () -> Void
+    ) -> some View {
+        overlay(alignment: .topTrailing) {
+            Image(systemName: isFavorite ? "star.fill" : "star")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(isFavorite ? accent : .secondary)
+                // The tap target is a 30pt square CENTERED ON THE GLYPH - sized before the corner
+                // positioning, not after. The old shape came after the 10/11pt paddings and then
+                // inflated by another 10 (`inset(by: -10)`), hit-testing a ~40pt+ zone anchored at the
+                // corner: on a small grid tile, tapping anywhere on the right side toggled the star
+                // instead of opening the tile.
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    Settings.shared.hapticFeedback()
+                    withAnimation(.easeInOut) {
+                        onToggle()
+                    }
+                }
+                .padding(.top, 1)
+                .padding(.trailing, 2)
+                .accessibilityLabel(isFavorite ? "Unfavorite \(accessibilityName)" : "Favorite \(accessibilityName)")
+        }
+    }
+}
+
+#if os(iOS)
+/// The shared three-way Arabic face picker for the non-Quran Arabic screens (Hadith, Adhkar, Duas,
+/// 99 Names, Arabic Alphabet). One control, one setting - every screen that shows standard Arabic
+/// text offers the same choice: Uthmani (the Qiraat face), IndoPak, or the system font.
+struct IslamArabicFontPicker: View {
+    @ObservedObject private var settings = Settings.shared
+
+    var body: some View {
+        Picker("Arabic Font", selection: Binding(
+            get: { settings.islamArabicFace },
+            set: { newValue in
+                guard newValue != settings.islamArabicFace else { return }
+                settings.hapticFeedback()
+                withAnimation(.easeInOut) { settings.islamArabicFace = newValue }
+            }
+        )) {
+            Text("Uthmani").tag(Settings.IslamArabicFace.uthmani)
+            Text("IndoPak").tag(Settings.IslamArabicFace.indopak)
+            Text("Basic").tag(Settings.IslamArabicFace.basic)
+        }
+        .pickerStyle(.segmented)
+    }
+}
+#endif
+
+// MARK: - Section header accessories (count pill / collapse / shuffle)
+
+/// The small numeric badge the Quran tab's section headers wear - caption-semibold, monospaced digits,
+/// on glass. One view so every counted section in the app shows the identical pill.
+struct CountPill: View {
+    let count: Int
+    /// "5+" style - set when the count is a floor from an early-exited search, not an exact total.
+    var overflow: Bool = false
+
+    var body: some View {
+        Text("\(count)\(overflow ? "+" : "")")
+            .font(.caption.weight(.semibold))
+            .monospacedDigit()
+            .foregroundStyle(Settings.shared.accentColor.color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .conditionalGlassEffect()
+    }
+}
+
+/// A full section header in the Quran tab's visual language: optional leading icon, the title, then on
+/// the right an optional shuffle button, the count pill, and an optional collapse chevron. Pass
+/// `isExpanded` to make the section collapsible (the same chevron.circle control Favorite Surahs and
+/// Bookmarked Ayahs use) and `onShuffle` for sections where jumping to a random item makes sense.
+struct SectionPillHeader: View {
+    @ObservedObject private var settings = Settings.shared
+
+    let title: String
+    let count: Int
+    var icon: String? = nil
+    /// Accent the icon + title (the Quran favorites style); false keeps the standard header gray.
+    var accentTitle: Bool = false
+    var isExpanded: Binding<Bool>? = nil
+    var onShuffle: (() -> Void)? = nil
+    /// "5+" style count - set when the count is a floor from an early-exited search.
+    var overflow: Bool = false
+
+    /// The count pill's rendered height (caption line height + 2 x 4pt padding) - the shuffle circle
+    /// matches it so the two controls read as one family.
+    static var pillHeight: CGFloat {
+        UIFont.preferredFont(forTextStyle: .caption1).lineHeight + 8
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let icon {
+                Image(systemName: icon)
+                    .foregroundStyle(settings.accentColor.color)
+            }
+
+            if accentTitle {
+                Text(title)
+                    .foregroundStyle(settings.accentColor.color)
+            } else {
+                Text(title)
+            }
+
+            Spacer()
+
+            if let onShuffle {
+                // A circle exactly as tall as the count pill (caption line + its 4pt vertical padding),
+                // and as wide as it is tall.
+                Image(systemName: "shuffle")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(settings.accentColor.color)
+                    .frame(width: Self.pillHeight, height: Self.pillHeight)
+                    .conditionalGlassEffect(circle: true)
+                    .onTapGesture {
+                        settings.hapticFeedback()
+                        onShuffle()
+                    }
+                    .accessibilityLabel("Random \(title.lowercased())")
+            }
+
+            CountPill(count: count, overflow: overflow)
+
+            if let isExpanded {
+                Image(systemName: isExpanded.wrappedValue ? "chevron.down.circle" : "chevron.up.circle")
+                    .foregroundColor(settings.accentColor.color)
+                    .padding(4)
+                    .conditionalGlassEffect()
+                    .onTapGesture {
+                        settings.hapticFeedback()
+                        withAnimation { isExpanded.wrappedValue.toggle() }
+                    }
+                    .accessibilityLabel(isExpanded.wrappedValue ? "Collapse \(title.lowercased())" : "Expand \(title.lowercased())")
+            }
+        }
     }
 }

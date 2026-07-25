@@ -2,7 +2,7 @@
 import SwiftUI
 
 struct SplashScreen: View {
-    @EnvironmentObject private var settings: Settings
+    @ObservedObject private var settings = Settings.shared
     @Environment(\.colorScheme) private var systemColorScheme
     @Environment(\.openURL) private var openURL
 
@@ -241,7 +241,7 @@ struct SplashScreen: View {
 
     private var actionButtons: some View {
         HStack {
-            Button {
+            /*Button {
                 settings.hapticFeedback()
                 withAnimation {
                     settings.firstLaunch = false
@@ -254,7 +254,7 @@ struct SplashScreen: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
             }
-            .conditionalGlassEffect(rectangle: true, useColor: 0.38, customTint: AppIdentifiers.mainColor.color)
+            .conditionalGlassEffect(rectangle: true, useColor: 0.38, customTint: AppIdentifiers.mainColor.color)*/
             
             Button {
                 settings.hapticFeedback()

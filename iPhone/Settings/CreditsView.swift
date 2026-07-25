@@ -2,15 +2,12 @@
 import SwiftUI
 
 struct CreditsView: View {
-    @EnvironmentObject var settings: Settings
+    @ObservedObject var settings = Settings.shared
     @Environment(\.presentationMode) private var presentationMode
     
     var body: some View {
         NavigationView {
             creditsList
-                .adaptiveSafeArea(edge: .bottom) {
-                    doneButton
-                }
         }
     }
 
@@ -26,11 +23,14 @@ struct CreditsView: View {
         }
         .applyConditionalListStyle()
         .navigationTitle("Credits")
+        // Dismisses through the same X every other sheet uses, instead of a full-width "Done" button pinned
+        // over the bottom of the content.
+        .sheetDismissToolbar()
     }
 
     private var headerSection: some View {
         VStack(alignment: .center) {
-            Text("Al-Quran was created by Abubakr Elmallah (أبوبكر الملاح), who was a 17-year-old high school student when this app was published on December 26, 2023.")
+            Text("Al-Islam was created by Abubakr Elmallah (أبوبكر الملاح), who was a 17-year-old high school student when this app was published on July 26, 2023.")
                 .font(.headline)
                 .padding(.vertical, 4)
                 .multilineTextAlignment(.center)
@@ -123,20 +123,26 @@ struct CreditsView: View {
         Section {
             VersionNumber()
                 .font(.caption)
+                .padding(.vertical, 2)
         }
     }
 
     private var creditsLinksSection: some View {
         Section(header: Text("CREDITS")) {
             Group {
+                // Al-Adhan
+                creditLink("Credit for the Adhan calculations, which does everything offline on the device, goes to Batoul Apps", url: "https://github.com/batoulapps/adhan-swift")
+                
+                creditLink("Credit for the Adhan sounds goes to Omar Al-Ejel", url: "https://github.com/oalejel/Athan-Utility")
+                
+                // Al-Quran
+                
                 creditLink("Credit for the English transliteration of the Quran data goes to Risan Bagja Pradana", url: "https://github.com/risan/quran-json")
                 
                 creditLink("Credit for the English Saheeh International translation of the Quran data goes to Global Quran", url: "https://globalquran.com/download/data/")
                 
                 creditLink("Credit for all the Quranic Arabic text and all qiraat/riwayaat data goes to quran-data-kfgqpc (KFGQPC)", url: "https://github.com/thetruetruth/quran-data-kfgqpc")
-                
-                // https://qul.tarteel.ai/resources/font/458 SURAH HEADER FULL LINE
-                
+                                
                 creditLink("Credit for the Uthmani Quran font goes to King Fahad Complex (KFGQPC)", url: "https://qul.tarteel.ai/resources/font/245")
                 
                 creditLink("Credit for the Indopak Nastaleeq Quran font goes to Ayman Siddiqui and R. Siddiqua", url: "https://qul.tarteel.ai/resources/font/242")
@@ -144,15 +150,23 @@ struct CreditsView: View {
                 creditLink("Credit for the Surah Quran Recitations goes to MP3 Quran", url: "https://mp3quran.net/eng")
                 
                 creditLink("Credit for the Ayah Quran Recitations goes to Al Quran", url: "https://alquran.cloud/cdn")
-                
+
                 creditLink("Credit for additional Ayah Quran Recitations goes to EveryAyah", url: "https://everyayah.com/")
+
+                creditLink("Credit for the ayah audio timings that power offline ayah playback goes to the QDC audio API by Quran.com (Quran Foundation)", url: "https://api-docs.quran.foundation/")
 
                 creditLink("Credit for the English Quran translation comparison API goes to Al Quran Cloud", url: "https://alquran.cloud/api")
 
-                creditLink("Credit for the Tafsir API goes to Quran API Pages", url: "https://quranapi.pages.dev/")
+                creditLink("Credit for the English Tafsir API goes to Quran API Pages", url: "https://quranapi.pages.dev/")
+
+                creditLink("Credit for the Arabic Tafsirs (Ibn Kathir, al-Tabari, as-Sa'di) goes to the Tafsir API by spa5k, built from QUL (Tarteel) data", url: "https://github.com/spa5k/tafsir_api")
 
                 creditLink("Credit for the Surah Info goes to Quran.com (Quran Foundation)", url: "https://api-docs.quran.foundation/docs/content_apis_versioned/4.0.0/get-chapter-info/#get-chapter-info")
+                
+                // Al-Hadith
+                creditLink("Credit for the Hadith collections goes to hadith-json by Ahmed Baset", url: "https://github.com/AhmedBaset/hadith-json")
 
+                // All Apps
                 creditLink("Credit for the 99 Names of Allah goes to MyIslam", url: "https://myislam.org/99-names-of-allah/")
             }
             .foregroundColor(settings.accentColor.color)
@@ -178,7 +192,7 @@ struct CreditsView: View {
 
     private var intentSection: some View {
         Section(header: Text("A NOTE ON INTENT")) {
-            Text("This app is offered as *sadaqah jariyah* — a contribution for the benefit of the Muslim community and anyone building tools to read, learn, and listen to the Quran. If it helps you, please keep the chain of attribution intact and consider contributing improvements back.")
+            Text("This app is offered as *sadaqah jariyah* - a contribution for the benefit of the Muslim community and anyone building tools to read, learn, and listen to the Quran. If it helps you, please keep the chain of attribution intact and consider contributing improvements back.")
                 .font(.body)
                 .multilineTextAlignment(.leading)
         }
@@ -241,7 +255,7 @@ struct AppItem: Identifiable {
 }
 
 struct AppLinkRow: View {
-    @EnvironmentObject var settings: Settings
+    @ObservedObject var settings = Settings.shared
     
     var imageName: String
     var title: String
