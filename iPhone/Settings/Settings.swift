@@ -769,45 +769,23 @@ final class Settings: ObservableObject {
         return sizes[min(max(arabicLetterSizeIndex, 0), sizes.count - 1)]
     }
 
-    /// A custom Arabic font that scales with Dynamic Type (so the Arabic Alphabet size slider affects it).
-    /// `base` is the point size at the default (`.large`) content size.
-    func scalableArabicFont(base: CGFloat, relativeTo style: Font.TextStyle) -> Font {
-        Font.arabic(fontArabic, size: base, relativeTo: style)
+    /// The Islam tab's Arabic face (`nonQuranArabicFontName`), scaling with Dynamic Type so the Arabic
+    /// Alphabet size slider affects it. `base` is the point size at the default (`.large`) content size.
+    ///
+    /// Deliberately the NON-Quran face: every Islam-tab surface that shows standard Arabic - dua, dhikr,
+    /// the 99 Names, the alphabet and its letter detail - answers to the one `IslamArabicFontPicker`, so
+    /// this must read the same setting the rows beside it do. It used to read `fontArabic` (the *Quran*
+    /// picker's face), which is why flipping the alphabet's own picker to IndoPak restyled the letter rows
+    /// but left the big glyph on the detail screen in the mushaf face.
+    func scalableIslamArabicFont(base: CGFloat, relativeTo style: Font.TextStyle) -> Font {
+        Font.arabic(nonQuranArabicFontName, size: base, relativeTo: style)
     }
 
-    @AppStorage("favoriteLetterData") private var favoriteLetterData = Data()
-    /// Memoized: the alphabet rows call `isLetterFavorite` per row per render.
-    private static var favoriteLettersCache: (data: Data, value: [LetterData])?
-    var favoriteLetters: [LetterData] {
-        get {
-            if let cached = Self.favoriteLettersCache, cached.data == favoriteLetterData {
-                return cached.value
-            }
-            let decoded = (try? Self.decoder.decode([LetterData].self, from: favoriteLetterData)) ?? []
-            Self.favoriteLettersCache = (favoriteLetterData, decoded)
-            return decoded
-        }
-        set {
-            let encoded = (try? Self.encoder.encode(newValue)) ?? Data()
-            Self.favoriteLettersCache = (encoded, newValue)
-            favoriteLetterData = encoded
-        }
-    }
-    
-    func toggleLetterFavorite(letterData: LetterData) {
-        withAnimation {
-            if isLetterFavorite(letterData: letterData) {
-                favoriteLetters.removeAll(where: { $0.id == letterData.id })
-            } else {
-                favoriteLetters.append(letterData)
-            }
-        }
-    }
+    // Raw storage only; the typed `favoriteLetters: [LetterData]` accessor + toggles live next to the
+    // `LetterData` type in ArabicLetters.swift, so this core file names no letter model type. Not `private`
+    // so that extension can reach it.
+    @AppStorage("favoriteLetterData") var favoriteLetterData = Data()
 
-    func isLetterFavorite(letterData: LetterData) -> Bool {
-        favoriteLetters.contains { $0.id == letterData.id }
-    }
-    
     /// Pinned Islam-tab resources, stored as the destination enum's raw values, comma-joined (a dozen short
     /// identifiers - a Codable blob would be ceremony).
     @AppStorage("favoriteIslamResources") private var favoriteIslamResourcesRaw = ""

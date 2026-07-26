@@ -26,7 +26,7 @@ struct MushafPage: Identifiable {
     var displayedSurah: Surah? { firstSurah }
 }
 
-/// The whole mushaf as swipeable pages: each page holds every ayah printed on it - across surah boundaries - 
+/// The whole mushaf as swipeable pages: each page holds every ayah printed on it - across surah boundaries -
 /// as one continuous block of Arabic, the way a printed mushaf sets them. Shown in place of the ayah list
 /// when `settings.quranPageMode` is on. Swiping left/right moves through the mushaf continuously; reaching the
 /// end of a surah simply carries you into the next one.
@@ -352,6 +352,15 @@ struct SurahPageReader<Controls: View>: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        // The keyboard OVERLAYS the page - it must never resize it. A mushaf page is typeset to the height it
+        // is given (`MushafPageContent` measures `geo.size.height` and fits the whole page's Arabic into it),
+        // so the default keyboard avoidance handed it a half-height box and it re-fit the entire page to that:
+        // raising the keyboard visibly shrank the text, and dismissing it grew it back. Ignoring the keyboard
+        // inset keeps the page at its real height and lets the keyboard cover the bottom of it instead.
+        //
+        // Safe because the only text field in page mode is in the find bar, which is a TOP inset - it stays
+        // above the keyboard on its own. The bottom controls being covered while typing is the intent.
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .onAppear {
             // Seed the index once. Re-deriving it on every render (font change, qiraah switch) would yank the
             // reader back to the page it was opened at.
@@ -1380,7 +1389,7 @@ struct MushafPageComposer {
         UIFont(name: Settings.qiraatUthmaniFontName, size: size) ?? .roundedSystemFont(ofSize: size)
     }
 
-    /// Mushaf pages 1 and 2 (al-Fatihah, and the opening of al-Baqarah) are set centered in a printed mushaf - 
+    /// Mushaf pages 1 and 2 (al-Fatihah, and the opening of al-Baqarah) are set centered in a printed mushaf -
     /// they're short, framed pages, not columns of running text. Every other page is a full block.
     private var isOpeningSpread: Bool { page.page <= 2 }
 
@@ -2647,5 +2656,73 @@ struct MushafPageTextView: UIViewRepresentable {
 }
 
 /// A sheet the actions sheet hands OFF to its parent rather than presenting itself - see `AyahActionsSheet`.
+
+/// The one-time broad Quran warm the app kicks under the launch cover. Moved out of the app entry file so
+/// the warming lives with the Quran module (Al-Quran's entry can call it too) - it lives here because it
+/// warms the mushaf render caches, which are defined in this file's iOS-only section.
+enum QuranLaunchWarmup {
+    /// Warms the most-likely-first surahs (reading position, a bookmark, a favorite, al-Fatihah/al-Baqarah)
+    /// before the rest, composes the last-read mushaf pages when page mode is on, then fills in every
+    /// remaining surah - yielding + sleeping between each so the Adhan tab stays responsive. Runs on the
+    /// main actor (it reads `settings`) and once per session (the shared `didBroadPrewarm` flag).
+    @MainActor
+    static func prewarmAll() async {
+        let quranData = QuranData.shared
+        let settings = Settings.shared
+
+        await quranData.waitUntilCoreLoaded()
+        if Task.isCancelled || QuranData.didBroadPrewarm { return }
+
+        // Warm the most-likely-first surahs (reading position, a bookmark, a favorite, al-Fatihah/al-Baqarah)
+        // before the rest, so the surah a user is most likely to open is ready first.
+        let priority = [
+            settings.lastReadSurah > 0 ? settings.lastReadSurah : 1,
+            settings.bookmarkedAyahs.first?.surah,
+            settings.favoriteSurahs.first,
+            1, 2
+        ].compactMap { $0 }
+
+        var seen = Set<Int>()
+        for id in priority where seen.insert(id).inserted {
+            if Task.isCancelled { return }
+            if let surah = quranData.surah(id) {
+                // Priority surahs (the ones a user actually opens first) also warm their search blobs,
+                // so the first in-surah search keystroke never pays the one-time build.
+                SurahView.prewarm(surah: surah, settings: settings, includeSearchBlobs: true)
+                await Task.yield()
+            }
+        }
+
+        // Skip the broad warms on memory-constrained devices (same gate the Quran tab uses) - priority
+        // warming above still ran. This gates the mushaf prewarm below too: composing a ring of pages is
+        // exactly the class of work this device can't afford at launch.
+        guard !AppPerformance.shouldAvoidBroadPrewarm else { return }
+
+        // Page mode means the Quran tab opens straight into the mushaf, so also compose the last-read pages
+        // now - with the geometry persisted from the last session - instead of making the reveal pay for the
+        // first page's ~12 fit passes. The fits run on the prewarm queue; the pagination itself is the only
+        // main-actor piece, so give the runloop a turn first and keep it off the current transaction.
+        if settings.quranPageMode, settings.lastReadSurah > 0 {
+            await Task.yield()
+            let pages = MushafPagination.pages(quran: quranData.quran, qiraah: settings.displayQiraahForArabic)
+            if let index = MushafPagination.pageIndex(
+                surahID: settings.lastReadSurah,
+                ayahID: settings.lastReadAyah > 0 ? settings.lastReadAyah : nil,
+                in: pages
+            ) {
+                MushafPageRenderCache.prewarmAtLaunch(pages: pages, around: index)
+            }
+            await Task.yield()
+        }
+
+        for surah in quranData.quran where seen.insert(surah.id).inserted {
+            if Task.isCancelled { return }
+            SurahView.prewarm(surah: surah, settings: settings)
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 12_000_000)   // throttle: keep the Adhan tab responsive
+        }
+        QuranData.didBroadPrewarm = true
+    }
+}
 
 #endif
