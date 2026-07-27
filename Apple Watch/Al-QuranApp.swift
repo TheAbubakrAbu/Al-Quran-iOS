@@ -60,14 +60,8 @@ struct AlQuranApp: App {
         .onChange(of: settings.accentColor) { _ in
             WidgetCenter.shared.reloadAllTimelines()
         }
-        // No `.onChange` refresh for `prayerCalculation` or `travelingMode`: every path that writes them
-        // (the manual setters, the dialog overrides, the auto-checks inside a fetch, a synced snapshot)
-        // already performs its own recompute, with auto-checks suppressed where the change was a choice.
-        // A blanket refresh here would re-run the automatic detection with checks ON right after a manual
-        // change - the exact override/spam bug the old one-shot flags existed to paper over.
         .onChange(of: scenePhase) { phase in
             if phase == .active { } else {
-                // A page flip within the last second may still have its last-read write pending.
                 settings.flushPendingLastRead()
                 // A khatm mark made in the last 250ms is still on the debounce timer; persist it before
                 // the system can suspend or kill the process.

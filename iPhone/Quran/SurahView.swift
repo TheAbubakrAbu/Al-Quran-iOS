@@ -209,7 +209,7 @@ struct SurahView: View {
     @State private var pageAnchor: (surahID: Int, ayahID: Int)?
 
     var surah: Surah { swappedSurah ?? initialSurah }
-    /// The requested ayah only applies to the surah we were opened with - after a swap we open at the top - 
+    /// The requested ayah only applies to the surah we were opened with - after a swap we open at the top -
     /// unless a mode switch just named an ayah to land on, which wins over both.
     var ayah: Int? { modeSwitchAyah ?? (swappedSurah == nil ? initialAyah : nil) }
 
@@ -2730,6 +2730,9 @@ struct SurahView: View {
                     playIcon()
                 }
             }
+            // Without this, a menu popping UPWARD from this bottom-anchored button renders reversed,
+            // dumping Choose Reciter (declared first, wanted on top) to the bottom.
+            .fixedMenuOrder()
         } else {
             Button {
                 settings.hapticFeedback()
