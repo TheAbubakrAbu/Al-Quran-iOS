@@ -11,6 +11,8 @@
 		72537C252F04361900829F59 /* AppReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72537C242F04361900829F59 /* AppReview.swift */; };
 		72574CD12E49F33800BFF138 /* AppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72574CD02E49F33800BFF138 /* AppIntents.swift */; };
 		72574CD22E49F33800BFF138 /* AppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72574CD02E49F33800BFF138 /* AppIntents.swift */; };
+		725BC7B73018A18000FB1536 /* ZakahView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725BC7B63018A18000FB1536 /* ZakahView.swift */; };
+		725BC7B83018A18000FB1536 /* ZakahView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 725BC7B63018A18000FB1536 /* ZakahView.swift */; };
 		725C5F4B30142D5000DFEC8B /* Uthmani.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F4830142D5000DFEC8B /* Uthmani.ttf */; };
 		725C5F4C30142D5000DFEC8B /* QuranCommon.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F4A30142D5000DFEC8B /* QuranCommon.ttf */; };
 		725C5F4D30142D5000DFEC8B /* Qiraat.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 725C5F4730142D5000DFEC8B /* Qiraat.ttf */; };
@@ -242,6 +244,7 @@
 		720DEC692D24581D006EA342 /* CreditsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreditsView.swift; sourceTree = "<group>"; };
 		72537C242F04361900829F59 /* AppReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppReview.swift; sourceTree = "<group>"; };
 		72574CD02E49F33800BFF138 /* AppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntents.swift; sourceTree = "<group>"; };
+		725BC7B63018A18000FB1536 /* ZakahView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZakahView.swift; sourceTree = "<group>"; };
 		725C5F4730142D5000DFEC8B /* Qiraat.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Qiraat.ttf; sourceTree = "<group>"; };
 		725C5F4830142D5000DFEC8B /* Uthmani.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Uthmani.ttf; sourceTree = "<group>"; };
 		725C5F4930142D5000DFEC8B /* Indopak.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Indopak.ttf; sourceTree = "<group>"; };
@@ -441,6 +444,7 @@
 				725C5FCA301430A300DFEC8B /* DuaView.swift */,
 				725C5FCB301430A300DFEC8B /* TasbihView.swift */,
 				725C5FCC301430A300DFEC8B /* NamesView.swift */,
+				725BC7B63018A18000FB1536 /* ZakahView.swift */,
 				725C5FCD301430A300DFEC8B /* DateView.swift */,
 				725C5FCF301430A300DFEC8B /* WallpaperView.swift */,
 				725C5FD0301430A300DFEC8B /* PillarsView.swift */,
@@ -761,6 +765,7 @@
 				72F479C22B367DE200FCF22C /* Settings.swift in Sources */,
 				729764E82FE8E59B00691EF5 /* PreviewSupport.swift in Sources */,
 				720DEC6A2D24581D006EA342 /* CreditsView.swift in Sources */,
+				725BC7B73018A18000FB1536 /* ZakahView.swift in Sources */,
 				72827EB72E3D71BB00EBA534 /* SettingsQuranView.swift in Sources */,
 				729765882FE8E80A00691EF5 /* QuranWidgetSnapshot.swift in Sources */,
 				72537C252F04361900829F59 /* AppReview.swift in Sources */,
@@ -832,6 +837,7 @@
 				728D75BF2F79CF5100502B8A /* CreditsView.swift in Sources */,
 				729764E32FE8E59B00691EF5 /* PreviewSupport.swift in Sources */,
 				728D75E72F79D2FA00502B8A /* SplashScreen.swift in Sources */,
+				725BC7B83018A18000FB1536 /* ZakahView.swift in Sources */,
 				728D764F2F79E9D700502B8A /* AppDelegate.swift in Sources */,
 				729765892FE8E80A00691EF5 /* QuranWidgetSnapshot.swift in Sources */,
 				72574CD12E49F33800BFF138 /* AppIntents.swift in Sources */,

@@ -1,5 +1,6 @@
 #if os(iOS)
 import BackgroundTasks
+import CoreLocation
 import UIKit
 import UserNotifications
 
@@ -21,5 +22,4 @@ class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationCenterD
         ReciterDownloadManager.shared.backgroundSessionCompletionHandler(completionHandler)
     }
 }
-
 #endif
