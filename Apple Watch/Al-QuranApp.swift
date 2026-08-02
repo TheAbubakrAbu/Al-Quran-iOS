@@ -62,6 +62,7 @@ struct AlQuranApp: App {
         }
         .onChange(of: scenePhase) { phase in
             if phase == .active { } else {
+                // A page flip within the last second may still have its last-read write pending.
                 settings.flushPendingLastRead()
                 // A khatm mark made in the last 250ms is still on the debounce timer; persist it before
                 // the system can suspend or kill the process.

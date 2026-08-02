@@ -59,6 +59,23 @@ struct IslamView: View {
             }
         }
 
+        /// One line of what lives behind the row - the Settings hub's caption column, here.
+        var subtitle: String {
+            switch self {
+            case .arabicAlphabet: return "Letters, forms, diacritics, and signs"
+            case .tajweedFoundations: return "The rules of beautiful recitation"
+            case .commonAdhkar: return "Morning, evening, and daily remembrances"
+            case .commonDuas: return "Authenticated supplications with sources"
+            case .tasbihCounter: return "Count dhikr with a tap"
+            // case .zakahCalculator: return "Work out what you owe"
+            case .namesOfAllah: return "Asma ul-Husna with meanings"
+            case .hijriCalendarConverter: return "Convert Hijri and Gregorian dates"
+            case .islamicWallpapers: return "Beautiful wallpapers to save"
+            case .pillarsAndBasics: return "The Five Pillars and Six Beliefs"
+            case .howToGuides: return "Wudu, salah, Jumuah, and more"
+            }
+        }
+
         /// The tile title with its line break CHOSEN, not wherever truncation lands: every grid tile is
         /// exactly two lines, broken at the natural point, so a whole grid of tiles shares one height and
         /// one rhythm.
@@ -226,7 +243,7 @@ struct IslamView: View {
         } else {
             ForEach(items, id: \.self) { item in
                 NavigationLink(value: item) {
-                    toolLabel(item.title, systemImage: item.systemImage)
+                    toolLabel(item.title, systemImage: item.systemImage, subtitle: item.subtitle)
                 }
                 .contextMenu { favoriteToggleButton(item) }
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
@@ -254,10 +271,8 @@ struct IslamView: View {
 
     @available(iOS 16.0, *)
     private func resourceGridTile(_ item: IslamDestination) -> some View {
-        VStack(spacing: 5) {
-            Image(systemName: item.systemImage)
-                .font(.subheadline)
-                .foregroundColor(settings.accentColor.color)
+        VStack(spacing: 6) {
+            AccentIconChip(systemImage: item.systemImage, size: 32)
 
             Text(item.gridTitle)
                 .font(.caption2.weight(.medium))
@@ -443,18 +458,27 @@ struct IslamView: View {
         }
     }
 
-    private func toolLabel(_ title: String, systemImage: String) -> some View {
-        Label(
-            title: {
+    private func toolLabel(_ title: String, systemImage: String, subtitle: String? = nil) -> some View {
+        HStack(spacing: 12) {
+            AccentIconChip(systemImage: systemImage)
+
+            VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .foregroundColor(.primary)
-            },
-            icon: {
-                Image(systemName: systemImage)
-                    .foregroundColor(settings.accentColor.color)
+
+                // The caption column is an iPhone luxury - the 40mm screen has no room for it.
+                #if os(iOS)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                #endif
             }
-        )
-        .padding(.vertical, 4)
+        }
+        .padding(.vertical, 3)
     }
 }
 
@@ -463,7 +487,6 @@ struct IslamView: View {
 struct ProphetQuote: View {
     @ObservedObject var settings = Settings.shared
     @State private var isCardVisible = false
-    @State private var animateBadge = false
     @State private var rotateRing = false
 
     private let quoteText = "“O people, your Lord is one and your father Adam is one. There is no superiority of an Arab over a non-Arab, nor of a non-Arab over an Arab, nor of a red man over a black man, nor of a black man over a red man, except by taqwa.“"
@@ -480,6 +503,7 @@ struct ProphetQuote: View {
                 VStack(alignment: .center, spacing: 12) {
                     quoteBadge
                     quoteBody
+                    ornamentDivider
                     attribution
                 }
                 .padding(.horizontal, 14)
@@ -494,18 +518,17 @@ struct ProphetQuote: View {
             .animation(.spring(response: 0.5, dampingFraction: 0.85), value: isCardVisible)
             .onAppear {
                 isCardVisible = true
-                // Purely decorative; in Low Power Mode two forever-animations are exactly the CPU the system
-                // is asking apps not to spend. The card renders identically, just still.
-                // Never on the watch: its paging TabView fires onAppear/onDisappear on every swipe, so these
-                // forever-animations were being torn down and restarted each tab change - a steady CPU drain
-                // that read as the Quran → Islam swipe lag.
+                // The ring's slow shimmer sweep is the card's ONE living element - the badge itself
+                // holds still (the old scale/glow pulse read as the card breathing in and out).
+                // Purely decorative; in Low Power Mode a forever-animation is exactly the CPU the
+                // system is asking apps not to spend. The card renders identically, just still.
+                // Never on the watch: its paging TabView fires onAppear/onDisappear on every swipe,
+                // so the forever-animation was being torn down and restarted each tab change - a
+                // steady CPU drain that read as the Quran → Islam swipe lag.
                 #if os(watchOS)
                 return
                 #else
                 guard !AppPerformance.shouldReduceAnimations else { return }
-                withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) {
-                    animateBadge = true
-                }
                 withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
                     rotateRing = true
                 }
@@ -514,7 +537,6 @@ struct ProphetQuote: View {
             .onDisappear {
                 withAnimation {
                     isCardVisible = false
-                    animateBadge = false
                 }
                 rotateRing = false
             }
@@ -583,21 +605,52 @@ struct ProphetQuote: View {
                 .clipShape(Circle())
         }
         .conditionalGlassEffect(circle: true)
-        .scaleEffect(animateBadge ? 1.04 : 0.98)
-        .shadow(color: settings.accentColor.accent2.opacity(animateBadge ? 0.45 : 0.12),
-                radius: animateBadge ? 12 : 4)
+        // A steady, quiet glow - deliberately NOT animated: the old scale/shadow pulse made the
+        // whole card read as breathing.
+        .shadow(color: settings.accentColor.accent2.opacity(0.28), radius: 8)
         .padding(4)
     }
 
     private var quoteBody: some View {
+        // Editorial typography for the one quotation in the app: serif italic on the primary color,
+        // with opened-up leading - the accent stays on the badge, ring and ornament, so the words
+        // themselves read as ink rather than tint.
         Text(quoteText)
-            .font(.subheadline)
+            .font(.system(.subheadline, design: .serif))
+            .italic()
+            .lineSpacing(4)
             .multilineTextAlignment(.center)
-            .foregroundColor(settings.accentColor.accent2)
+            .foregroundColor(.primary)
             .lineLimit(nil)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.horizontal, 2)
+            .padding(.horizontal, 6)
+    }
+
+    /// A thin rule fading in from both edges to a small diamond - the classical divider between a
+    /// quotation and its attribution.
+    private var ornamentDivider: some View {
+        HStack(spacing: 10) {
+            LinearGradient(
+                colors: [settings.accentColor.accent2.opacity(0), settings.accentColor.accent2.opacity(0.45)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(height: 1)
+
+            Image(systemName: "diamond.fill")
+                .font(.system(size: 6))
+                .foregroundColor(settings.accentColor.accent2.opacity(0.7))
+
+            LinearGradient(
+                colors: [settings.accentColor.accent2.opacity(0.45), settings.accentColor.accent2.opacity(0)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(height: 1)
+        }
+        .frame(maxWidth: 220)
+        .padding(.top, 2)
     }
 
     private var attribution: some View {
@@ -614,7 +667,6 @@ struct ProphetQuote: View {
         .lineLimit(nil)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.top, 8)
     }
 }
 

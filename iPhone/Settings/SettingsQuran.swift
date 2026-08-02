@@ -1,6 +1,10 @@
 import SwiftUI
 import Combine
 import WidgetKit
+import os
+
+// [Al-Quran] This entire file is the Al-Quran domain - copy it into that companion app whole,
+// and delete it from companions that do not ship this domain.
 
 extension Settings {
     enum QuranSortMode: String, CaseIterable, Identifiable {
@@ -329,7 +333,7 @@ extension Settings {
             do {
                 return try Self.decoder.decode(LastListenedAyah.self, from: data)
             } catch {
-                //logger.debug("Failed to decode last listened ayah: \(error)")
+                logger.debug("Failed to decode last listened ayah: \(error)")
                 return nil
             }
         }
@@ -340,7 +344,7 @@ extension Settings {
                     lastListenedAyahData = encoded
                     appGroupUserDefaults?.set(encoded, forKey: "lastListenedAyahData")
                 } catch {
-                    //logger.debug("Failed to encode last listened ayah: \(error)")
+                    logger.debug("Failed to encode last listened ayah: \(error)")
                 }
             } else {
                 lastListenedAyahData = nil
@@ -357,7 +361,7 @@ extension Settings {
             do {
                 return try Self.decoder.decode(LastListenedSurah.self, from: data)
             } catch {
-                //logger.debug("Failed to decode last listened surah: \(error)")
+                logger.debug("Failed to decode last listened surah: \(error)")
                 return nil
             }
         }
@@ -368,12 +372,48 @@ extension Settings {
                     lastListenedSurahData = encoded
                     appGroupUserDefaults?.set(encoded, forKey: "lastListenedSurahData")
                 } catch {
-                    //logger.debug("Failed to encode last listened surah: \(error)")
+                    logger.debug("Failed to encode last listened surah: \(error)")
                 }
             } else {
                 lastListenedSurahData = nil
                 appGroupUserDefaults?.removeObject(forKey: "lastListenedSurahData")
             }
+        }
+    }
+
+    // MARK: - Quran sort + bookmarks (typed accessors)
+    // Moved here from Settings.swift for the same reason as the last-listened accessors above: they name
+    // Quran-only types (the sort enums, `BookmarkedAyah`), and the core file stays free of Quran types so it
+    // ports to sibling apps without the Quran module. The raw `String`/`Data` @AppStorage backing stays in
+    // the class body (stored properties can't live in extensions).
+
+    var quranSortMode: QuranSortMode {
+        get { QuranSortMode(rawValue: quranSortModeRaw) ?? .surah }
+        set { quranSortModeRaw = newValue.rawValue }
+    }
+
+    var quranSortDirection: QuranSortDirection {
+        get { QuranSortDirection(rawValue: quranSortDirectionRaw) ?? .ascending }
+        set { quranSortDirectionRaw = newValue.rawValue }
+    }
+
+    var groupBySurah: Bool { quranSortMode == .surah }
+
+    /// Same memo shape as `favoriteSurahs` - `SurahAyahRow.isBookmarked` reads this per row body.
+    private static var bookmarkedAyahsCache: (data: Data, value: [BookmarkedAyah])?
+    var bookmarkedAyahs: [BookmarkedAyah] {
+        get {
+            if let cached = Self.bookmarkedAyahsCache, cached.data == bookmarkedAyahsData {
+                return cached.value
+            }
+            let decoded = (try? Self.decoder.decode([BookmarkedAyah].self, from: bookmarkedAyahsData)) ?? []
+            Self.bookmarkedAyahsCache = (bookmarkedAyahsData, decoded)
+            return decoded
+        }
+        set {
+            let encoded = (try? Self.encoder.encode(newValue)) ?? Data()
+            Self.bookmarkedAyahsCache = (encoded, newValue)
+            bookmarkedAyahsData = encoded
         }
     }
 

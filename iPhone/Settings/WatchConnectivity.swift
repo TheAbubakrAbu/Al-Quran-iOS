@@ -407,10 +407,12 @@ extension Settings {
     /// `@AppStorage` (UserDefaults.standard) keys that are safe to mirror between iPhone and Watch.
     /// Deliberately excludes device-sensed / transient / large state (location, prayer caches, auto-detected
     /// calculation, reading position, day-specific flags) so syncing can never clobber per-device data.
+    // Grouped by app domain like Settings' sections - when copied into a companion app, delete the
+    // domains it doesn't ship ([Shared] stays).
     static let watchSyncedAppStorageKeys: [String] = [
-        // Appearance & general
+        // [Shared] Appearance & general
         "colorSchemeString", "defaultView", "hapticOn",
-        // Prayer / notifications
+        // [Al-Adhan] Prayer / notifications
         "calculationAutomatic", "switchHijriDateAtMaghrib", "dateNotifications",
         "naggingMode", "naggingStartOffset", "adhanNotificationSound", "showPrayerInfo",
         "shortAdhanFajr", "shortAdhanDhuhr", "shortAdhanAsr", "shortAdhanMaghrib", "shortAdhanIsha",
@@ -423,8 +425,7 @@ extension Settings {
         "preNotificationFajr", "preNotificationSunrise", "preNotificationDhuhr", "preNotificationAsr",
         "preNotificationMaghrib", "preNotificationIsha", "preNotificationDuha",
         "preNotificationIslamicMidnight", "preNotificationLastThird",
-        "offsetFajr", "offsetSunrise", "offsetDhuhr", "offsetAsr", "offsetMaghrib", "offsetIsha",
-        // Quran display
+        // [Al-Quran] Quran display
         "showArabicText", "showTransliteration", "showEnglishSaheeh", "showEnglishMustafa",
         "cleanArabicText", "removeArabicDots", "beginnerMode", "highlightAllahNames",
         "useFontArabic", "THEfontArabic", "fontArabicSize", "englishFontSize",
@@ -433,7 +434,7 @@ extension Settings {
         "quranSummaryMode", "quranGridMode", "quranPageMode", "mushafPageLanguage", "showFullSurahRow", "showMuqattaatHelper",
         "showPageJuzDividers", "searchForSurahs", "showBookmarks", "showFavorites",
         "saveLastReadAyah", "saveLastListenedSurah", "saveLastListenedAyah", "showAyahOfTheDay",
-        // Tajweed categories
+        // [Al-Quran] Tajweed categories
         "showTajweedTafkhim", "showTajweedQalqalah", "showTajweedLamShamsiyah", "showTajweedBareNuunMeem",
         "showTajweedIdghamBiGhunnahHeavy", "showTajweedGeneralGhunnah", "showTajweedIkhfaa",
         "showTajweedIqlab", "showTajweedIdghamBilaGhunnah", "showTajweedHamzatWaslSilent",

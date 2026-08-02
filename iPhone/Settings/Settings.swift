@@ -4,6 +4,13 @@ import WidgetKit
 import Combine
 import os
 
+// DOMAIN MAP FOR THE COMPANION APPS (Al-Adhan / Al-Quran / Al-Hadith): the sections of this class
+// are labelled with the app domain that owns them - see the [Al-Adhan] / [Al-Quran] / [Al-Hadith] /
+// [Islam tab] / [Shared] MARK prefixes. When this file is copied into a companion app, delete the
+// sections for domains it doesn't ship and keep every [Shared] one. The top of the class (init,
+// app-group plumbing, accent/appearance) is [Shared]. The domain-specific extensions live in their
+// own files already: SettingsAdhan.swift is wholly Al-Adhan, SettingsQuran.swift wholly Al-Quran.
+
 let logger = Logger(subsystem: AppIdentifiers.bundleIdentifier, category: "Settings")
 
 /// The single source of truth for all user settings.
@@ -34,7 +41,7 @@ final class Settings: ObservableObject {
     /// (Not `private` because the coalescing helpers live in the `SettingsAdhan` extension, another file.)
     var pendingNotificationScheduleWorkItem: DispatchWorkItem?
     var pendingWidgetReloadWorkItem: DispatchWorkItem?
-
+    
     static let encoder: JSONEncoder = {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .millisecondsSince1970
@@ -48,13 +55,30 @@ final class Settings: ObservableObject {
     }()
 
     private init() {
-        self.accentColor = AccentColor(rawValue: appGroupUserDefaults?.string(forKey: "accentColor") ?? AppIdentifiers.mainColorString) ?? AppIdentifiers.mainColor
+        let storedAccent = AccentColor(rawValue: appGroupUserDefaults?.string(forKey: "accentColor") ?? AppIdentifiers.mainColorString) ?? AppIdentifiers.mainColor
+        self.accentColor = storedAccent
         self.customAccentColorHex = appGroupUserDefaults?.string(forKey: "customAccentColorHex") ?? "34C759"
         self.customBackgroundColorHex = appGroupUserDefaults?.string(forKey: "customBackgroundColorHex") ?? "1C1C1E"
+
+        // The Al-Islam glow defaults ON, but only makes sense on the DEFAULT accent. An existing
+        // install that already moved to another accent gets no accent-CHANGE event to auto-disable
+        // it (see `accentColor.didSet`), so the very first launch with no stored choice seeds it
+        // off for them - exactly what the didSet would have done had this shipped earlier.
+        if UserDefaults.standard.object(forKey: "alIslamGlow") == nil,
+           storedAccent != AppIdentifiers.mainColor {
+            UserDefaults.standard.set(false, forKey: "alIslamGlow")
+        }
+
+        loadKhatmProgressCacheFromStorage()
 
         runQuranStartupMigrations()
         runWatchSyncKeyMigration()
 
+        // Hadith Allah-highlighting used to follow the Quran toggle; when the setting split in two,
+        // seed the new key from the old one so nothing visibly changes until the user flips it.
+        if UserDefaults.standard.object(forKey: "highlightAllahNamesHadith") == nil {
+            UserDefaults.standard.set(UserDefaults.standard.bool(forKey: "highlightAllahNames"), forKey: "highlightAllahNamesHadith")
+        }
         isReadyForUI = true
     }
 
@@ -64,6 +88,24 @@ final class Settings: ObservableObject {
             if isReady { return }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
+    }
+    
+    /// Reload widget timelines, coalescing the launch burst the same way as `scheduleNotifications`.
+    func reloadWidgets(deferred: Bool) {
+        // See `scheduleNotifications`: a widget must not reload widget timelines - that is a self-reload loop.
+        guard Settings.isAppProcess else { return }
+        pendingWidgetReloadWorkItem?.cancel()
+        pendingWidgetReloadWorkItem = nil
+        guard deferred else {
+            WidgetCenter.shared.reloadAllTimelines()
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingWidgetReloadWorkItem = nil
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+        pendingWidgetReloadWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
     /// Restores every *preference* (appearance, prayer, and Quran options) to its default while keeping the
@@ -80,7 +122,7 @@ final class Settings: ObservableObject {
             "favoriteSurahsData", "bookmarkedAyahsData", "favoriteLetterData", "favoriteNameNumbersData",
             "khatmCompletedAyahsData", "quranPlanData", "favoriteReciterIDsData", "favoriteQiraahTagsData",
             "favoriteEnglishTranslationIDsData", "savedSajdahAyahIDsData", "savedBrokenLetterAyahIDsData",
-            "lastReadSurah", "lastReadAyah", "lastListenedAyahData", "lastListenedSurahData",
+            "lastReadSurah", "lastReadAyah", "lastReadTimestamp", "lastListenedAyahData", "lastListenedSurahData",
             "quranSearchHistoryData",
             // The prayer tracker and menses-pause record: months of marks and exempt days - the most
             // clearly "the user's, not a preference" data in the app.
@@ -123,7 +165,7 @@ final class Settings: ObservableObject {
         accentColor = AppIdentifiers.mainColor
         customAccentColorHex = "34C759"
         customBackgroundColorHex = "1C1C1E"
-        
+
         // The domain wipe changed the data underneath every in-memory cache. The memo-style caches
         // (favorites, bookmarks, sky palette) self-heal because they key on the stored bytes; these
         // presence-checked ones kept serving the erased values until a cold launch.
@@ -135,7 +177,7 @@ final class Settings: ObservableObject {
         #endif
     }
 
-    // MARK: - App group - shared with widgets / extensions
+    // MARK: - [Shared] App group - shared with widgets / extensions
 
     /// True in the iPhone app and the Watch app; false in every app extension.
     ///
@@ -195,6 +237,19 @@ final class Settings: ObservableObject {
             guard Self.isAppProcess else { return }
             appGroupUserDefaults?.setValue(accentColor.rawValue, forKey: "accentColor")
             markExplicitlySet("accentColor")
+            // The Al-Islam glow rides the DEFAULT accent: it's on out of the box, but the moment the
+            // user picks any other accent it switches off so the glow follows their color instead of
+            // clashing with it. One-way only - coming back to the default never re-enables it; that
+            // takes the Appearance toggle. (Compared against `AppIdentifiers.mainColor`, not a
+            // hardcoded green: companion apps ship different default accents.)
+            if oldValue == AppIdentifiers.mainColor, accentColor != AppIdentifiers.mainColor {
+                alIslamGlow = false
+            }
+            // Every widget renders in the accent, so a change must repaint them. Owned here (not an
+            // `.onChange` at the app root) so every write path - the pickers, a synced snapshot, a
+            // settings reset - repaints without each caller remembering to. Deferred so a burst of
+            // writes (reset, sync apply) coalesces into one reload against WidgetKit's daily budget.
+            reloadWidgets(deferred: true)
         }
     }
 
@@ -217,7 +272,8 @@ final class Settings: ObservableObject {
         }
     }
 
-    // MARK: - Quran - @AppStorage
+
+    // MARK: - [Al-Quran] Quran - @AppStorage
 
     /// Big vs. small in-app Now Playing player. An in-app UI preference, not shared with the widget/watch.
     @AppStorage("nowPlayingExpanded") var nowPlayingExpanded: Bool = false
@@ -361,24 +417,10 @@ final class Settings: ObservableObject {
         }
     }
 
-    @AppStorage("bookmarkedAyahsData") private var bookmarkedAyahsData = Data()
-    /// Same memo shape as `favoriteSurahs` - `SurahAyahRow.isBookmarked` reads this per row body.
-    private static var bookmarkedAyahsCache: (data: Data, value: [BookmarkedAyah])?
-    var bookmarkedAyahs: [BookmarkedAyah] {
-        get {
-            if let cached = Self.bookmarkedAyahsCache, cached.data == bookmarkedAyahsData {
-                return cached.value
-            }
-            let decoded = (try? Self.decoder.decode([BookmarkedAyah].self, from: bookmarkedAyahsData)) ?? []
-            Self.bookmarkedAyahsCache = (bookmarkedAyahsData, decoded)
-            return decoded
-        }
-        set {
-            let encoded = (try? Self.encoder.encode(newValue)) ?? Data()
-            Self.bookmarkedAyahsCache = (encoded, newValue)
-            bookmarkedAyahsData = encoded
-        }
-    }
+    // Raw storage only; the typed `bookmarkedAyahs: [BookmarkedAyah]` accessor lives in SettingsQuran.swift
+    // so this core file names no Quran model type (ports to sibling apps without the Quran module). Not
+    // `private` so that extension can reach it.
+    @AppStorage("bookmarkedAyahsData") var bookmarkedAyahsData = Data()
 
     @AppStorage("showBookmarks") var showBookmarks = true
     @AppStorage("showFavorites") var showFavorites = true
@@ -406,20 +448,12 @@ final class Settings: ObservableObject {
 
     @AppStorage("beginnerMode") var beginnerMode: Bool = false
 
-    @AppStorage("quranSortMode") var quranSortModeRaw: String = QuranSortMode.surah.rawValue
-    @AppStorage("quranSortDirection") var quranSortDirectionRaw: String = QuranSortDirection.ascending.rawValue
-
-    var quranSortMode: QuranSortMode {
-        get { QuranSortMode(rawValue: quranSortModeRaw) ?? .surah }
-        set { quranSortModeRaw = newValue.rawValue }
-    }
-
-    var quranSortDirection: QuranSortDirection {
-        get { QuranSortDirection(rawValue: quranSortDirectionRaw) ?? .ascending }
-        set { quranSortDirectionRaw = newValue.rawValue }
-    }
-
-    var groupBySurah: Bool { quranSortMode == .surah }
+    // Raw storage only; the typed `quranSortMode`/`quranSortDirection` accessors (and `groupBySurah`) live
+    // in SettingsQuran.swift so this core file names no Quran sort enum. The defaults are the enum cases'
+    // raw values written as literals (QuranSortMode.surah / QuranSortDirection.ascending) - a rawValue
+    // change to either case must be mirrored here.
+    @AppStorage("quranSortMode") var quranSortModeRaw: String = "surah"
+    @AppStorage("quranSortDirection") var quranSortDirectionRaw: String = "ascending"
     /// In Khatm mode, the Surah/Juz toggle (which replaces the Asc/Desc control). When on, surahs are grouped
     /// under juz headers, each surah shown once in the juz it *starts* in - so juz that no surah opens (e.g.
     /// juz 2, 5) appear empty.
@@ -431,6 +465,18 @@ final class Settings: ObservableObject {
 
     @AppStorage("lastReadSurah") var lastReadSurah: Int = 0
     @AppStorage("lastReadAyah") var lastReadAyah: Int = 0
+    /// When the last-read position was recorded, for the summary tile's "Today 5:30 PM" caption.
+    /// Stamped via `stampLastRead()` at both real save paths (list reader, mushaf pager flush) -
+    /// clearing the position deliberately does not stamp. 0 = saved by a build without stamps.
+    @AppStorage("lastReadTimestamp") private var lastReadTimestampRaw: Double = 0
+
+    var lastReadDate: Date? {
+        lastReadTimestampRaw > 0 ? Date(timeIntervalSince1970: lastReadTimestampRaw) : nil
+    }
+
+    func stampLastRead() {
+        lastReadTimestampRaw = Date().timeIntervalSince1970
+    }
 
     /// Debounced last-read bookkeeping for the mushaf pager.
     ///
@@ -462,10 +508,11 @@ final class Settings: ObservableObject {
 
         lastReadSurah = pending.surah
         lastReadAyah = pending.ayah
+        stampLastRead()
         refreshQuranWidgets()
     }
 
-    // MARK: - Surah stats (times opened / played)
+    // MARK: - [Al-Quran] Surah stats (times opened / played)
     // A tiny [surahID: count] map JSON-encoded in one key each - at most 114 small entries, so it costs
     // almost nothing in memory and is only decoded when a surah header is shown.
     @AppStorage("surahOpenCountsData") private var surahOpenCountsData: Data = Data()
@@ -638,7 +685,7 @@ final class Settings: ObservableObject {
 
     @AppStorage("englishFontSize") var englishFontSize: Double = Double(UIFont.preferredFont(forTextStyle: .body).pointSize)
     
-    // MARK: - Hadith display
+    // MARK: - [Al-Hadith] Hadith display
 
     /// Which parts of a hadith render in the Hadith tab (both default on; hiding one gives a pure-Arabic or
     /// pure-English reading experience).
@@ -654,7 +701,7 @@ final class Settings: ObservableObject {
     @AppStorage("hadithArabicFontSize") var hadithArabicFontSize: Double = Double(UIFont.preferredFont(forTextStyle: .body).pointSize + 4)
     @AppStorage("hadithEnglishFontSize") var hadithEnglishFontSize: Double = Double(UIFont.preferredFont(forTextStyle: .body).pointSize)
 
-    // MARK: - Arabic letters & 99 Names
+    // MARK: - [Islam tab] Arabic letters & 99 Names
     
     /// THE grid toggle, app-wide: the Quran tab's lists, the Arabic alphabet, the 99 Names, and the Islam
     /// resources all follow this one switch - flipping it anywhere flips it everywhere. (The key keeps its
@@ -738,7 +785,7 @@ final class Settings: ObservableObject {
     /// Uthmani (the Qiraat face - never the Hafs Quran face), IndoPak, or Basic (system).
     var nonQuranArabicFontName: String { islamArabicFace.fontName }
 
-    // MARK: - Arabic Alphabet screen size
+    // MARK: - [Islam tab] Arabic Alphabet screen size
     
     static let randomReciterName = "Random Reciter"
     static let hafsUthmaniFontName = "KFGQPCHAFSUthmanicScript-Regula"
@@ -830,7 +877,7 @@ final class Settings: ObservableObject {
         favoriteNameNumbers.contains(number)
     }
     
-    // MARK: Arabic search normalization
+    // MARK: - [Shared] Arabic search normalization
 
     func cleanSearch(_ text: String, whitespace: Bool = false) -> String {
         // Single scalar walk: fold each Arabic scalar through the canonical map (dagger alif → alif, hamza
@@ -925,13 +972,22 @@ final class Settings: ObservableObject {
             .joined(separator: " ")
     }
     
-    // MARK: - App-wide appearance & misc @AppStorage
+    // MARK: - [Shared] App-wide appearance & misc @AppStorage
 
     @AppStorage("THEfirstLaunch") var firstLaunch = true
 
     @AppStorage("hapticOn") var hapticOn: Bool = true
 
     @AppStorage("defaultView") var defaultView: Bool = true
+
+    /// The soft accent-colored radial wash at the top of every list (see `washedListBackground`).
+    @AppStorage("showAccentGlow") var showAccentGlow: Bool = true
+
+    /// Colors that wash with Al-Islam's brand yellow-and-green instead of the accent. ON by default -
+    /// it IS the app's signature look on the default accent - and auto-disabled the moment the accent
+    /// leaves the default (see `accentColor.didSet`); from there only the Appearance toggle brings it
+    /// back.
+    @AppStorage("alIslamGlow") var alIslamGlow: Bool = true
 
     @AppStorage("colorSchemeString") var colorSchemeString: String = "system"
     var colorScheme: ColorScheme? {
@@ -943,7 +999,7 @@ final class Settings: ObservableObject {
         }
     }
 
-    // MARK: - Global helpers (not Quran- or Adhan-specific)
+    // MARK: - [Shared] Global helpers (not Quran- or Adhan-specific)
 
     #if os(iOS)
     /// One reused, prepared generator: allocating a fresh `UIImpactFeedbackGenerator` per tap added
@@ -1000,7 +1056,7 @@ final class Settings: ObservableObject {
         return Color(red: clampAdj(c.r), green: clampAdj(c.g), blue: clampAdj(c.b))
     }
 
-    // MARK: - Reading themes (Sepia / Gray)
+    // MARK: - [Shared] Reading themes (Sepia / Gray)
     // These layer custom background + row colors on top of a light (Sepia) or dark (Gray) base, so the app
     // offers warm/neutral reading looks beyond plain Light / Dark / System. Light/Dark/System return nil here
     // and keep the standard system grouped colors (no behavior change for existing users).

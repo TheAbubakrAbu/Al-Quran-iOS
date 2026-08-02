@@ -223,6 +223,57 @@ final class PlaybackVisibility: ObservableObject {
     }
 }
 
+/// The top-of-screen accent wash: a quiet radial glow bleeding down from the top, gone by mid-screen.
+/// Every list screen gets it through `ConditionalListStyle`'s background; the page-mode readers (the
+/// Quran mushaf and the Hadith pager) apply it directly, since they are not lists.
+///
+/// Structurally constant: all three gradients are always in the tree, and the settings only drive
+/// their opacities - the accent one for the normal glow, the yellow (leading) + green (trailing)
+/// pair for the Al-Islam glow, the app icon's palette split across the top corners. Everything
+/// collapses to invisible when the glow is off or a custom reading theme owns the background.
+struct AccentGlowOverlay: View {
+    @ObservedObject private var settings = Settings.shared
+    @Environment(\.colorScheme) private var systemColorScheme
+
+    var body: some View {
+        let strength: Double = (settings.hasCustomThemeColors || !settings.showAccentGlow)
+            ? 0 : ((settings.colorScheme ?? systemColorScheme) == .dark ? 0.16 : 0.10)
+        let brand = settings.alIslamGlow
+
+        VStack(spacing: 0) {
+            ZStack {
+                RadialGradient(
+                    colors: [settings.accentColor.color.opacity(brand ? 0 : strength), .clear],
+                    center: .top,
+                    startRadius: 8,
+                    endRadius: 380
+                )
+
+                // Absolute corners, not leading/trailing: the brand look is yellow on the LEFT and
+                // green on the RIGHT, and it shouldn't mirror when the app runs in an RTL locale.
+                RadialGradient(
+                    colors: [Color.yellow.opacity(brand ? strength : 0), .clear],
+                    center: UnitPoint(x: 0, y: 0),
+                    startRadius: 8,
+                    endRadius: 380
+                )
+
+                RadialGradient(
+                    colors: [Color.green.opacity(brand ? strength : 0), .clear],
+                    center: UnitPoint(x: 1, y: 0),
+                    startRadius: 8,
+                    endRadius: 380
+                )
+            }
+            .frame(height: 420)
+
+            Spacer(minLength: 0)
+        }
+        .allowsHitTesting(false)
+        .ignoresSafeArea()
+    }
+}
+
 struct ConditionalListStyle: ViewModifier {
     @ObservedObject private var settings = Settings.shared
     @ObservedObject private var playback = PlaybackVisibility.shared
@@ -281,13 +332,30 @@ struct ConditionalListStyle: ViewModifier {
         let base = settings.defaultView ? AnyView(content) : AnyView(content.listStyle(.plain))
 
         if #available(iOS 16.0, *) {
+            // Always hidden (not just for custom themes): `resolvedListBackground` reproduces every
+            // theme's system color exactly, and hiding the system layer is what lets the accent wash
+            // below actually show through. Still one structurally-constant chain - values only.
             base
-                .scrollContentBackground(settings.hasCustomThemeColors ? .hidden : .automatic)
-                .background(resolvedListBackground.ignoresSafeArea())
+                .scrollContentBackground(.hidden)
+                .background(washedListBackground)
         } else {
             base
-                .background(resolvedListBackground.ignoresSafeArea())
+                .background(washedListBackground)
         }
+    }
+
+    /// The list background plus the splash screen's accent wash: a quiet radial glow of the user's
+    /// accent bleeding down from the top of every list, gone by mid-screen. Zeroed for the Sepia/Gray
+    /// reading themes - their whole point is calm paper, and an accent glow would pollute it. (An
+    /// opacity of 0, not a branch: the view tree must stay structurally constant or theme flips
+    /// recreate the List and reset its scroll position.)
+    private var washedListBackground: some View {
+        ZStack(alignment: .top) {
+            resolvedListBackground
+
+            AccentGlowOverlay()
+        }
+        .ignoresSafeArea()
     }
 
     private var resolvedListBackground: Color {
@@ -432,6 +500,35 @@ struct CountPill: View {
 /// the right an optional shuffle button, the count pill, and an optional collapse chevron. Pass
 /// `isExpanded` to make the section collapsible (the same chevron.circle control Favorite Surahs and
 /// Bookmarked Ayahs use) and `onShuffle` for sections where jumping to a random item makes sense.
+/// A small accent-gradient icon chip - the iOS Settings app's row-icon grammar, tinted the app's
+/// way. Shared by the Settings hub, settings search results, and the Islam tab's resource rows.
+struct AccentIconChip: View {
+    @ObservedObject private var settings = Settings.shared
+
+    let systemImage: String
+    var tint: Color? = nil
+    var size: CGFloat = 29
+
+    var body: some View {
+        let tint = tint ?? settings.accentColor.color
+        Image(systemName: systemImage)
+            // Scales with the chip (~footnote at the default 29pt), so mini chips stay balanced.
+            .font(.system(size: size * 0.45, weight: .semibold))
+            .foregroundColor(.white)
+            .frame(width: size, height: size)
+            .background(
+                RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [tint.opacity(0.95), tint.opacity(0.65)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            )
+    }
+}
+
 struct SectionPillHeader: View {
     @ObservedObject private var settings = Settings.shared
 

@@ -58,28 +58,14 @@ struct AlQuranApp: App {
                 .environment(\.appRevealed, rootStage == .main)
                 //.statusBarHidden()
         }
-        .onChange(of: settings.accentColor) { _ in
-            WidgetCenter.shared.reloadAllTimelines()
-        }
+        // No `.onChange` refreshes for settings here: each setting's own didSet performs its side
+        // effects (`accentColor` and `hijriOffset` repaint widgets from Settings; `prayerCalculation`,
+        // `travelingMode`, and `hanafiMadhab` recompute on every write path already - a blanket refresh
+        // here would run a SECOND full forced fetch per flip and re-run the automatic detection with
+        // checks ON right after the change, the exact override/spam bug the old one-shot flags papered
+        // over). Phase transitions delegate to the one place that orchestrates them.
         .onChange(of: scenePhase) { phase in
-            quranPlayer.saveLastListenedSurah()
-            quranPlayer.saveLastListenedAyah()
-            // Only when LEAVING the foreground: that's when the widgets become visible and need the fresh
-            // snapshot. Running this on every transition (including becoming active) paid a JSON encode plus
-            // a reload of every widget timeline each time, against WidgetKit's daily reload budget.
-            if phase != .active {
-                settings.refreshQuranWidgets()
-            }
-            if phase == .active { } else {
-                // A page flip within the last second may still have its last-read write pending.
-                settings.flushPendingLastRead()
-                // A khatm mark made in the last 250ms is still on the debounce timer; persist it before
-                // the system can suspend or kill the process.
-                settings.flushPendingKhatmProgress()
-                // Send any just-made setting change before the app is suspended, so it can't be lost (and
-                // can't be reverted by a stale synced value on the next launch).
-                WatchConnectivityManager.shared.flushPendingSync()
-            }
+            AppLifecycle.scenePhaseChanged(to: phase)
         }
     }
 
@@ -163,10 +149,15 @@ private struct MainTabView: View {
 
     var body: some View {
         tabs
+            // Launch warmups, one .task per app domain (like AppLifecycle's sections): when this
+            // root is copied into a companion app, delete the domains it doesn't ship.
+            // Shared: the tab walk behind the launch cover.
             .task { await warmUnderCover() }
+            // Al-Quran: the reader's font/page prewarm.
             .task { await QuranLaunchWarmup.prewarmAll() }
-            // The AI-search capability probe loads a disk-backed NLEmbedding model; its first touch used
-            // to land on the MAIN thread mid-launch (aiQueryEligible / corpus prep). Pay it here, off-main.
+            // Al-Quran: the AI-search capability probe loads a disk-backed NLEmbedding model; its first
+            // touch used to land on the MAIN thread mid-launch (aiQueryEligible / corpus prep). Pay it
+            // here, off-main.
             .task { Task.detached(priority: .utility) { SemanticSearchEngine.prewarmOffMain() } }
     }
 
@@ -211,6 +202,8 @@ private struct MainTabView: View {
     private var launchTab: AppTab {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-launchTabQuran") { return .quran }
+        if ProcessInfo.processInfo.arguments.contains("-launchTabIslam") { return .islam }
+        if ProcessInfo.processInfo.arguments.contains("-launchTabSettings") { return .settings }
         #endif
         return .adhan
     }
@@ -242,7 +235,7 @@ private struct MainTabView: View {
                         Text("Quran")
                     }
                     .tag(AppTab.quran)
-
+                
                 IslamView()
                     .tabItem {
                         Image(systemName: "moon.stars")

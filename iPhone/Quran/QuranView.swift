@@ -250,49 +250,10 @@ struct QuranView: View {
         var id: String { "\(surah)-\(ayah)" }
     }
 
-    /// Positional (surah, ayah) map matching the semantic corpus's build order - mushaf order over the
-    /// full Hafs ayah set, independent of the display qiraah so the corpus never rebuilds on a riwayah
-    /// switch. Rebuilt cheaply each launch (the vectors themselves load from disk).
-    @MainActor private static var semanticAyahMap: [(surah: Int, ayah: Int)] = []
+    private var quranSemanticCorpusID: String { QuranSemanticCorpus.id }
 
-    private var quranSemanticCorpusID: String { "quran-en" }
-
-    /// Fingerprint of the bundled Quran source (size + mtime), folded into the corpus version. The
-    /// version used to be effectively constant ("en2-6236"), so a translation text CORRECTION shipped
-    /// in an app update never invalidated the on-disk vectors - the corrected verse kept its stale
-    /// embedding forever. The bundle's file stamp changes exactly when the source does.
-    private static let quranSourceStamp: String = {
-        guard let url = Bundle.main.url(forResource: "Quran", withExtension: "json")
-                ?? Bundle.main.url(forResource: "Quran", withExtension: "json", subdirectory: "JSONs"),
-              let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attrs[.size] as? UInt64 else { return "0" }
-        let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        return "\(size).\(Int(mtime))"
-    }()
-
-    /// Resolve the corpus texts (both bundled translations per ayah, so either's phrasing matches) and
-    /// hand them to the engine. No-ops once ready; cheap when the vectors are already on disk.
     private func prepareQuranSemanticCorpus() {
-        guard SemanticSearchEngine.isSupported, !quranData.quran.isEmpty else { return }
-        if Self.semanticAyahMap.isEmpty {
-            var map: [(Int, Int)] = []
-            map.reserveCapacity(6236)
-            for surah in quranData.quran {
-                for ayah in surah.ayahs {
-                    map.append((surah.id, ayah.id))
-                }
-            }
-            Self.semanticAyahMap = map
-        }
-        guard !semanticEngine.isReady(quranSemanticCorpusID) else { return }
-        var texts: [String] = []
-        texts.reserveCapacity(Self.semanticAyahMap.count)
-        for surah in quranData.quran {
-            for ayah in surah.ayahs {
-                texts.append("\(ayah.textEnglishSaheeh) \(ayah.textEnglishMustafa)")
-            }
-        }
-        semanticEngine.prepare(corpusID: quranSemanticCorpusID, version: "en2-\(texts.count)-\(Self.quranSourceStamp)", texts: texts)
+        QuranSemanticCorpus.prepare(quranData: quranData, engine: semanticEngine)
     }
 
     /// True when the live query is one the semantic engine can answer (English text, not a reference).
@@ -514,8 +475,8 @@ struct QuranView: View {
                 guard trimmed == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
                 // Not animated - see the SearchBar binding note (collection-view assertion).
                 aiHits = results.compactMap { result in
-                    guard Self.semanticAyahMap.indices.contains(result.index) else { return nil }
-                    let ref = Self.semanticAyahMap[result.index]
+                    guard QuranSemanticCorpus.ayahMap.indices.contains(result.index) else { return nil }
+                    let ref = QuranSemanticCorpus.ayahMap[result.index]
                     return AISearchHit(surah: ref.surah, ayah: ref.ayah, score: result.score)
                 }
             }
@@ -2132,14 +2093,19 @@ struct QuranView: View {
             ForEach(quranPlayer.readingHistory) { item in
                 if let surah = quranData.surah(item.surahNumber),
                    let ayah = surah.ayahs.first(where: { $0.id == max(1, item.ayahNumber) }) {
-                    summaryHistoryRow(surah: surah, ayah: ayah, caption: nil)
+                    summaryHistoryRow(surah: surah, ayah: ayah, caption: nil, timestamp: item.timestamp)
                 }
             }
         case .listenedAyah:
             ForEach(quranPlayer.ayahListeningHistory) { item in
                 if let surah = quranData.surah(item.surahNumber),
                    let ayah = surah.ayahs.first(where: { $0.id == item.ayahNumber }) {
-                    summaryHistoryRow(surah: surah, ayah: ayah, caption: item.reciter.displayNameWithEnglishQiraah)
+                    summaryHistoryRow(
+                        surah: surah,
+                        ayah: ayah,
+                        caption: item.reciter.displayNameWithEnglishQiraah,
+                        timestamp: item.timestamp
+                    )
                 }
             }
         case .listenedSurah:
@@ -2149,14 +2115,19 @@ struct QuranView: View {
                         settings.hapticFeedback()
                         push(surahID: surah.id, ayahID: nil)
                     } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("\(surah.id) - \(surah.nameTransliteration)")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(settings.accentColor.color)
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\(surah.id) - \(surah.nameTransliteration)")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundColor(settings.accentColor.color)
 
-                            Text(item.reciter.displayNameWithEnglishQiraah)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                                Text(item.reciter.displayNameWithEnglishQiraah)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            historyTimestampLabel(item.timestamp)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
@@ -2168,20 +2139,29 @@ struct QuranView: View {
         }
     }
 
-    private func summaryHistoryRow(surah: Surah, ayah: Ayah, caption: String?, dimmed: Bool = true) -> some View {
+    private func summaryHistoryRow(surah: Surah, ayah: Ayah, caption: String?, timestamp: Date? = nil, dimmed: Bool = true) -> some View {
         Button {
             settings.hapticFeedback()
             push(surahID: surah.id, ayahID: ayah.id)
         } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                if let caption {
-                    Text(caption)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundColor(.secondary)
-                }
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let caption {
+                        Text(caption)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(.secondary)
+                    }
 
-                SurahAyahRow(surah: surah, ayah: ayah)
-                    .equatable()
+                    SurahAyahRow(surah: surah, ayah: ayah)
+                        .equatable()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                // The same trailing "when" the full-size rows carry, so summary mode's unfolded history
+                // reads as a timeline too.
+                if let timestamp {
+                    historyTimestampLabel(timestamp)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -2213,7 +2193,8 @@ struct QuranView: View {
                 if settings.saveLastReadAyah, let lastReadSurah, let lastReadAyah {
                     SummaryAyahTile(title: "Last Read Ayah", icon: "book", surah: lastReadSurah, ayah: lastReadAyah, titleColor: settings.accentColor.color,
                                     isExpanded: summaryHistoryExpansion == .reading,
-                                    onExpand: quranPlayer.readingHistory.isEmpty ? nil : { toggleSummaryExpansion(.reading) }) {
+                                    onExpand: quranPlayer.readingHistory.isEmpty ? nil : { toggleSummaryExpansion(.reading) },
+                                    timestamp: settings.lastReadDate) {
                         push(surahID: lastReadSurah.id, ayahID: lastReadAyah.id)
                     }
                     .animation(.easeInOut, value: settings.lastReadSurah * 1000 + settings.lastReadAyah)
@@ -2229,7 +2210,8 @@ struct QuranView: View {
                 if settings.saveLastListenedAyah, let pair = lastListenedAyahPair {
                     SummaryAyahTile(title: "Last Listened Ayah", icon: "headphones.circle", surah: pair.surah, ayah: pair.ayah, titleColor: settings.accentColor.color,
                                     isExpanded: summaryHistoryExpansion == .listenedAyah,
-                                    onExpand: quranPlayer.ayahListeningHistory.isEmpty ? nil : { toggleSummaryExpansion(.listenedAyah) }) {
+                                    onExpand: quranPlayer.ayahListeningHistory.isEmpty ? nil : { toggleSummaryExpansion(.listenedAyah) },
+                                    timestamp: settings.lastListenedAyah?.savedAt) {
                         push(surahID: pair.surah.id, ayahID: pair.ayah.id)
                     }
                     .animation(.easeInOut, value: pair.surah.id * 1000 + pair.ayah.id)
@@ -2239,7 +2221,8 @@ struct QuranView: View {
                    let surah = quranData.surah(last.surahNumber) {
                     SummarySurahTile(title: "Last Listened Surah", icon: "headphones", surah: surah, lastListenedSurah: last, titleColor: settings.accentColor.color,
                                      isExpanded: summaryHistoryExpansion == .listenedSurah,
-                                     onExpand: quranPlayer.listeningHistory.isEmpty ? nil : { toggleSummaryExpansion(.listenedSurah) }) {
+                                     onExpand: quranPlayer.listeningHistory.isEmpty ? nil : { toggleSummaryExpansion(.listenedSurah) },
+                                     timestamp: last.savedAt) {
                         push(surahID: surah.id, ayahID: nil)
                     }
                     .animation(.easeInOut, value: last.surahNumber)
@@ -4189,3 +4172,54 @@ private extension View {
         QuranView()
     }
 }
+#if os(iOS)
+/// The Quran semantic corpus ("quran-en"), shared by the Quran tab's search AND the in-surah reader
+/// search - one corpus, one on-disk vector cache, two surfaces.
+enum QuranSemanticCorpus {
+    static let id = "quran-en"
+
+    /// Positional (surah, ayah) map matching the corpus's build order - mushaf order over the
+    /// full Hafs ayah set, independent of the display qiraah so the corpus never rebuilds on a
+    /// riwayah switch. Rebuilt cheaply each launch (the vectors themselves load from disk).
+    @MainActor static var ayahMap: [(surah: Int, ayah: Int)] = []
+
+    /// Fingerprint of the bundled Quran source (size + mtime), folded into the corpus version. The
+    /// version used to be effectively constant ("en2-6236"), so a translation text CORRECTION shipped
+    /// in an app update never invalidated the on-disk vectors - the corrected verse kept its stale
+    /// embedding forever. The bundle's file stamp changes exactly when the source does. Stamps
+    /// quran.qpk (the only bundled Quran source since the JSON was retired).
+    static let sourceStamp: String = {
+        guard let url = QuranPackLoader.url("quran"),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? UInt64 else { return "0" }
+        let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return "\(size).\(Int(mtime))"
+    }()
+
+    /// Resolve the corpus texts (both bundled translations per ayah, so either's phrasing matches) and
+    /// hand them to the engine. No-ops once ready; cheap when the vectors are already on disk.
+    @MainActor
+    static func prepare(quranData: QuranData, engine: SemanticSearchEngine) {
+        guard SemanticSearchEngine.isSupported, !quranData.quran.isEmpty else { return }
+        if ayahMap.isEmpty {
+            var map: [(Int, Int)] = []
+            map.reserveCapacity(6236)
+            for surah in quranData.quran {
+                for ayah in surah.ayahs {
+                    map.append((surah.id, ayah.id))
+                }
+            }
+            ayahMap = map
+        }
+        guard !engine.isReady(id) else { return }
+        var texts: [String] = []
+        texts.reserveCapacity(ayahMap.count)
+        for surah in quranData.quran {
+            for ayah in surah.ayahs {
+                texts.append("\(ayah.textEnglishSaheeh) \(ayah.textEnglishMustafa)")
+            }
+        }
+        engine.prepare(corpusID: id, version: "en2-\(texts.count)-\(sourceStamp)", texts: texts)
+    }
+}
+#endif
