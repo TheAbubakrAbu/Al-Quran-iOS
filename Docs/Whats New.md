@@ -1,4 +1,4 @@
-# Version 2.6.3
+# Version 2.6.2
 
 Tap-a-word meanings, a real printed mushaf for every riwayah, reading themes, similar ayahs, and a progress profile with badges.
 
