@@ -201,10 +201,31 @@ struct ArabicView: View {
     /// A MANUAL ask that found nothing to ground on or errored - the tapped row must answer with
     /// SOMETHING instead of silently restoring the prompt.
     @State private var askNoAnswer = false
+    /// Whether the current answer was grounded in retrieved items (drives the card's footer).
+    @State private var askGrounded = true
     /// The AI-vs-keyword segmented switch, shown only when BOTH result kinds exist. Reset to the
     /// AI list on every new query.
     @State private var showKeywordResults = false
     @State private var askTask: Task<Void, Never>?
+    /// The letters the answer was grounded on, kept so the answer's citations can resolve back to
+    /// REAL rows - the hadith search's `hadithAskSourceHits`, for letters.
+    @State private var askSourceLetters: [LetterData] = []
+
+    /// The letters the streamed answer actually cited, in citation order - matched against the exact
+    /// source references the model was given (the transliteration, e.g. "Alif"), so every row is a
+    /// real letter. Rendered through `letterCollection`, so they get the standard row (full context
+    /// menu + favorite swipes) or the standard grid tile, whichever mode the screen is in.
+    private var askCitedLetters: [LetterData] {
+        guard !askAnswer.isEmpty else { return [] }
+        let answer = askAnswer.lowercased()
+        var cited: [(position: Int, letter: LetterData)] = []
+        var seen = Set<Int>()
+        for letter in askSourceLetters where seen.insert(letter.id).inserted {
+            guard let range = answer.range(of: letter.transliteration.lowercased()) else { continue }
+            cited.append((answer.distance(from: answer.startIndex, to: range.lowerBound), letter))
+        }
+        return cited.sorted { $0.position < $1.position }.prefix(10).map(\.letter)
+    }
 
     /// Auto mode runs only for QUESTION-shaped queries; `manual` (the tapped "Ask AI" row) runs
     /// for anything - the user explicitly asked.
@@ -229,22 +250,22 @@ struct ArabicView: View {
             guard !Task.isCancelled else { return }
 
             var sources: [OnDeviceAsk.Source] = []
+            var sourceLetters: [LetterData] = []
             var seen = Set<Int>()
             for letter in aiHits.prefix(6) where seen.insert(letter.id).inserted {
                 sources.append(.init(reference: letter.transliteration, text: Self.letterEnglishText(letter)))
+                sourceLetters.append(letter)
             }
             for letter in (filteredStandardForMode + filteredOther).prefix(6) where seen.insert(letter.id).inserted {
                 sources.append(.init(reference: letter.transliteration, text: Self.letterEnglishText(letter)))
+                sourceLetters.append(letter)
             }
-            guard !sources.isEmpty else {
-                askAnswer = ""; askIsStreaming = false; askRanForQuery = ""
-                // A tapped ask MUST respond: with nothing retrieved to ground on, say so instead
-                // of silently restoring the prompt row.
-                if manual { askNoAnswer = true }
-                return
-            }
+            // Nothing retrieved is no longer a dead end: the ask still runs, in OPEN mode - a
+            // clearly labeled general-knowledge answer with no recreated quotes.
+            askGrounded = !sources.isEmpty
 
             askAnswer = ""; askIsStreaming = true; askRanForQuery = trimmed
+            askSourceLetters = sourceLetters
             guard #available(iOS 26.0, *) else { return }
             do {
                 for try await text in OnDeviceAsk.streamAnswer(question: trimmed, sources: sources) {
@@ -255,7 +276,7 @@ struct ArabicView: View {
                 askIsStreaming = false
             } catch {
                 guard !Task.isCancelled else { return }
-                askAnswer = ""; askIsStreaming = false; askRanForQuery = ""
+                askAnswer = ""; askIsStreaming = false; askRanForQuery = ""; askSourceLetters = []
                 if manual { askNoAnswer = true }
             }
         }
@@ -280,7 +301,7 @@ struct ArabicView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text("AI couldn't find anything matching \u{201C}\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D}. Try different wording.")
+            Text("AI couldn't answer \u{201C}\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D} right now. Try different wording, or try again.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -302,8 +323,6 @@ struct ArabicView: View {
 
                 Text("Ask AI about \u{201C}\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D}")
                     .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
 
                 Spacer()
 
@@ -329,8 +348,14 @@ struct ArabicView: View {
             if askNoAnswer {
                 Section(header: askAIHeader) { askNoAnswerRow }
             } else if !askRanForQuery.isEmpty {
-                Section(header: askAIHeader) { AskAnswerCard(answer: askAnswer, isStreaming: askIsStreaming) }
-            } else if hasResults {
+                Section(header: askAIHeader) {
+                    AskAnswerCard(answer: askAnswer, isStreaming: askIsStreaming, grounded: askGrounded)
+
+                    // The answer's receipts: the letters it actually cited, as the STANDARD letter
+                    // rows/tiles - same context menu and favorite swipes as everywhere else.
+                    letterCollection(askCitedLetters)
+                }
+            } else {
                 Section(header: askAIHeader) { askPromptRow }
             }
         }
@@ -397,6 +422,7 @@ struct ArabicView: View {
                 }
             }
             .themedListRowBackground()
+
         }
         #if os(watchOS)
         .searchable(text: (AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut)))
@@ -417,7 +443,7 @@ struct ArabicView: View {
                 // what made it look like a row vanishing mid-scroll. It just rides with the bar.
                 arabicFontPicker
 
-                HStack(spacing: 0) {
+                HStack(spacing: 8) {
                     SearchBar(text: (AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut)))
 
                     Menu {
@@ -465,20 +491,21 @@ struct ArabicView: View {
                                 .transition(.opacity)
                         }
                     }
-                    .padding(.bottom, 2)
                 }
-                .padding([.leading, .top], -8)
                 .minimizedBarStyle(barsCollapsed)
             }
             .animation(.spring(response: 0.35, dampingFraction: 0.85), value: barsCollapsed)
             .padding(.horizontal, 24)
-            .padding(.bottom, 8)
+            .padding(.bottom, BottomBarCushion.standard)
             .background(Color.white.opacity(0.00001))
         }
         #endif
         .applyConditionalListStyle()
         .navigationTitle("Arabic Alphabet")
-        .onDisappear { ArabicSpeech.shared.stop() }
+        .onDisappear {
+            ArabicSpeech.shared.stop()
+            ArabicPracticeSelection.shared.clear()
+        }
         #if os(iOS)
         .onChange(of: searchText) { text in
             // A new query starts back on the AI list, with any dead-end ask notice cleared.
@@ -512,9 +539,8 @@ struct ArabicView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         content()
-            .frame(width: 27, height: 27)
-            .padding()
-            .frame(minWidth: 44, minHeight: 44)
+            .frame(width: 26, height: 26)
+            .frame(width: 50, height: 50)
             .contentShape(Rectangle())
             .conditionalGlassEffect()
     }
@@ -709,6 +735,27 @@ struct ArabicView: View {
             }
 
             countedLetterSection("SPECIAL ARABIC LETTERS", otherArabicLetters)
+
+            Section("ARABIC BASICS") {
+                NavigationLink {
+                    ArabicBasicsView()
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Basic Grammar")
+                                .foregroundColor(.primary)
+
+                            Text("Gender, duals, plurals, and the three case endings")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    } icon: {
+                        Text("ال")
+                            .foregroundColor(settings.accentColor.color)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
 
             Section(header: SectionPillHeader(title: "ARABIC NUMBERS", count: numbers.count)) {
                 numberCollection

@@ -171,7 +171,7 @@ struct Surah: Codable, Identifiable, Equatable {
         guard let qIn = displayQiraah, !qIn.isEmpty else { return numberOfAyahs }
         let q = Settings.normalizeLegacyRiwayahTag(qIn)
         guard !q.isEmpty, q != Settings.Riwayah.hafsTag, q != "Hafs" else { return numberOfAyahs }
-        return ayahs.filter { $0.existsInQiraah(displayQiraah) }.count
+        return ayahs.filter { $0.existsInQiraah(displayQiraah, surahID: id) }.count
     }
 }
 
@@ -223,7 +223,11 @@ struct Ayah: Codable, Identifiable, Equatable {
     }
 
     /// Raw Arabic for the given display qiraah. Nil = Hafs.
-    func textArabic(for displayQiraah: String?) -> String {
+    ///
+    /// `surahID` is only needed to reach the beta riwayat, whose text lives in a side
+    /// table keyed by surah (see `BetaQiraatStore`) rather than in this struct. Callers
+    /// that don't pass it still get every bundled riwayah.
+    func textArabic(for displayQiraah: String?, surahID: Int? = nil) -> String {
         let raw: String? = {
             guard let qIn = displayQiraah else { return nil }
             let q = Settings.normalizeLegacyRiwayahTag(qIn)
@@ -235,14 +239,24 @@ struct Ayah: Codable, Identifiable, Equatable {
             case Settings.Riwayah.qunbul: return textQunbul
             case Settings.Riwayah.shubah: return textShubah
             case Settings.Riwayah.susi: return textSusi
-            default: return nil
+            default:
+                #if os(iOS)
+                guard Settings.shared.betaQiraatEnabled, let surahID else { return nil }
+                return BetaQiraatStore.shared.text(tag: q, surah: surahID, ayah: id)
+                #else
+                return nil
+                #endif
             }
         }()
         return (raw ?? textHafs).trimmingCharacters(in: .whitespacesAndNewlines)
     }
     /// Clean (no diacritics) Arabic for the given display qiraah.
-    func textCleanArabic(for displayQiraah: String?) -> String {
-        let raw = textArabic(for: displayQiraah)
+    func textCleanArabic(for displayQiraah: String?, surahID: Int? = nil) -> String {
+        // `surahID` matters for the 12 BETA riwayat: without it `textArabic` cannot reach the
+        // BetaQiraatStore side-table and SILENTLY falls back to Hafs - the search-index-vs-display
+        // desync bug (index said 3:65 matched, the reader showed the riwayah's own 3:65 = different
+        // words). Every caller that has the surah must pass it.
+        let raw = textArabic(for: displayQiraah, surahID: surahID)
         let removeDots = Settings.shared.removeArabicDots
         let key = ((removeDots ? "D1:" : "D0:") + raw) as NSString
         if let cached = CleanArabicTextCache.cache.object(forKey: key) {
@@ -255,7 +269,7 @@ struct Ayah: Codable, Identifiable, Equatable {
     }
 
     /// True if this ayah exists as its own verse in the given qiraah. In Hafs every ayah exists; in Warsh/Qaloon/etc. some Hafs ayahs are merged, so we only show ayahs that have qiraah-specific text (e.g. Baqarah has 286 in Hafs but 285 in Warsh).
-    func existsInQiraah(_ displayQiraah: String?) -> Bool {
+    func existsInQiraah(_ displayQiraah: String?, surahID: Int? = nil) -> Bool {
         guard let qIn = displayQiraah, !qIn.isEmpty, qIn != "Hafs" else {
             return !textHafs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
@@ -269,7 +283,16 @@ struct Ayah: Codable, Identifiable, Equatable {
         case Settings.Riwayah.qunbul: return textQunbul != nil
         case Settings.Riwayah.shubah: return textShubah != nil
         case Settings.Riwayah.susi: return textSusi != nil
-        default: return true
+        default:
+            #if os(iOS)
+            // Beta riwayat merge/split ayahs like the bundled ones do; without a surah
+            // to look in, assume it exists (callers that have one get the real answer).
+            guard Settings.shared.betaQiraatEnabled, Settings.Riwayah.isBeta(q) else { return true }
+            guard let surahID else { return true }
+            return BetaQiraatStore.shared.text(tag: q, surah: surahID, ayah: id) != nil
+            #else
+            return true
+            #endif
         }
     }
 
@@ -288,10 +311,15 @@ struct Ayah: Codable, Identifiable, Equatable {
         } else {
             Settings.shared.displayQiraahForArabic
         }
+        // Clean/no-dots applies to EVERY riwayah, not just Hafs: the transforms are pure string
+        // maps (all 20 texts ship fully vocalized; the skeleton is derived at render time), and
+        // stripping tashkeel + signs is exactly what exposes the shared Uthmani rasm across qiraat.
         let text = if qiraah == nil {
-            clean ? textCleanArabic(for: qiraah) : textArabic(for: qiraah)
+            clean ? textCleanArabic(for: qiraah) : textArabic(for: qiraah, surahID: surahId)
+        } else if clean {
+            textCleanArabic(for: qiraah, surahID: surahId)
         } else {
-            textArabic(for: qiraah).removingArabicSukoon
+            textArabic(for: qiraah, surahID: surahId).removingArabicSukoon
         }
         if surahId == 1 && id == 1 && clean {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -347,10 +375,9 @@ struct Ayah: Codable, Identifiable, Equatable {
         }.count
     }
 
-    /// Arabic to display; pass qiraah and whether to strip diacritics.
-    func displayArabic(qiraah: String?, clean: Bool) -> String {
-        clean ? textCleanArabic(for: qiraah) : textArabic(for: qiraah)
-    }
+    // (A `displayArabic(qiraah:clean:)` convenience used to live here. Deleted: it had no callers,
+    // and with no `surahID` it could never serve beta-riwayat text - the silent-Hafs-fallback trap.
+    // Use `displayArabicText(surahId:clean:qiraahOverride:)`.)
 }
 
 final class TajweedStore {
@@ -479,6 +506,19 @@ final class TajweedStore {
     /// eviction was a full `removeAll` once it crossed the limit - a cliff that wiped the entire cache
     /// mid-scroll on long surahs (Baqarah), forcing the expensive projection+painting to re-run. `NSCache`
     /// drops just the coldest entries at `countLimit` and also evicts automatically under memory pressure.
+    /// The final per-ayah paint ops, cached under the SAME key as the styled string. They carry
+    /// the rule categories, which is what the word-meaning card's "rules in this word" list reads -
+    /// the colors alone couldn't say WHICH rule painted a letter.
+    private final class PaintOpsBox {
+        let ops: [PaintOp]
+        init(_ ops: [PaintOp]) { self.ops = ops }
+    }
+    private let opsCache: NSCache<NSString, PaintOpsBox> = {
+        let c = NSCache<NSString, PaintOpsBox>()
+        c.countLimit = 128
+        return c
+    }()
+
     private let attributedCache: NSCache<NSString, AttributedStringBox> = {
         let c = NSCache<NSString, AttributedStringBox>()
         c.countLimit = AppPerformance.tajweedAttributedCacheLimit
@@ -537,6 +577,7 @@ final class TajweedStore {
         visibilityLock.lock()
         if visibilitySignature != lastVisibilitySignature {
             attributedCache.removeAllObjects()
+            opsCache.removeAllObjects()
             lastVisibilitySignature = visibilitySignature
         }
         visibilityLock.unlock()
@@ -659,6 +700,7 @@ final class TajweedStore {
         appendMuqattaatBareRaaTafkhimPaintOps(clusters: clusters, protectedIndices: muqattaatProtectedIndices, into: &ops)
         appendMuqattaatMaddLazimPaintOps(clusters: clusters, protectedIndices: muqattaatProtectedIndices, into: &ops)
         ops = filteredMuqattaatPaintOps(ops, clusters: clusters, protectedIndices: muqattaatProtectedIndices)
+        opsCache.setObject(PaintOpsBox(ops), forKey: cacheKey)
 
         let rawWaqfUTF16Skip = Self.utf16IndicesOfWaqfOrnaments(in: text)
         let waqfUTF16Skip = Self.utf16IndicesOfWaqfOrnaments(in: displayText)
@@ -689,6 +731,23 @@ final class TajweedStore {
         return result
     }
 
+    /// The visible tajweed rules whose painted range touches `wordRange` of the RAW ayah text,
+    /// in legend order. Runs the same pipeline as `attributedText` (and warms the same caches),
+    /// so the list always agrees with the colors on screen. Empty when tajweed can't paint here.
+    func ruleCategories(surah: Int, ayah: Int, text: String, wordRange: NSRange) -> [TajweedLegendCategory] {
+        let cacheKey = "\(surah):\(ayah):\(Self.stableTextDigest(text)):0:0:0:0" as NSString
+        if opsCache.object(forKey: cacheKey) == nil {
+            _ = attributedText(surah: surah, ayah: ayah, text: text)
+        }
+        guard let box = opsCache.object(forKey: cacheKey) else { return [] }
+
+        var present = Set<TajweedLegendCategory>()
+        for op in box.ops where NSIntersectionRange(op.range, wordRange).length > 0 {
+            present.insert(op.category)
+        }
+        return TajweedLegendCategory.allCases.filter { present.contains($0) }
+    }
+
     private struct TajweedProjection {
         let displayText: String
         let rawUTF16ToDisplayRange: [Range<Int>?]
@@ -711,6 +770,11 @@ final class TajweedStore {
 
         var rawUTF16Offset = 0
         var displayUTF16Offset = 0
+        // Beginner spacing goes BETWEEN emitting clusters, never after the last one - every caller
+        // builds its display text with `joined(separator: " ")`, and the projection must come out
+        // byte-identical to it or every consumer that aligns the two by offset (the mushaf page's
+        // justification transplant, word-by-word's equality check) drifts by the stray trailing space.
+        var pendingBeginnerSpacer = false
 
         for character in rawText {
             let clusterRawStart = rawUTF16Offset
@@ -721,6 +785,11 @@ final class TajweedStore {
             for scalar in String(character).unicodeScalars {
                 let rawLength = utf16Length(of: scalar)
                 let outScalars = displayScalars(for: scalar, cleanDisplayText: cleanDisplayText, removeArabicDots: removeArabicDots)
+                if pendingBeginnerSpacer, !outScalars.isEmpty {
+                    projectedScalars.append(" ")
+                    displayUTF16Offset += 1
+                    pendingBeginnerSpacer = false
+                }
                 let outStart = displayUTF16Offset
 
                 for outScalar in outScalars {
@@ -743,8 +812,7 @@ final class TajweedStore {
             }
 
             if beginnerSpacing, emittedVisibleClusterContent {
-                projectedScalars.append(" ")
-                displayUTF16Offset += 1
+                pendingBeginnerSpacer = true
             }
 
             let fallback: NSRange?
@@ -847,7 +915,10 @@ final class TajweedStore {
         case 0x0624, 0x0626: return UnicodeScalar(0x0621)!
         case 0x0622: return UnicodeScalar(0x0627)!
         case 0x0671: return UnicodeScalar(0x0627)!
-        case 0x0628, 0x062A, 0x062B, 0x0646: return UnicodeScalar(0x066E)!
+        case 0x0628, 0x062A, 0x062B: return UnicodeScalar(0x066E)!
+        // Noon keeps its own skeleton (U+06BA: bowl in isolated/final, tooth elsewhere), matching
+        // the early-manuscript rasm - see `removingArabicDots` in Globals.swift, its string twin.
+        case 0x0646: return UnicodeScalar(0x06BA)!
         case 0x064A: return UnicodeScalar(0x0649)!
         case 0x062C, 0x062E: return UnicodeScalar(0x062D)!
         case 0x0630: return UnicodeScalar(0x062F)!
@@ -3301,6 +3372,7 @@ final class QuranData: ObservableObject {
                 : nil
             return regularSearchResults(
                 for: q,
+                rawQuery: raw,
                 silentQuery: silentQuery,
                 useArabic: useArabic,
                 limit: limit,
@@ -3308,8 +3380,17 @@ final class QuranData: ObservableObject {
             )
         }
 
+        /// The typed query plus its vocative-joined twin ("يا نساء" → "يانساء"), or nil when joining
+        /// changes nothing. An ADDITIONAL lane, so the original spaced query still matches everything
+        /// it used to.
+        private func joinedArabicQueryVariant(_ query: String) -> String? {
+            let joined = query.joiningVocativeYaForSearch
+            return joined == query ? nil : joined
+        }
+
         private func regularSearchResults(
             for cleanedQuery: String,
+            rawQuery: String,
             silentQuery: String?,
             useArabic: Bool,
             limit: Int,
@@ -3322,6 +3403,14 @@ final class QuranData: ObservableObject {
             var results: [VerseIndexEntry] = []
             results.reserveCapacity(limit == .max ? 64 : min(limit, 64))
 
+            // Joined once per query, not per entry - the scan below visits up to 6,236 entries.
+            let joinedQuery = useArabic ? joinedArabicQueryVariant(cleanedQuery) : nil
+            let joinedSilentQuery = useArabic ? silentQuery.flatMap(joinedArabicQueryVariant) : nil
+            // Built once too. Non-nil only when the reader typed a bare ء, and then it REPLACES the
+            // ordinary Arabic test: the hamza lane is strictly stricter, so passing it implies passing
+            // the plain one. Filtering here (not at the call site) keeps limit/offset paging honest.
+            let hamzaFilter = useArabic ? Settings.HamzaPrecisionFilter(query: rawQuery) : nil
+
             var skipped = 0
             var scanned = 0
             for index in allVerseIndices {
@@ -3332,7 +3421,15 @@ final class QuranData: ObservableObject {
                 if scanned & 0x1FF == 0, Task.isCancelled { break }
                 guard verseIndex.indices.contains(index) else { continue }
                 let entry = verseIndex[index]
-                guard regularSearchEntryMatches(entry, cleanedQuery: cleanedQuery, silentQuery: silentQuery, useArabic: useArabic) else { continue }
+                guard regularSearchEntryMatches(
+                    entry,
+                    cleanedQuery: cleanedQuery,
+                    joinedQuery: joinedQuery,
+                    silentQuery: silentQuery,
+                    joinedSilentQuery: joinedSilentQuery,
+                    hamzaFilter: hamzaFilter,
+                    useArabic: useArabic
+                ) else { continue }
                 if skipped < offset {
                     skipped += 1
                     continue
@@ -3346,15 +3443,25 @@ final class QuranData: ObservableObject {
         private func regularSearchEntryMatches(
             _ entry: VerseIndexEntry,
             cleanedQuery: String,
+            joinedQuery: String?,
             silentQuery: String?,
+            joinedSilentQuery: String?,
+            hamzaFilter: Settings.HamzaPrecisionFilter?,
             useArabic: Bool
         ) -> Bool {
             // Pure substring (`contains`) - boundaries don't matter. Whole-word / phrase matching lives in
             // the `=` operator instead.
             if useArabic {
+                // A bare ء in the query is a deliberate keystroke, so it has to survive the fold on BOTH
+                // sides. This lane subsumes the ones below (dropping the hamza can only merge more words
+                // together), so it stands alone rather than adding to them.
+                if let hamzaFilter { return hamzaFilter.matches(lanes: entry.hamzaArabicBlob) }
                 if entry.arabicBlob.contains(cleanedQuery) { return true }
+                if let joinedQuery, entry.arabicBlob.contains(joinedQuery) { return true }
                 guard let silentQuery, !silentQuery.isEmpty else { return false }
-                return entry.silentArabicBlob.contains(silentQuery)
+                if entry.silentArabicBlob.contains(silentQuery) { return true }
+                if let joinedSilentQuery, entry.silentArabicBlob.contains(joinedSilentQuery) { return true }
+                return false
             }
 
             return entry.englishBlob.contains(cleanedQuery)
@@ -3595,8 +3702,10 @@ final class QuranData: ObservableObject {
             for surah in surahs {
                 for ayah in surah.ayahs {
                     if Task.isCancelled { return }
-                    let raw = ayah.textArabic(for: displayQiraah)
-                    let clean = ayah.textCleanArabic(for: displayQiraah)
+                    // surahID is REQUIRED for beta riwayat - without it both reads silently fall
+                    // back to Hafs and the index desyncs from what the reader displays.
+                    let raw = ayah.textArabic(for: displayQiraah, surahID: surah.id)
+                    let clean = ayah.textCleanArabic(for: displayQiraah, surahID: surah.id)
                     vIndex.append(
                         self.makeVerseIndexEntry(
                             surahID: surah.id,
@@ -3658,8 +3767,8 @@ final class QuranData: ObservableObject {
                         self.makeVerseIndexEntry(
                             surahID: surah.id,
                             ayahID: ayah.id,
-                            rawArabic: ayah.textArabic(for: displayQiraah),
-                            cleanArabic: ayah.textCleanArabic(for: displayQiraah),
+                            rawArabic: ayah.textArabic(for: displayQiraah, surahID: surah.id),
+                            cleanArabic: ayah.textCleanArabic(for: displayQiraah, surahID: surah.id),
                             englishSaheeh: ayah.textEnglishSaheeh,
                             englishMustafa: ayah.textEnglishMustafa,
                             transliteration: ayah.textTransliteration
@@ -3758,8 +3867,15 @@ final class QuranData: ObservableObject {
         englishMustafa: String,
         transliteration: String
     ) -> VerseIndexEntry {
-        let arabicBlob = [rawArabic, cleanArabic]
-            .map { settings.cleanSearch($0) }
+        // Three Arabic lanes per ayah: the raw fold (dagger alif → full ا: "يانسا", "ابراهيم"), the
+        // pre-cleaned display text, and the dagger-DROPPED fold ("ينسا", "ابرهيم") - so typed spellings
+        // with or without the alif the mushaf writes as a superscript both land. The dagger lane is
+        // dropped when it folds to the same bytes as the raw one (~30% of ayahs carry no dagger alif),
+        // so those entries don't pay for a duplicate copy of their own text.
+        let rawArabicFold = settings.cleanSearch(rawArabic)
+        let daggerlessFold = settings.cleanSearch(rawArabic.removingDaggerAlifForSearch)
+        let arabicBlob = ([rawArabicFold, settings.cleanSearch(cleanArabic)]
+            + (daggerlessFold == rawArabicFold ? [] : [daggerlessFold]))
             .joined(separator: " ")
         let silentArabicBlob = [rawArabic, cleanArabic]
             .map { settings.cleanSearchIgnoringSilentArabicLetters($0) }
@@ -3779,6 +3895,7 @@ final class QuranData: ObservableObject {
             englishExactBlob: exactPhraseBlob([englishSaheeh, englishMustafa, transliteration].joined(separator: " ")),
             arabicBlob: arabicBlob,
             silentArabicBlob: silentArabicBlob,
+            hamzaArabicBlob: Settings.HamzaPrecisionFilter.corpusLanes(for: [rawArabic, cleanArabic]),
             englishBlob: englishBlob,
             arabicTokens: arabicTokens,
             silentArabicTokens: silentArabicTokens,
@@ -3972,14 +4089,14 @@ final class QuranData: ObservableObject {
                 guard surah.pageCount == 1 else { return false }
                 guard index + 1 < surahs.count else { return false }
 
-                let ayahsForQiraah = surah.ayahs.filter { $0.existsInQiraah(displayQiraah) }
+                let ayahsForQiraah = surah.ayahs.filter { $0.existsInQiraah(displayQiraah, surahID: surah.id) }
                 guard let currentLastAyah = ayahsForQiraah.last,
                       let currentLastPage = currentLastAyah.page else {
                     return false
                 }
 
                 let nextSurah = surahs[index + 1]
-                guard let nextFirstAyah = nextSurah.ayahs.first(where: { $0.existsInQiraah(displayQiraah) }),
+                guard let nextFirstAyah = nextSurah.ayahs.first(where: { $0.existsInQiraah(displayQiraah, surahID: nextSurah.id) }),
                       let nextFirstPage = nextFirstAyah.page else {
                     return false
                 }
@@ -4104,7 +4221,7 @@ final class QuranData: ObservableObject {
         result.reserveCapacity(surahs.count)
 
         for (index, surah) in surahs.enumerated() {
-            let ayahsForQiraah = surah.ayahs.filter { $0.existsInQiraah(displayQiraah) }
+            let ayahsForQiraah = surah.ayahs.filter { $0.existsInQiraah(displayQiraah, surahID: surah.id) }
             guard !ayahsForQiraah.isEmpty else {
                 result[surah.id] = SurahBoundaryModel(
                     startDivider: nil,
@@ -4122,7 +4239,7 @@ final class QuranData: ObservableObject {
                 guard index > 0,
                       let firstAyah = ayahsForQiraah.first else { return false }
                 let previousSurah = surahs[index - 1]
-                let previousLastAyah = previousSurah.ayahs.last { $0.existsInQiraah(displayQiraah) }
+                let previousLastAyah = previousSurah.ayahs.last { $0.existsInQiraah(displayQiraah, surahID: previousSurah.id) }
                 guard let previousLastAyah else { return false }
                 return previousLastAyah.page != firstAyah.page || previousLastAyah.juz != firstAyah.juz
             }()
@@ -4131,7 +4248,7 @@ final class QuranData: ObservableObject {
                 guard index > 0,
                       let firstAyah = ayahsForQiraah.first else { return .allSecondary }
                 let previousSurah = surahs[index - 1]
-                let previousLastAyah = previousSurah.ayahs.last { $0.existsInQiraah(displayQiraah) }
+                let previousLastAyah = previousSurah.ayahs.last { $0.existsInQiraah(displayQiraah, surahID: previousSurah.id) }
                 guard let previousLastAyah else { return .allSecondary }
                 return boundaryStyle(
                     pageChanged: previousLastAyah.page != firstAyah.page,
@@ -4162,7 +4279,7 @@ final class QuranData: ObservableObject {
             if index + 1 < surahs.count {
                 let nextSurah = surahs[index + 1]
                 if let lastAyah = ayahsForQiraah.last,
-                   let nextAyah = nextSurah.ayahs.first(where: { $0.existsInQiraah(displayQiraah) }) {
+                   let nextAyah = nextSurah.ayahs.first(where: { $0.existsInQiraah(displayQiraah, surahID: nextSurah.id) }) {
                     nextFirstAyah = nextAyah
                     // Cross-surah boundary: the page belongs to the next surah, so it is shown without a
                     // surah-relative annotation - an "(N)" here would read as the next surah's page count.
@@ -4268,7 +4385,7 @@ final class QuranData: ObservableObject {
         var juzLookup = [Int: (surah: Int, ayah: Int)]()
 
         for surah in surahs {
-            for ayah in surah.ayahs where ayah.existsInQiraah(displayQiraah) {
+            for ayah in surah.ayahs where ayah.existsInQiraah(displayQiraah, surahID: surah.id) {
                 if let page = ayah.page, pageLookup[page] == nil {
                     pageLookup[page] = (surah: surah.id, ayah: ayah.id)
                 }
@@ -4983,4 +5100,261 @@ final class QuranData: ObservableObject {
             endSurah: 114, endAyah: 6
         )
     ]
+}
+
+// MARK: - Qiraah comparison engine (ayah alignment + word-level diff)
+
+/// The smart-comparison engine. Two jobs:
+///
+/// 1. ALIGNMENT. The overlay riwayah texts are numbered 1..N in each riwayah's OWN counting
+///    tradition, not in Hafs numbers - the Madani/Basri/Makki/Dimashqi counts merge or split
+///    neighbors of the Kufi (Hafs) count, drifting by up to a handful per surah. So "row 2 of
+///    Warsh" is NOT "Hafs 2:2"; asking a riwayah for a Hafs number needs a mapping. The mapping is
+///    recovered from the texts themselves: word counts per ayah are compared with a greedy walk
+///    that pairs one riwayah ayah against one, two, or three Hafs ayahs (and the reverse for
+///    splits) - at a genuine merge point the word-count evidence is unambiguous, and identical
+///    totals short-circuit to identity (all the Kufi-counted riwayat).
+///
+/// 2. WORD DIFF. Ranges in a riwayah's display text whose words differ from a reference text
+///    (usually the selected riwayah), computed as folded-word LCS - the search fold strips
+///    tashkeel and normalizes hamza carriers, so vocalization and orthography differences don't
+///    light whole ayahs up, while real word differences (يخدعون / يخادعون, ملك / مالك) do.
+@MainActor
+enum QiraahComparison {
+    struct Alignment {
+        /// Hafs ayah number → the riwayah's own ayah number whose text contains that Hafs ayah.
+        let riwayahNumberForHafs: [Int: Int]
+        /// Riwayah ayah number → the Hafs ayah number(s) its text spans (more than one = merged).
+        let hafsRangeForRiwayah: [Int: ClosedRange<Int>]
+    }
+
+    private static var alignmentCache: [String: Alignment] = [:]
+    private static var diffCache: [String: [(Int, Int)]] = [:]
+
+    /// Word count of a display text - tashkeel never moves a word boundary, so raw splitting is
+    /// enough for the alignment signal.
+    private static func wordCount(_ text: String) -> Int {
+        var count = 0
+        var inWord = false
+        for ch in text {
+            if ch.isWhitespace {
+                inWord = false
+            } else if !inWord {
+                inWord = true
+                count += 1
+            }
+        }
+        return count
+    }
+
+    /// The alignment for one surah of one riwayah, cached for the app's lifetime (texts are
+    /// immutable). Nil for Hafs itself, unknown tags, or a riwayah with no text for this surah.
+    static func alignment(surahID: Int, tag: String, quranData: QuranData) -> Alignment? {
+        let canonical = Settings.Riwayah.canonicalTag(tag)
+        guard !canonical.isEmpty else { return nil }
+        let key = "\(surahID)|\(canonical)"
+        if let cached = alignmentCache[key] { return cached }
+        // numberOfAyahs > 0 also protects the `1...` range below - a truncated pack decodes surah
+        // metas with count 0 (the reader returns 0 past end-of-data instead of failing).
+        guard let surah = quranData.surah(surahID), surah.numberOfAyahs > 0 else { return nil }
+
+        var hafsWords: [Int] = []
+        for n in 1...surah.numberOfAyahs {
+            guard let a = quranData.ayah(surah: surahID, ayah: n) else { return nil }
+            hafsWords.append(wordCount(a.textArabic(for: nil)))
+        }
+
+        var riwayahWords: [Int] = []
+        var n = 1
+        while let a = quranData.ayah(surah: surahID, ayah: n), a.existsInQiraah(canonical, surahID: surahID) {
+            riwayahWords.append(wordCount(a.textArabic(for: canonical, surahID: surahID)))
+            n += 1
+        }
+        guard !riwayahWords.isEmpty else { return nil }
+
+        var rForH: [Int: Int] = [:]
+        var hForR: [Int: ClosedRange<Int>] = [:]
+
+        if riwayahWords.count == hafsWords.count {
+            // Same count = same numbering (every Kufi-counted riwayah): identity.
+            for i in 1...hafsWords.count {
+                rForH[i] = i
+                hForR[i] = i...i
+            }
+        } else {
+            var h = 0
+            var r = 0
+            while h < hafsWords.count, r < riwayahWords.count {
+                let one = abs(riwayahWords[r] - hafsWords[h])
+                let merge2 = h + 1 < hafsWords.count
+                    ? abs(riwayahWords[r] - (hafsWords[h] + hafsWords[h + 1])) : Int.max
+                let merge3 = h + 2 < hafsWords.count
+                    ? abs(riwayahWords[r] - (hafsWords[h] + hafsWords[h + 1] + hafsWords[h + 2])) : Int.max
+                let split2 = r + 1 < riwayahWords.count
+                    ? abs((riwayahWords[r] + riwayahWords[r + 1]) - hafsWords[h]) : Int.max
+
+                let best = min(one, merge2, merge3, split2)
+                if best == one {
+                    // Ties break toward 1:1 on purpose - merges must EARN the pairing.
+                    rForH[h + 1] = r + 1
+                    hForR[r + 1] = (h + 1)...(h + 1)
+                    h += 1; r += 1
+                } else if best == merge2 {
+                    rForH[h + 1] = r + 1
+                    rForH[h + 2] = r + 1
+                    hForR[r + 1] = (h + 1)...(h + 2)
+                    h += 2; r += 1
+                } else if best == merge3 {
+                    rForH[h + 1] = r + 1
+                    rForH[h + 2] = r + 1
+                    rForH[h + 3] = r + 1
+                    hForR[r + 1] = (h + 1)...(h + 3)
+                    h += 3; r += 1
+                } else {
+                    // Split: the riwayah divides this Hafs ayah - both riwayah pieces map to it,
+                    // and the Hafs number points at the piece that STARTS it.
+                    rForH[h + 1] = r + 1
+                    hForR[r + 1] = (h + 1)...(h + 1)
+                    hForR[r + 2] = (h + 1)...(h + 1)
+                    h += 1; r += 2
+                }
+            }
+            // Leftovers (a desynced tail can only be a data defect): map 1:1 so lookups still land.
+            while h < hafsWords.count {
+                let r0 = min(r, riwayahWords.count - 1)
+                rForH[h + 1] = r0 + 1
+                h += 1
+            }
+        }
+
+        let result = Alignment(riwayahNumberForHafs: rForH, hafsRangeForRiwayah: hForR)
+        alignmentCache[key] = result
+        return result
+    }
+
+    /// The Hafs anchor for a riwayah's own ayah number - what "\(riwayahNumber)" means in Hafs
+    /// terms when reading that riwayah. Identity for Hafs/unknown.
+    static func hafsAnchor(surahID: Int, ayahNumber: Int, tag: String?, quranData: QuranData) -> Int {
+        guard let tag, !Settings.Riwayah.canonicalTag(tag).isEmpty,
+              let alignment = alignment(surahID: surahID, tag: tag, quranData: quranData),
+              let span = alignment.hafsRangeForRiwayah[ayahNumber] else { return ayahNumber }
+        return span.lowerBound
+    }
+
+    // MARK: Word diff
+
+    private static func tokens(of text: String) -> [(range: Range<String.Index>, folded: String)] {
+        var result: [(Range<String.Index>, String)] = []
+        var cursor = text.startIndex
+        while cursor < text.endIndex {
+            while cursor < text.endIndex, text[cursor].isWhitespace { cursor = text.index(after: cursor) }
+            guard cursor < text.endIndex else { break }
+            let start = cursor
+            while cursor < text.endIndex, !text[cursor].isWhitespace { cursor = text.index(after: cursor) }
+            let range = start..<cursor
+            result.append((range, HighlightedSnippet.normalizeForSearchText(String(text[range]), trimWhitespace: true)))
+        }
+        return result
+    }
+
+    /// Ranges in `text` whose words are not part of the folded-word LCS with `reference` - the
+    /// words this riwayah reads differently from the reference riwayah. Cached per text pair.
+    static func differingRanges(in text: String, vs reference: String) -> [Range<String.Index>] {
+        guard text != reference else { return [] }
+        let key = "\(text)\u{0}\(reference)"
+        if let spans = diffCache[key] {
+            return spans.compactMap { span in
+                guard let lo = utf16Index(span.0, in: text), let hi = utf16Index(span.1, in: text), lo < hi else { return nil }
+                return lo..<hi
+            }
+        }
+
+        let a = tokens(of: text)
+        let b = tokens(of: reference)
+        // Standalone marks fold to nothing (pause signs) - never diff-worthy on their own.
+        let aFolded = a.map(\.folded)
+        let bFolded = b.map(\.folded)
+
+        // Classic LCS table - ayah-sized inputs, dozens of words at most.
+        var table = Array(repeating: Array(repeating: 0, count: bFolded.count + 1), count: aFolded.count + 1)
+        if !aFolded.isEmpty, !bFolded.isEmpty {
+            for i in stride(from: aFolded.count - 1, through: 0, by: -1) {
+                for j in stride(from: bFolded.count - 1, through: 0, by: -1) {
+                    table[i][j] = aFolded[i] == bFolded[j]
+                        ? table[i + 1][j + 1] + 1
+                        : max(table[i + 1][j], table[i][j + 1])
+                }
+            }
+        }
+
+        var common = Set<Int>()
+        var i = 0
+        var j = 0
+        while i < aFolded.count, j < bFolded.count {
+            if aFolded[i] == bFolded[j] {
+                common.insert(i)
+                i += 1; j += 1
+            } else if table[i + 1][j] >= table[i][j + 1] {
+                i += 1
+            } else {
+                j += 1
+            }
+        }
+
+        var ranges: [Range<String.Index>] = []
+        for (index, token) in a.enumerated() where !common.contains(index) && !token.folded.isEmpty {
+            ranges.append(token.range)
+        }
+        diffCache[key] = ranges.map { range in
+            (text.utf16.distance(from: text.startIndex, to: range.lowerBound),
+             text.utf16.distance(from: text.startIndex, to: range.upperBound))
+        }
+        if diffCache.count > 4_000 { diffCache.removeAll(keepingCapacity: true) }
+        return ranges
+    }
+
+    private static func utf16Index(_ offset: Int, in text: String) -> String.Index? {
+        text.utf16.index(text.utf16.startIndex, offsetBy: offset, limitedBy: text.utf16.endIndex)
+            .flatMap { $0.samePosition(in: text) }
+    }
+
+    /// The display text as an AttributedString with its differing words tinted - ready to feed a
+    /// `HighlightedSnippet.preStyledSource` (an active search term still wins, by that view's rule).
+    static func diffAttributed(text: String, reference: String, baseColor: Color, diffColor: Color) -> AttributedString {
+        var attributed = AttributedString(text)
+        attributed.foregroundColor = baseColor
+        for range in differingRanges(in: text, vs: reference) {
+            // A differing word can carry a stop-sign ornament on its last letter - tint around it
+            // (user rule: stop signs are never highlighted), splitting the word into the runs between.
+            for run in stopSignFreeSubranges(of: range, in: text) {
+                if let start = AttributedString.Index(run.lowerBound, within: attributed),
+                   let end = AttributedString.Index(run.upperBound, within: attributed) {
+                    attributed[start..<end].foregroundColor = diffColor
+                }
+            }
+        }
+        return attributed
+    }
+
+    /// `range` minus the waqf stop-sign scalars inside it, as the contiguous runs between them. Walked at
+    /// SCALAR granularity: the stop signs are combining marks riding a word's last letter, so they live
+    /// INSIDE that letter's grapheme cluster - a character-level walk could never separate them. Scalar
+    /// boundaries are valid String (and AttributedString) indices, the same mechanics the Allah-name
+    /// highlighter already banks on to stop its red before a trailing waqf mark.
+    private static func stopSignFreeSubranges(of range: Range<String.Index>, in text: String) -> [Range<String.Index>] {
+        let scalars = text.unicodeScalars
+        var runs: [Range<String.Index>] = []
+        var runStart = range.lowerBound
+        var cursor = range.lowerBound
+        while cursor < range.upperBound {
+            let next = scalars.index(after: cursor)
+            if TajweedRules.stopSignScalars.contains(scalars[cursor].value) {
+                if runStart < cursor { runs.append(runStart..<cursor) }
+                runStart = next
+            }
+            cursor = next
+        }
+        if runStart < range.upperBound { runs.append(runStart..<range.upperBound) }
+        return runs
+    }
 }

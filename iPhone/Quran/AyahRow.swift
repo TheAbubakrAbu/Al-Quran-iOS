@@ -1,9 +1,32 @@
 import SwiftUI
 import Foundation
 
+/// Whether any per-ayah sheet (tafsir, share, note, comparisons, page-mode actions...) is currently
+/// presented from the reader. The readers' "follow the recitation" scrolls/page-turns consult this and
+/// hold still while a sheet is up: auto-scrolling the List (or flipping the mushaf page) tears down the
+/// row/page that is PRESENTING the sheet, which dismissed the sheet mid-read on every ayah advance - and
+/// reclaiming a cell that is also a live presentation anchor is exactly the kind of teardown that can
+/// bring the whole presentation stack down. Following resumes on the first ayah advance after the sheet
+/// closes. Main-thread only (all writers are SwiftUI view callbacks).
+final class AyahSheetPresence: ObservableObject {
+    static let shared = AyahSheetPresence()
+    private init() {}
+
+    @Published private(set) var openCount = 0
+
+    var anySheetOpen: Bool { openCount > 0 }
+
+    func sheetOpened() { openCount += 1 }
+    /// Clamped: a presenter torn down in an unexpected order must never push the count negative.
+    func sheetClosed() { openCount = max(0, openCount - 1) }
+}
+
 struct AyahRow: View, Equatable {
     @ObservedObject var settings = Settings.shared
     @ObservedObject var quranData = QuranData.shared
+    /// Only the highlighter's wash reads this: the same hue needs a heavier alpha on the dark page to
+    /// register at all, so the tint is resolved per scheme rather than baked into the palette.
+    @Environment(\.colorScheme) private var colorScheme
     /// NOT @ObservedObject: the player is used only inside action closures plus the one
     /// `isPlayingThis` input below. Observing it re-ran EVERY visible row's body once per ayah while
     /// a surah played (`currentAyahNumber` publishes each advance), bypassing `.equatable()` -
@@ -11,11 +34,26 @@ struct AyahRow: View, Equatable {
     /// instead, so an ayah advance re-renders exactly the two rows whose tint changes.
     private var quranPlayer: QuranPlayer { .shared }
 
-    @State private var ayahBeginnerMode = false
+    /// The per-ayah "Beginner Mode" toggle, held in a shared session store rather than in this row's own
+    /// `@State`. A row in a lazy list is torn down when it scrolls away and rebuilt from its inputs when it
+    /// comes back, so private state could not survive - which is why the toggle "sometimes didn't work".
+    @ObservedObject private var beginnerOverrides = AyahBeginnerOverrides.shared
+    private var ayahBeginnerMode: Bool { beginnerOverrides.contains(surah: surah.id, ayah: ayah.id) }
+
+    /// Lines a match FORCED visible (a search hit / arrival showing the transliteration or a translation
+    /// even though its toggle is off), latched for as long as this row stays mounted: clearing the arrival
+    /// used to collapse those lines, shrink the row, and nudge the whole list ("it'll scroll a little up
+    /// or down" - user report). Latched lines keep the row's height stable through the clear; the row is
+    /// recycled once it scrolls away, so the latch resets naturally. Order: translit, saheeh, mustafa, arabic.
+    @State private var latchedForcedLines: [Bool] = [false, false, false, false]
 
     #if os(iOS)
     @State private var showingAyahSheet = false
     @State private var showTafsirSheet = false
+    /// The word of this ayah whose meaning card is up (word-by-word mode). Nil when none is.
+    @State private var tappedWord: TappedWord?
+    /// The word whose riwayah card is up (non-Hafs word tap). Nil when none is.
+    @State private var tappedRiwayahWord: RiwayahTappedWord?
 
     @State private var showingNoteSheet = false
     @State private var draftNote: String = ""
@@ -74,6 +112,7 @@ struct AyahRow: View, Equatable {
         #if os(iOS)
         showingAyahSheet || showTafsirSheet || showingNoteSheet || showCustomRangeSheet
             || showQiraahComparisonSheet || showEnglishComparisonSheet || showSelectTextSheet
+            || tappedWord != nil || tappedRiwayahWord != nil
         #else
         false
         #endif
@@ -142,6 +181,17 @@ struct AyahRow: View, Equatable {
         settings.bookmarkNoteText(surah: surah.id, ayah: ayah.id)
     }
 
+    /// This ayah's highlight, read straight from the bookmark record - a highlight has no storage of its
+    /// own, so there is nothing here to keep in sync with the bookmark.
+    private var ayahHighlight: AyahHighlightColor? {
+        bookmark?.highlight
+    }
+
+    /// What the bookmark badge paints with: the highlight's color when there is one, the accent otherwise.
+    private var bookmarkTint: Color {
+        ayahHighlight?.color ?? settings.accentColor.color
+    }
+
     private var canCompareEnglishText: Bool {
         settings.isHafsDisplay
     }
@@ -168,13 +218,15 @@ struct AyahRow: View, Equatable {
     }
 
     private func spacedArabic(_ text: String) -> String {
-        (settings.beginnerMode || ayahBeginnerMode || forceBeginner) ? text.map { String($0) }.joined(separator: " ") : text
+        (settings.beginnerMode || ayahBeginnerMode || forceBeginner) ? text.beginnerSpaced : text
     }
 
     private func arabicDisplayText() -> String {
         let clean = settings.cleanArabicText
         let qiraahKey = comparisonQiraahOverride ?? (settings.displayQiraahForArabic ?? "Hafs")
-        let key = "\(surah.id):\(ayah.id)|\(clean ? 1 : 0)|\((settings.beginnerMode || ayahBeginnerMode || forceBeginner) ? 1 : 0)|\(qiraahKey)"
+        // The dots flag must be in the key: it changes the text `textCleanArabic` returns for the
+        // same `clean` bit, and nothing purges this cache when the toggle flips.
+        let key = "\(surah.id):\(ayah.id)|\(clean ? 1 : 0)\(settings.removeArabicDots ? 1 : 0)|\((settings.beginnerMode || ayahBeginnerMode || forceBeginner) ? 1 : 0)|\(qiraahKey)"
 
         if let cached = Self.arabicDisplayCache.object(forKey: key as NSString) {
             return cached as String
@@ -193,12 +245,12 @@ struct AyahRow: View, Equatable {
         let qiraahKey = qiraah ?? "Hafs"
         let ayahs = limit.map { Array(surah.ayahs.prefix($0)) } ?? surah.ayahs
 
-        for ayah in ayahs where ayah.existsInQiraah(qiraah) {
-            let key = "\(surah.id):\(ayah.id)|\(clean ? 1 : 0)|\(beginner ? 1 : 0)|\(qiraahKey)" as NSString
+        for ayah in ayahs where ayah.existsInQiraah(qiraah, surahID: surah.id) {
+            let key = "\(surah.id):\(ayah.id)|\(clean ? 1 : 0)\(settings.removeArabicDots ? 1 : 0)|\(beginner ? 1 : 0)|\(qiraahKey)" as NSString
             if Self.arabicDisplayCache.object(forKey: key) != nil { continue }
 
             let baseText = ayah.displayArabicText(surahId: surah.id, clean: clean, qiraahOverride: qiraah)
-            let displayText = beginner ? baseText.map { String($0) }.joined(separator: " ") : baseText
+            let displayText = beginner ? baseText.beginnerSpaced : baseText
             Self.arabicDisplayCache.setObject(displayText as NSString, forKey: key)
         }
     }
@@ -213,7 +265,7 @@ struct AyahRow: View, Equatable {
 
         let sources = MatchSources(
             arabic: settings.cleanSearch(
-                ayah.textArabic(for: comparisonQiraahOverride ?? settings.displayQiraahForArabic),
+                ayah.textArabic(for: comparisonQiraahOverride ?? settings.displayQiraahForArabic, surahID: surah.id),
                 whitespace: false
             ).removingArabicDiacriticsAndSigns,
             transliteration: settings.cleanSearch(ayah.textTransliteration, whitespace: false).removingArabicDiacriticsAndSigns,
@@ -247,6 +299,60 @@ struct AyahRow: View, Equatable {
             && usingHafs
     }
 
+    #if os(iOS)
+    /// The per-word glosses to render this ayah with, or nil when word-by-word is off / can't apply here.
+    ///
+    /// Every condition is a case where a word index would not mean what the pack says it means:
+    /// another riwayah words the ayah differently, beginner mode splits every letter into its own token,
+    /// a comparison column isn't the reader's own text, and an active search needs the tap to belong to
+    /// the search highlight rather than to a word. Multi-select owns the tap outright.
+    private func wordByWordGlosses(displayText: String, beginner: Bool, highlightQuery: String) -> [String]? {
+        guard settings.wordByWordMeanings,
+              settings.showArabicText,
+              settings.isHafsDisplay,
+              !beginner,
+              !isSelecting,
+              comparisonQiraahOverride == nil,
+              highlightQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+        let raw = ayah.displayArabicText(surahId: surah.id, clean: false, qiraahOverride: nil)
+        return WordByWordStore.shared.glosses(
+            surah: surah.id,
+            ayah: ayah.id,
+            rawText: raw,
+            displayText: displayText
+        )
+    }
+    #endif
+
+    /// The reader's normal Arabic - one `Text`, search-highlighted. Extracted so the word-by-word
+    /// renderer can sit beside it as an alternative without duplicating the styling arguments.
+    private func arabicSnippet(source: String, font: Font, preStyled: AttributedString?,
+                               beginner: Bool, suffixFont: Font,
+                               highlightQuery: String, matchedArabic: Bool,
+                               extraRanges: [NSRange] = []) -> some View {
+        HighlightedSnippet(
+            source: source,
+            term: highlightQuery,
+            font: font,
+            accent: settings.accentColor.color,
+            fg: .primary,
+            preStyledSource: preStyled,
+            beginnerMode: beginner,
+            trailingSuffix: " \(ayah.idArabic)",
+            trailingSuffixFont: suffixFont,
+            trailingSuffixColor: ayahNumberColor,
+            highlightAllahNames: settings.highlightAllahNames,
+            guaranteeMatch: matchedArabic,
+            extraHighlightRanges: extraRanges
+        )
+        .arabicFontDesign(custom: true)
+        .id(tajweedAnimationKey)
+        .multilineTextAlignment(.trailing)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .lineLimit(nil)
+    }
+
     private func arabicTajweedText(displayText renderedDisplayText: String, beginner: Bool) -> AttributedString? {
         guard shouldShowTajweedColors else { return nil }
         let text = ayah.displayArabicText(surahId: surah.id, clean: false, qiraahOverride: comparisonQiraahOverride)
@@ -257,6 +363,133 @@ struct AyahRow: View, Equatable {
             displayText: renderedDisplayText,
             cleanDisplayText: settings.cleanArabicText,
             beginnerSpacing: beginner
+        )
+    }
+
+    /// The color of this row's trailing ayah number. The prints ring an ayah's number medallion
+    /// in magenta when its NUMBERING differs from Hafs (a merge/split point of the riwayah's own
+    /// counting) - mirror that here. A fact of the riwayah's text, not a tajweed color, so it
+    /// shows whenever a non-Hafs riwayah with a bundled pack is displayed (same philosophy as
+    /// the always-on word diff tint), independent of the tajweed toggle.
+    private var ayahNumberColor: Color {
+        #if os(iOS)
+        let raw = comparisonQiraahOverride ?? (settings.displayQiraahForArabic ?? "")
+        let tag = Settings.Riwayah.canonicalTag(raw == "Hafs" ? "" : raw)
+        if !tag.isEmpty,
+           QiraahTajweedStore.shared.isKhilafNumbered(tag: tag, surah: surah.id, ayah: ayah.id) {
+            return Color(QiraahTajweedStore.khilafNumberColor)
+        }
+        #endif
+        return settings.accentColor.color
+    }
+
+    #if os(iOS)
+    #if DEBUG
+    /// One-shot launch args for headless verification - taps aren't scriptable in the simulator:
+    /// "-openWordCard N" opens the riwayah word card for word N of the first tappable non-Hafs
+    /// row on screen; "-openQiraahComparison" opens the first such row's comparison sheet.
+    private static var debugWordCardIndex: Int? = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-openWordCard"), i + 1 < args.count else { return nil }
+        return Int(args[i + 1])
+    }()
+    private static var debugOpenComparison = ProcessInfo.processInfo.arguments.contains("-openQiraahComparison")
+    /// The "s:a" the session was launched at (the "-lastRead" arg) - matched directly because the
+    /// live last-read tracking overwrites the defaults as rows scroll past.
+    private static let debugTargetAyah: (surah: Int, ayah: Int)? = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-lastRead"), i + 1 < args.count else { return nil }
+        let parts = args[i + 1].split(separator: ":")
+        guard parts.count == 2, let s = Int(parts[0]), let a = Int(parts[1]) else { return nil }
+        return (s, a)
+    }()
+    #endif
+
+    /// The row's non-Hafs riwayah tag when its WORDS should be tappable: word-by-word mode on
+    /// (the master switch for tappable words), a non-Hafs riwayah with a bundled pack displayed,
+    /// and none of the states where a word index would lie (beginner letter-spacing, multi-select,
+    /// an active search that owns the tap). The card shows the riwayah's rules and the aligned
+    /// Hafs counterpart instead of a gloss - there is no gloss pack for non-Hafs texts.
+    private func riwayahWordTapTag(beginner: Bool, highlightQuery: String) -> String? {
+        guard settings.wordByWordMeanings,
+              settings.showArabicText,
+              !beginner,
+              !isSelecting,
+              highlightQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let raw = comparisonQiraahOverride ?? (settings.displayQiraahForArabic ?? "")
+        let tag = Settings.Riwayah.canonicalTag(raw == "Hafs" ? "" : raw)
+        guard !tag.isEmpty, QiraahTajweedStore.shared.isAvailable(tag: tag) else { return nil }
+        return tag
+    }
+    #endif
+
+    /// The current row's non-Hafs riwayah tag when its print-derived tajweed colors should paint:
+    /// tajweed toggle on, not searching, and the riwayah's tajweed pack is bundled. The pack's
+    /// magenta khilaf words ARE the printed "differs from Hafs" highlighting, so while this is
+    /// non-nil the computed diff tint stands down (even on ayahs the print leaves uncolored).
+    private var riwayahTajweedTag: String? {
+        #if os(iOS)
+        guard settings.showTajweedColors, settings.showArabicText else { return nil }
+        guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let raw = comparisonQiraahOverride ?? (settings.displayQiraahForArabic ?? "")
+        let tag = Settings.Riwayah.canonicalTag(raw == "Hafs" ? "" : raw)
+        guard !tag.isEmpty, QiraahTajweedStore.shared.isAvailable(tag: tag) else { return nil }
+        return tag
+        #else
+        return nil
+        #endif
+    }
+
+    /// Reading a non-Hafs riwayah with tajweed colors on: the display text colored word-by-word
+    /// the way THAT riwayah's printed mushaf colors it (khilaf words, idgham, imalah, ...).
+    /// Word indices come from the same space/NBSP tokenization the extraction used; beginner
+    /// spacing keeps its colors - the store re-tokenizes by the 2+ space original word gaps.
+    private func arabicRiwayahTajweedText(displayText: String, beginner: Bool) -> AttributedString? {
+        #if os(iOS)
+        guard let tag = riwayahTajweedTag else { return nil }
+        return QiraahTajweedStore.shared.attributedText(
+            tag: tag, surah: surah.id, ayah: ayah.id, displayText: displayText,
+            beginnerSpacing: beginner,
+            hiddenRules: settings.riwayahTajweedHiddenRuleSet
+        )
+        #else
+        return nil
+        #endif
+    }
+
+    /// Reading a non-Hafs riwayah with "Highlight Differences from Hafs" on: the display text with
+    /// every word that differs from Hafs an Asim tinted (`QiraahComparison`). This row's id is the
+    /// riwayah's OWN ayah number, so the Hafs reference is looked up through the alignment - a
+    /// merged ayah diffs against BOTH Hafs neighbors it spans. Nil on Hafs, while searching (the
+    /// search paint wins), and in beginner spacing (letter spacing breaks word alignment). Takes
+    /// the tajweed slot, which is free here: tajweed colors are Hafs-only.
+    private func arabicDiffText(displayText: String, beginner: Bool) -> AttributedString? {
+        // Always on: seeing which words differ from Hafs IS the point of reading another riwayah,
+        // so it is no longer a setting. Beginner mode still opts out - its spaced letterforms are
+        // for learning the script, and tinting words on top of that is noise.
+        guard !beginner else { return nil }
+        guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        // The print's own coloring supersedes the computed diff whenever it is active.
+        guard riwayahTajweedTag == nil else { return nil }
+        let raw = comparisonQiraahOverride ?? (settings.displayQiraahForArabic ?? "")
+        let tag = Settings.Riwayah.canonicalTag(raw == "Hafs" ? "" : raw)
+        guard !tag.isEmpty else { return nil }
+
+        let quranData = QuranData.shared
+        let span = QiraahComparison.alignment(surahID: surah.id, tag: tag, quranData: quranData)?
+            .hafsRangeForRiwayah[ayah.id] ?? (ayah.id...ayah.id)
+        var referenceParts: [String] = []
+        for n in span {
+            if let hafsAyah = quranData.ayah(surah: surah.id, ayah: n) {
+                referenceParts.append(hafsAyah.displayArabicText(surahId: surah.id, clean: settings.cleanArabicText, qiraahOverride: ""))
+            }
+        }
+        guard !referenceParts.isEmpty else { return nil }
+        return QiraahComparison.diffAttributed(
+            text: displayText,
+            reference: referenceParts.joined(separator: " "),
+            baseColor: .primary,
+            diffColor: settings.accentColor.color
         )
     }
 
@@ -356,7 +589,8 @@ struct AyahRow: View, Equatable {
             settings.cleanArabicText ? "1" : "0",
             (settings.beginnerMode || ayahBeginnerMode || forceBeginner) ? "1" : "0",
             qiraahKey,
-            categorySignature
+            categorySignature,
+            settings.riwayahTajweedHiddenRules
         ].joined(separator: "|")
     }
 
@@ -404,10 +638,31 @@ struct AyahRow: View, Equatable {
         let anyFieldMatched = rawArabicMatch || mTranslit || mSaheeh || mMustafa
         let mArabic = rawArabicMatch || (hasSearch && !anyFieldMatched)
 
-        let showArabic = settings.showArabicText || mArabic
-        let showTranslit = hafsOnly && (settings.showTransliteration || mTranslit)
-        let showEnglishSaheeh = hafsOnly && (settings.showEnglishSaheeh || mSaheeh)
-        let showEnglishMustafa = hafsOnly && (settings.showEnglishMustafa || mMustafa)
+        // Cross-language word highlight, the search rows' behavior brought into the reader itself: an
+        // Arabic term (typed in the in-surah search, or riding a search-arrival) also lights its aligned
+        // ENGLISH words, and an English term lights the Arabic tokens whose gloss carries it.
+        #if os(iOS)
+        let cross = hasSearch ? crossLanguageSpans(query: activeTerm)
+                              : (arabic: [NSRange](), saheeh: [NSRange](), mustafa: [NSRange]())
+        #else
+        let cross: (arabic: [NSRange], saheeh: [NSRange], mustafa: [NSRange]) = ([], [], [])
+        #endif
+
+        // Cross spans FORCE the opposite-language line visible (the search rows' rule): an Arabic hit
+        // whose aligned English words were found must show them even when the translation toggle is off.
+        // Saheeh takes precedence when both translations would be forced. Forced lines are LATCHED (see
+        // `latchedForcedLines`) so clearing the arrival doesn't shrink the row and jiggle the list.
+        let forcedTranslit = hafsOnly && mTranslit
+        let forcedSaheeh = hafsOnly && (mSaheeh || !cross.saheeh.isEmpty)
+        let forcedMustafa = hafsOnly && (mMustafa || (!cross.mustafa.isEmpty && !forcedSaheeh))
+        let forcedArabic = !settings.showArabicText && (mArabic || !cross.arabic.isEmpty)
+        let forcedNow = [forcedTranslit, forcedSaheeh, forcedMustafa, forcedArabic]
+
+        let showArabic = settings.showArabicText || forcedArabic || latchedForcedLines[3]
+        let showTranslit = hafsOnly && (settings.showTransliteration || forcedTranslit || latchedForcedLines[0])
+        let showEnglishSaheeh = hafsOnly && (settings.showEnglishSaheeh || forcedSaheeh || latchedForcedLines[1])
+        let showEnglishMustafa = hafsOnly
+            && (settings.showEnglishMustafa || forcedMustafa || latchedForcedLines[2])
         let highlightQuery = hasSearch ? queryForInlineHighlight(activeTerm) : ""
         let fontSizeEN = settings.englishFontSize
 
@@ -419,6 +674,13 @@ struct AyahRow: View, Equatable {
         let showSelectionTint = isSelecting && isSelected
         let showAttentionTint = !isPlayingThis && !isSelecting && (isHighlighted || anyAyahSheetOpen)
 
+        // The highlighter's wash. It is the quietest of the four tints on purpose: the recitation tint,
+        // the selection tint, and the attention tint are all momentary - what the app is doing right now -
+        // while the highlight is a standing mark the user left, and it must not compete with them for the
+        // same row. So a highlighted ayah shows its color only when nothing momentary is on it, and the
+        // color comes back the moment the reciter moves on.
+        let highlightWash = ayahHighlight
+
         ZStack {
             if isPlayingThis || showAttentionTint || showSelectionTint {
                 RoundedRectangle(cornerRadius: 24)
@@ -429,42 +691,56 @@ struct AyahRow: View, Equatable {
                     )
                     .padding(.horizontal, -12)
                     .padding(.vertical, ayahHighlightBackgroundVerticalPadding)
+            } else if let highlightWash {
+                RoundedRectangle(cornerRadius: 24)
+                    .fill(highlightWash.tint(colorScheme))
+                    .padding(.horizontal, -12)
+                    .padding(.vertical, ayahHighlightBackgroundVerticalPadding)
             }
 
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 4) {
-                    ZStack(alignment: .topTrailing) {
-                        Text("\(surah.id):\(ayah.id)")
-                            .font(.subheadline.monospacedDigit().weight(.semibold))
-                            .foregroundColor(settings.accentColor.color)
-                            .padding(5)
-                            .frame(width: 60, height: 28)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.5)
-                            .conditionalGlassEffect(
-                                useColor: isBookmarked ? 0.3 : nil,
-                                customTint: isBookmarked ? settings.accentColor.color : nil,
-                                interactive: false
-                            )
-                            .onTapGesture {
-                                settings.hapticFeedback()
-                                toggleBookmarkWithNoteGuard()
-                            }
-
-                        if isBookmarked {
-                            Image(systemName: "bookmark.fill")
-                                .font(.caption2)
-                                .foregroundStyle(settings.accentColor.color)
-                                .padding(4)
-                                .offset(x: 8, y: -6)
-                        } else if isLastListened {
-                            Image(systemName: "speaker.wave.2.fill")
-                                .font(.caption2)
-                                .foregroundStyle(settings.accentColor.color)
-                                .padding(4)
-                                .offset(x: 8, y: -6)
+                    Text("\(surah.id):\(ayah.id)")
+                        .font(.subheadline.monospacedDigit().weight(.semibold))
+                        .foregroundColor(settings.accentColor.color)
+                        .padding(5)
+                        .frame(width: 60, height: 28)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .conditionalGlassEffect(
+                            useColor: isBookmarked ? 0.3 : nil,
+                            customTint: isBookmarked ? bookmarkTint : nil,
+                            interactive: false
+                        )
+                        .onTapGesture {
+                            settings.hapticFeedback()
+                            toggleBookmarkWithNoteGuard()
                         }
-                    }
+                        // The bookmark keeps the RIGHT corner - that is where saving an ayah has always
+                        // shown up. The listening badge moves to the LEFT (user rule), so the two no longer
+                        // compete for one corner: an ayah that is both bookmarked and the last one listened
+                        // to now shows both, instead of the bookmark silently hiding the speaker.
+                        .overlay(alignment: .topTrailing) {
+                            if isBookmarked {
+                                // The bookmark wears the highlight's color when the ayah is highlighted,
+                                // and the accent when it isn't - so the color you picked is visible from
+                                // the row's badge alone, without reading the wash behind the text.
+                                Image(systemName: "bookmark.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(bookmarkTint)
+                                    .padding(4)
+                                    .offset(x: 8, y: -6)
+                            }
+                        }
+                        .overlay(alignment: .topLeading) {
+                            if isLastListened {
+                                Image(systemName: "speaker.wave.2.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(settings.accentColor.color)
+                                    .padding(4)
+                                    .offset(x: -6, y: -6)
+                            }
+                        }
 
                     Spacer()
 
@@ -611,7 +887,10 @@ struct AyahRow: View, Equatable {
                     matchedArabic: mArabic,
                     matchedTranslit: mTranslit,
                     matchedSaheeh: mSaheeh,
-                    matchedMustafa: mMustafa
+                    matchedMustafa: mMustafa,
+                    crossArabic: cross.arabic,
+                    crossSaheeh: cross.saheeh,
+                    crossMustafa: cross.mustafa
                 )
                 .padding(.bottom, 2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -628,6 +907,33 @@ struct AyahRow: View, Equatable {
             }
         }
         .animation(.easeInOut(duration: 0.15), value: isSelecting)
+        #if os(iOS)
+        // Report this row's sheet state to the shared tracker so the reader's follow-the-recitation
+        // scroll holds still while one of this row's sheets is up (see `AyahSheetPresence`).
+        .onChange(of: anyAyahSheetOpen) { open in
+            if open {
+                AyahSheetPresence.shared.sheetOpened()
+            } else {
+                AyahSheetPresence.shared.sheetClosed()
+            }
+        }
+        // If the row leaves the hierarchy while its flag is still set (e.g. the reader is popped with a
+        // sheet open), the onChange(false) above never fires - release the claim here so the follow
+        // scroll is never left disabled.
+        .onDisappear {
+            if anyAyahSheetOpen {
+                AyahSheetPresence.shared.sheetClosed()
+            }
+        }
+        #endif
+        // Latch every line a match forces visible - one-way, cleared only by row recycling - so the
+        // arrival-clear tap never changes this row's height (the list-jiggle fix; see the state's doc).
+        .onAppear {
+            for i in forcedNow.indices where forcedNow[i] { latchedForcedLines[i] = true }
+        }
+        .onChange(of: forcedNow) { now in
+            for i in now.indices where now[i] { latchedForcedLines[i] = true }
+        }
         .contentShape(Rectangle())
         .onTapGesture {
             if isSelecting {
@@ -748,7 +1054,99 @@ struct AyahRow: View, Equatable {
             .environmentObject(settings)
             .smallMediumSheetPresentation()
         }
+        // Word-by-word: the card for the word the reader tapped. `item:` rather than `isPresented:` so
+        // tapping a DIFFERENT word while the card is up re-presents it with the new word instead of
+        // leaving the old one on screen.
+        .sheet(item: $tappedWord) { tapped in
+            WordMeaningSheet(
+                surah: surah,
+                ayah: ayah,
+                word: tapped.word,
+                meaning: tapped.meaning,
+                position: tapped.index + 1,
+                total: tapped.total
+            )
+            .environmentObject(settings)
+        }
+        // The riwayah word card: this riwayah's rules on the tapped word plus its Hafs counterpart.
+        .sheet(item: $tappedRiwayahWord) { tapped in
+            RiwayahWordSheet(
+                surah: surah,
+                ayah: ayah,
+                tag: tapped.tag,
+                word: tapped.word,
+                index: tapped.index,
+                total: tapped.total
+            )
+            .environmentObject(settings)
+        }
         #endif
+    }
+
+    #if os(iOS)
+    /// Cross-language spans for the reader's own rows - the search rows' `crossLanguageSpans`, with the
+    /// same guards (Hafs display, no beginner letter-spacing, gloss pack bundled; comparison columns are
+    /// another riwayah's text, so they opt out). Arabic query → aligned English words in each translation;
+    /// English query → the Arabic tokens whose gloss carries it. Per-ayah exact alignment first, then the
+    /// corpus lexicon fallback, exactly like the search results - so tapping a hit and landing here shows
+    /// the same words lit that the result row showed.
+    private func crossLanguageSpans(query: String) -> (arabic: [NSRange], saheeh: [NSRange], mustafa: [NSRange]) {
+        let trimmed = queryForInlineHighlight(query)
+        guard !trimmed.isEmpty,
+              settings.isHafsDisplay,
+              comparisonQiraahOverride == nil,
+              !(settings.beginnerMode || ayahBeginnerMode || forceBeginner),
+              WordByWordStore.isBundled else { return ([], [], []) }
+
+        let displayText = arabicDisplayText()
+        // The gloss pack's token order is defined against the RAW (unstripped) text; with "Hide
+        // Tashkeel and Signs" off the display text IS raw, so the second resolve is skipped.
+        let rawText = settings.cleanArabicText
+            ? ayah.displayArabicText(surahId: surah.id, clean: false, qiraahOverride: nil)
+            : displayText
+
+        if trimmed.containsArabicLetters {
+            // Per-ayah exact terms UNIONED with the corpus lexicon's - not a fallback. The aligned gloss
+            // is one wording of the word ("straitened"); the lexicon carries the word family's gloss
+            // variants from every occurrence, which is what bridges to a translation that phrased it
+            // differently ("confining"). The union is what "maximize" buys here.
+            var terms = CrossLanguageWordHighlight.englishTermsForArabicMatch(
+                query: trimmed, surah: surah.id, ayah: ayah.id, rawText: rawText, displayText: displayText
+            )
+            for term in CrossLanguageWordHighlight.englishTermsForUnalignedArabicQuery(trimmed)
+            where !terms.contains(term) {
+                terms.append(term)
+            }
+            // The morphological Arabic spans are ADDITIVE: tokens of the same word family the plain
+            // highlighter misses (صلاتهم for a صلاة query) light up in the Arabic line too.
+            let arabicExtra = CrossLanguageWordHighlight.arabicSpansForArabicQuery(
+                query: trimmed, in: displayText
+            )
+            guard !terms.isEmpty || !arabicExtra.isEmpty else { return ([], [], []) }
+            return (arabicExtra,
+                    CrossLanguageWordHighlight.wordSpans(of: terms, in: ayah.textEnglishSaheeh),
+                    CrossLanguageWordHighlight.wordSpans(of: terms, in: ayah.textEnglishMustafa))
+        } else {
+            // Union here too: the per-ayah alignment and the corpus lexicon each catch tokens the
+            // other misses (an inflected form the exact gloss missed; a gloss wording the lexicon
+            // dropped under its noise cap).
+            var spans = CrossLanguageWordHighlight.arabicSpansForEnglishMatch(
+                query: trimmed, surah: surah.id, ayah: ayah.id, rawText: rawText, displayText: displayText
+            )
+            for span in CrossLanguageWordHighlight.arabicSpansForEnglishQuery(trimmed, arabicText: displayText)
+            where !spans.contains(where: { NSIntersectionRange($0, span).length > 0 }) {
+                spans.append(span)
+            }
+            return (spans, [], [])
+        }
+    }
+    #endif
+
+    /// Shifts UTF-16 spans forward when the rendered line carries an "N. " prefix the spans were not
+    /// computed against.
+    private static func offsetSpans(_ spans: [NSRange], by offset: Int) -> [NSRange] {
+        guard offset > 0, !spans.isEmpty else { return spans }
+        return spans.map { NSRange(location: $0.location + offset, length: $0.length) }
     }
 
     @ViewBuilder
@@ -762,7 +1160,10 @@ struct AyahRow: View, Equatable {
         matchedArabic: Bool = false,
         matchedTranslit: Bool = false,
         matchedSaheeh: Bool = false,
-        matchedMustafa: Bool = false
+        matchedMustafa: Bool = false,
+        crossArabic: [NSRange] = [],
+        crossSaheeh: [NSRange] = [],
+        crossMustafa: [NSRange] = []
     ) -> some View {
         let groupHasEnglishOrTranslit = showTranslit || showEnglishSaheeh || showEnglishMustafa
         let prefixOnTranslit  = groupHasEnglishOrTranslit && showTranslit
@@ -801,13 +1202,15 @@ struct AyahRow: View, Equatable {
 
             muqattaatPronunciationBlock()
 
+
             if showArabic {
                 let beginner = settings.beginnerMode || ayahBeginnerMode || forceBeginner
                 let arabicSource = arabicDisplayText()
-                // "Basic" font (and the dots-removed mode) render with the standard Apple system font. The design is
-                // named explicitly rather than inherited, because this view opts out of the app-wide rounded design
-                // below (its ayah-number suffix always uses a bundled face, which that design would clobber).
-                let useSystemArabic = settings.removeArabicDots || settings.quranUsesSystemArabicFont
+                // "Basic" font renders with the standard Apple system font. The design is named explicitly rather
+                // than inherited, because this view opts out of the app-wide rounded design below (its ayah-number
+                // suffix always uses a bundled face, which that design would clobber). Dots-removed text stays in
+                // the chosen bundled face - the ttfs carry real dotless glyphs now (patch_dotless_glyphs.py).
+                let useSystemArabic = settings.quranUsesSystemArabicFont
                 let arabicFont: Font = useSystemArabic
                     ? .system(size: settings.fontArabicSize, design: .rounded)
                     : .custom(
@@ -817,26 +1220,121 @@ struct AyahRow: View, Equatable {
                 // The ayah-end marker is always the Hafs Uthmani face: that font is what renders the digits as the
                 // circled-flower ornament, so falling back to the system font here would print bare digits instead.
                 let suffixFont: Font = .custom(Settings.hafsUthmaniFontName, size: settings.fontArabicSize)
+                let preStyled = arabicTajweedText(displayText: arabicSource, beginner: beginner)
+                    ?? arabicRiwayahTajweedText(displayText: arabicSource, beginner: beginner)
+                    ?? arabicDiffText(displayText: arabicSource, beginner: beginner)
 
-                HighlightedSnippet(
-                    source: arabicSource,
-                    term: highlightQuery,
-                    font: arabicFont,
-                    accent: settings.accentColor.color,
-                    fg: .primary,
-                    preStyledSource: arabicTajweedText(displayText: arabicSource, beginner: beginner),
-                    beginnerMode: beginner,
-                    trailingSuffix: " \(ayah.idArabic)",
-                    trailingSuffixFont: suffixFont,
-                    trailingSuffixColor: settings.accentColor.color,
-                    highlightAllahNames: settings.highlightAllahNames,
-                    guaranteeMatch: matchedArabic
-                )
-                .arabicFontDesign(custom: true)
-                .id(tajweedAnimationKey)
-                .multilineTextAlignment(.trailing)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .lineLimit(nil)
+                #if os(iOS)
+                if let glosses = wordByWordGlosses(displayText: arabicSource, beginner: beginner,
+                                                   highlightQuery: highlightQuery) {
+                    let selectWord: (Int) -> Void = { index in
+                        tappedWord = TappedWord(
+                            index: index,
+                            word: WordTokens.tokens(in: arabicSource)[index],
+                            meaning: glosses[index],
+                            total: glosses.count
+                        )
+                    }
+                    if settings.wordByWordInline {
+                        // The study layout: each word a column with its meaning beneath it. Tapping
+                        // still opens the same word card.
+                        WordByWordInlineText(
+                            displayText: arabicSource,
+                            preStyled: preStyled,
+                            fontName: useSystemArabic
+                                ? nil
+                                : ayahArabicFontName(for: comparisonQiraahOverride ?? settings.displayQiraahForArabic),
+                            fontSize: CGFloat(settings.fontArabicSize),
+                            ayahNumberArabic: ayah.idArabic,
+                            glosses: glosses,
+                            selectedWord: tappedWord?.index,
+                            onSelectWord: selectWord
+                        )
+                        .id(tajweedAnimationKey)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    } else {
+                        // Same text, same colors - rendered through TextKit so a single word can be tapped.
+                        WordByWordText(
+                            displayText: arabicSource,
+                            preStyled: preStyled,
+                            fontName: useSystemArabic
+                                ? nil
+                                : ayahArabicFontName(for: comparisonQiraahOverride ?? settings.displayQiraahForArabic),
+                            fontSize: CGFloat(settings.fontArabicSize),
+                            ayahNumberArabic: ayah.idArabic,
+                            glosses: glosses,
+                            selectedWord: tappedWord?.index,
+                            onSelectWord: selectWord
+                        )
+                        .id(tajweedAnimationKey)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+
+                } else if let riwayahTag = riwayahWordTapTag(beginner: beginner, highlightQuery: highlightQuery) {
+                    // Non-Hafs word tap: same tappable TextKit rendering, no glosses - the tap opens
+                    // the riwayah word card (this riwayah's rules + the Hafs counterpart) instead.
+                    WordByWordText(
+                        displayText: arabicSource,
+                        preStyled: preStyled,
+                        fontName: useSystemArabic
+                            ? nil
+                            : ayahArabicFontName(for: comparisonQiraahOverride ?? settings.displayQiraahForArabic),
+                        fontSize: CGFloat(settings.fontArabicSize),
+                        ayahNumberArabic: ayah.idArabic,
+                        glosses: [],
+                        alwaysTappable: true,
+                        selectedWord: tappedRiwayahWord?.index,
+                        onSelectWord: { index in
+                            let tokens = WordTokens.tokens(in: arabicSource)
+                            guard tokens.indices.contains(index) else { return }
+                            tappedRiwayahWord = RiwayahTappedWord(
+                                index: index,
+                                word: tokens[index],
+                                total: tokens.count,
+                                tag: riwayahTag
+                            )
+                        }
+                    )
+                    .id(tajweedAnimationKey)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    #if DEBUG
+                    .onAppear {
+                        // Only the launch-target row consumes the one-shot: any other row may be a
+                        // recycled off-screen cell whose sheet SwiftUI immediately tears down.
+                        guard let target = Self.debugTargetAyah,
+                              target.surah == surah.id, target.ayah == ayah.id else { return }
+                        if let idx = Self.debugWordCardIndex {
+                            Self.debugWordCardIndex = nil
+                            let tokens = WordTokens.tokens(in: arabicSource)
+                            if tokens.indices.contains(idx) {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                    tappedRiwayahWord = RiwayahTappedWord(
+                                        index: idx, word: tokens[idx], total: tokens.count, tag: riwayahTag
+                                    )
+                                }
+                            }
+                        }
+                        if Self.debugOpenComparison {
+                            Self.debugOpenComparison = false
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                showQiraahComparisonSheet = true
+                            }
+                        }
+                    }
+                    #endif
+
+                } else {
+                    arabicSnippet(source: arabicSource, font: arabicFont, preStyled: preStyled,
+                                  beginner: beginner, suffixFont: suffixFont,
+                                  highlightQuery: highlightQuery, matchedArabic: matchedArabic,
+                                  extraRanges: crossArabic)
+                }
+                #else
+                arabicSnippet(source: arabicSource, font: arabicFont, preStyled: preStyled,
+                              beginner: beginner, suffixFont: suffixFont,
+                              highlightQuery: highlightQuery, matchedArabic: matchedArabic,
+                              extraRanges: crossArabic)
+                #endif
             }
 
             if showTranslit {
@@ -856,7 +1354,8 @@ struct AyahRow: View, Equatable {
             }
 
             if showEnglishSaheeh {
-                let txt = prefixOnSaheeh ? "\(ayah.id). \(ayah.textEnglishSaheeh)" : ayah.textEnglishSaheeh
+                let prefix = prefixOnSaheeh ? "\(ayah.id). " : ""
+                let txt = prefix + ayah.textEnglishSaheeh
                 VStack(alignment: .leading, spacing: 4) {
                     HighlightedSnippet(
                         source: txt,
@@ -865,7 +1364,8 @@ struct AyahRow: View, Equatable {
                         accent: settings.accentColor.color,
                         fg: .primary,
                         highlightAllahNames: settings.highlightAllahNames,
-                        guaranteeMatch: matchedSaheeh
+                        guaranteeMatch: matchedSaheeh,
+                        extraHighlightRanges: Self.offsetSpans(crossSaheeh, by: (prefix as NSString).length)
                     )
                     Text("- Saheeh International")
                         .font(.caption)
@@ -877,7 +1377,8 @@ struct AyahRow: View, Equatable {
             }
 
             if showEnglishMustafa {
-                let txt = prefixOnMustafa ? "\(ayah.id). \(ayah.textEnglishMustafa)" : ayah.textEnglishMustafa
+                let prefix = prefixOnMustafa ? "\(ayah.id). " : ""
+                let txt = prefix + ayah.textEnglishMustafa
                 VStack(alignment: .leading, spacing: 4) {
                     HighlightedSnippet(
                         source: txt,
@@ -886,7 +1387,8 @@ struct AyahRow: View, Equatable {
                         accent: settings.accentColor.color,
                         fg: .primary,
                         highlightAllahNames: settings.highlightAllahNames,
-                        guaranteeMatch: matchedMustafa
+                        guaranteeMatch: matchedMustafa,
+                        extraHighlightRanges: Self.offsetSpans(crossMustafa, by: (prefix as NSString).length)
                     )
                     Text("- Clear Quran (Mustafa Khattab)")
                         .font(.caption)
@@ -1092,6 +1594,18 @@ struct AyahRow: View, Equatable {
                 )
             }
 
+            // Directly under the bookmark row, because it IS a bookmark action: picking a color saves
+            // the ayah and paints its bookmark in that color - the same Highlight menu page mode's
+            // actions sheet and the history cards already offer (list-mode parity, user rule).
+            Menu {
+                ayahHighlightMenuItems(surah: surah.id, ayah: ayah.id, settings: settings)
+            } label: {
+                Label(
+                    ayahHighlight == nil ? "Highlight" : "Highlight: \(ayahHighlight!.title)",
+                    systemImage: "highlighter"
+                )
+            }
+
             Button {
                 settings.hapticFeedback()
                 if !isBookmarked {
@@ -1132,7 +1646,7 @@ struct AyahRow: View, Equatable {
                 Button {
                     settings.hapticFeedback()
                     withAnimation {
-                        ayahBeginnerMode.toggle()
+                        beginnerOverrides.toggle(surah: surah.id, ayah: ayah.id)
                     }
                 } label: {
                     Label("Beginner Mode",

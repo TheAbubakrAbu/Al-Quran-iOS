@@ -71,13 +71,134 @@ final class Settings: ObservableObject {
 
         loadKhatmProgressCacheFromStorage()
 
+        #if DEBUG
+        // Headless riwayah forcing for simulator verification: `-displayQiraah <tag>` seeds the
+        // riwayah + beta unlock BEFORE anything derives from them. Raw UserDefaults writes on
+        // purpose - property didSets must not fire during init, and `simctl spawn defaults write`
+        // races cfprefsd on freshly-installed containers.
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-displayQiraah"),
+           ProcessInfo.processInfo.arguments.indices.contains(idx + 1) {
+            UserDefaults.standard.set(true, forKey: "betaQiraatEnabled")
+            UserDefaults.standard.set(true, forKey: "acceptedBetaQiraatNotice")
+            UserDefaults.standard.set(true, forKey: "showOtherQiraatReciters")
+            UserDefaults.standard.set(ProcessInfo.processInfo.arguments[idx + 1], forKey: "displayQiraah")
+        }
+        if ProcessInfo.processInfo.arguments.contains("-quranPageMode") {
+            UserDefaults.standard.set(true, forKey: "quranPageMode")
+            UserDefaults.standard.set(112, forKey: "lastReadSurah")
+            UserDefaults.standard.set(1, forKey: "lastReadAyah")
+        }
+        // The counterpart, for verifying the LIST reader headlessly: `simctl spawn defaults write
+        // quranPageMode -bool NO` reads back as 0 but the app still opens the page reader (cfprefsd serves
+        // its cached copy), so turning page mode OFF needed a launch argument of its own. Seeds the same
+        // last-read position, so the reader lands somewhere rather than at the surah list.
+        if ProcessInfo.processInfo.arguments.contains("-quranListMode") {
+            UserDefaults.standard.set(false, forKey: "quranPageMode")
+            UserDefaults.standard.set(112, forKey: "lastReadSurah")
+            UserDefaults.standard.set(1, forKey: "lastReadAyah")
+        }
+        // "-lastRead 2:29" - open the reader at that position. Manual `simctl spawn defaults write`
+        // can't do this (cfprefsd serves the app its cached copy), so verifying a SPECIFIC ayah's
+        // rendering headlessly needs the seed to happen in-process. Placed after -quranPageMode /
+        // -quranListMode so it overrides their 112:1 seed when combined.
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-lastRead"),
+           idx + 1 < ProcessInfo.processInfo.arguments.count {
+            let parts = ProcessInfo.processInfo.arguments[idx + 1].split(separator: ":")
+            if parts.count == 2, let s = Int(parts[0]), let a = Int(parts[1]) {
+                UserDefaults.standard.set(s, forKey: "lastReadSurah")
+                UserDefaults.standard.set(a, forKey: "lastReadAyah")
+            }
+        }
+        if ProcessInfo.processInfo.arguments.contains("-qiraatComparisonMode") {
+            UserDefaults.standard.set(true, forKey: "qiraatComparisonMode")
+        }
+        // Same headless-verification pattern for the facsimile: `-mushafPageLanguage pdf` puts page
+        // mode on the printed mushaf, `-mushafPDFAppearance light|night|auto` pins its lighting.
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-mushafPageLanguage"),
+           ProcessInfo.processInfo.arguments.indices.contains(idx + 1) {
+            UserDefaults.standard.set(ProcessInfo.processInfo.arguments[idx + 1], forKey: "mushafPageLanguage")
+        }
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-mushafPDFAppearance"),
+           ProcessInfo.processInfo.arguments.indices.contains(idx + 1) {
+            UserDefaults.standard.set(ProcessInfo.processInfo.arguments[idx + 1], forKey: "mushafPDFAppearance")
+        }
+        // "-seedBool key=1[,key=0…]" - raw UserDefaults bool seeds BEFORE anything derives from
+        // them, for headless verification of boolean @AppStorage settings (external `defaults
+        // write` between launches is unreliable - the app's cached prefs resurrect old values).
+        // E.g. `-seedBool cleanArabicText=1,removeArabicDots=1` or `-seedBool wordByWordInline=1`.
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-seedBool"),
+           ProcessInfo.processInfo.arguments.indices.contains(idx + 1) {
+            for pair in ProcessInfo.processInfo.arguments[idx + 1].split(separator: ",") {
+                let kv = pair.split(separator: "=", maxSplits: 1)
+                if kv.count == 2, let value = Int(kv[1]) {
+                    UserDefaults.standard.set(value != 0, forKey: String(kv[0]))
+                }
+            }
+        }
+        // "-settingsProbe key=value[,key=value…]" - applies the writes ~6s AFTER launch, in-process
+        // through the normal setters. This is the only way to reproduce "I changed a font setting and
+        // the visible rows didn't update" headlessly: the sliders aren't tappable from simctl, and an
+        // external `defaults write` never reaches a running app's @AppStorage. Screenshot before ~5s
+        // and after ~9s; any visible row still on the old value is a stale Equatable row.
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-settingsProbe"),
+           ProcessInfo.processInfo.arguments.indices.contains(idx + 1) {
+            // Each step is "key=value[@delaySeconds]" (default 6s), so one run can change a setting on
+            // one tab and then LOOK at another: "fontArabicSize=44@6,tab=quran@10". "tab=" posts the
+            // debug tab-switch notification rather than writing a setting.
+            let spec = ProcessInfo.processInfo.arguments[idx + 1]
+            for pair in spec.split(separator: ",") {
+                let stepAndDelay = pair.split(separator: "@", maxSplits: 1)
+                let kv = stepAndDelay[0].split(separator: "=", maxSplits: 1).map(String.init)
+                guard kv.count == 2 else { continue }
+                let delay = stepAndDelay.count == 2 ? (Double(stepAndDelay[1]) ?? 6) : 6
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    let shared = Settings.shared
+                    switch kv[0] {
+                    case "fontArabicSize": shared.fontArabicSize = Double(kv[1]) ?? shared.fontArabicSize
+                    case "englishFontSize": shared.englishFontSize = Double(kv[1]) ?? shared.englishFontSize
+                    case "fontArabic": shared.fontArabic = kv[1]
+                    case "useFontArabic": shared.useFontArabic = kv[1] == "1"
+                    case "hadithArabicFontSize": shared.hadithArabicFontSize = Double(kv[1]) ?? shared.hadithArabicFontSize
+                    case "hadithEnglishFontSize": shared.hadithEnglishFontSize = Double(kv[1]) ?? shared.hadithEnglishFontSize
+                    case "islamArabicFace": shared.islamArabicFace = IslamArabicFace(rawValue: kv[1]) ?? shared.islamArabicFace
+                    case "tab":
+                        NotificationCenter.default.post(name: Notification.Name("AlIslamDebugSwitchTab"), object: kv[1])
+                    default: break
+                    }
+                }
+            }
+        }
+        #endif
+
         runQuranStartupMigrations()
         runWatchSyncKeyMigration()
 
+        #if os(watchOS)
+        // Reading themes (Sepia/Gray/Custom) are phone-only looks: earlier builds synced the phone's
+        // theme over, which painted the watch's whole ground gray and - through the flat themed
+        // row color - erased its native rounded section cards. Reduce an already-stored theme to
+        // the base scheme it sits on; the sync layer no longer sends theme values at all.
+        if ["sepia", "gray", "custom"].contains(colorSchemeString) {
+            colorSchemeString = Self.baseColorScheme(colorSchemeString, customHex: customBackgroundColorHex)
+        }
+        #endif
+
         // Hadith Allah-highlighting used to follow the Quran toggle; when the setting split in two,
         // seed the new key from the old one so nothing visibly changes until the user flips it.
-        if UserDefaults.standard.object(forKey: "highlightAllahNamesHadith") == nil {
-            UserDefaults.standard.set(UserDefaults.standard.bool(forKey: "highlightAllahNames"), forKey: "highlightAllahNamesHadith")
+        // Only an EXPLICITLY stored Quran value is copied: `bool(forKey:)` reads an absent key as
+        // false, and writing THAT would pin the hadith toggle to a stored false on fresh installs -
+        // silently overriding the (now-true) default the absent key is supposed to fall through to.
+        if UserDefaults.standard.object(forKey: "highlightAllahNamesHadith") == nil,
+           let storedQuranValue = UserDefaults.standard.object(forKey: "highlightAllahNames") as? Bool {
+            UserDefaults.standard.set(storedQuranValue, forKey: "highlightAllahNamesHadith")
+        }
+        // Undo the phantom seed older builds already made: a stored-false hadith key NEXT TO an absent
+        // Quran key can only be that old migration's write (it "preserved" what was itself just the old
+        // default) - remove it so a user who never touched either toggle gets the new ON default on both.
+        if UserDefaults.standard.object(forKey: "highlightAllahNames") == nil,
+           let storedHadithValue = UserDefaults.standard.object(forKey: "highlightAllahNamesHadith") as? Bool,
+           storedHadithValue == false {
+            UserDefaults.standard.removeObject(forKey: "highlightAllahNamesHadith")
         }
         isReadyForUI = true
     }
@@ -108,6 +229,11 @@ final class Settings: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
+    /// Posted by a full erase (`resetAllSettings(keepingContent: false)`) so in-memory stores that live
+    /// outside this file can drop their copies of the user's content. The domain wipe clears what's on
+    /// disk; this clears what's already loaded.
+    static let contentErasedNotification = Notification.Name("alIslamContentErased")
+
     /// Restores every *preference* (appearance, prayer, and Quran options) to its default while keeping the
     /// user's content. We wipe the app's standard-defaults domain - which clears all the `@AppStorage`
     /// preferences in one shot - but first snapshot the content keys and write them back afterward, then
@@ -132,6 +258,10 @@ final class Settings: ObservableObject {
             "hadithLastReadByBook", "hadithSearchHistoryData", "hadithOfTheDayHistory", "hadithBookCounts",
             // Tally counts (and the free counter's custom label, which is the user's own text).
             "tasbihFreeCount", "tasbihPresetCounts", "tasbihFreeLabel",
+            // The achievement ledger. Kept alongside the content it was earned from: the badges are
+            // a record of what the user DID, and wiping them here would silently re-seed the whole
+            // cabinet (dates and all) off data that itself survived the reset.
+            "achievementUnlockedAt", "achievementsSeeded",
             // Only wiped by a full erase: these are stats/history rather than saved items, but they're still
             // the user's, not preferences.
             "surahOpenCountsData", "surahPlayCountsData",
@@ -156,6 +286,11 @@ final class Settings: ObservableObject {
         // the widgets' copy of everything, and the one-shot migration flags. That's what makes it equivalent to
         // deleting and reinstalling the app, rather than just to clearing this process's defaults.
         if !keepingContent {
+            // The badges go with the content they were earned from, and the in-memory ledger has to
+            // be told: it holds a @Published dictionary the domain wipe alone would not touch.
+            // Announced rather than called, because this file also compiles into the widget and
+            // complication targets, which don't ship the achievements module.
+            NotificationCenter.default.post(name: Self.contentErasedNotification, object: nil)
             appGroupUserDefaults?.removePersistentDomain(forName: AppIdentifiers.appGroupSuiteName)
             explicitlySetKeys.removeAll()
         }
@@ -438,8 +573,21 @@ final class Settings: ObservableObject {
     @AppStorage("mushafPageLanguage") var mushafPageLanguage: String = MushafPageLanguage.arabic.rawValue
 
     var resolvedMushafPageLanguage: MushafPageLanguage {
-        MushafPageLanguage(rawValue: mushafPageLanguage) ?? .arabic
+        let base = MushafPageLanguage(rawValue: mushafPageLanguage) ?? .arabic
+        #if os(iOS)
+        // A beta riwayah whose text hasn't been opted into: the composed Arabic page
+        // would show the unaccepted transcription, so page mode reads the riwayah's
+        // own printed mushaf instead - the exact print, nothing beta about it.
+        // (All 12 beta riwayat ship their facsimile.) English pages stay English.
+        if base == .arabic, displayBetaTextConsentNeeded { return .pdf }
+        #endif
+        return base
     }
+
+    /// How the printed-mushaf PDF is lit: "auto" (default) follows the app's light/dark appearance, so a
+    /// dark app shows the print inverted without being asked; "light"/"night" pin it either way. The
+    /// invert is hue-preserving (the green border stays green). Raw `MushafPDFAppearance` value.
+    @AppStorage("mushafPDFAppearance") var mushafPDFAppearance: String = MushafPDFAppearance.auto.rawValue
     /// Shows the spelled-out pronunciation aid above muqatta'at ayahs (e.g. أَلِفۡ لَآم مِيٓمۡ). Off by default.
     @AppStorage("showMuqattaatHelper") var showMuqattaatHelper = false
 
@@ -525,6 +673,28 @@ final class Settings: ObservableObject {
     func surahOpenCount(_ surahID: Int) -> Int { decodeSurahCounts(surahOpenCountsData)[surahID] ?? 0 }
     func surahPlayCount(_ surahID: Int) -> Int { decodeSurahCounts(surahPlayCountsData)[surahID] ?? 0 }
 
+    // The whole map at once. The per-surah accessors above decode the JSON on EVERY call, which is fine
+    // for a surah header (one call, one surah on screen) and quadratic-feeling for anything that wants
+    // all 114 - the profile's totals asked for 228 decodes per pass before these existed.
+    var allSurahOpenCounts: [Int: Int] { decodeSurahCounts(surahOpenCountsData) }
+    var allSurahPlayCounts: [Int: Int] { decodeSurahCounts(surahPlayCountsData) }
+
+    /// A cheap stamp of everything `ProfileStats` derives from, so the profile can skip recomputing when
+    /// nothing it reads has changed. Kept next to the storage it hashes: a new counted thing must be
+    /// added here or the profile will quietly show a stale number.
+    var profileStatsStamp: Int {
+        var hasher = Hasher()
+        hasher.combine(khatmCompletedAyahsData)
+        hasher.combine(quranPlanData)
+        hasher.combine(bookmarkedAyahsData)
+        hasher.combine(favoriteSurahsData)
+        hasher.combine(favoriteReciterIDsData)
+        hasher.combine(surahOpenCountsData)
+        hasher.combine(surahPlayCountsData)
+        hasher.combine(Calendar.current.startOfDay(for: Date()))
+        return hasher.finalize()
+    }
+
     func recordSurahOpened(_ surahID: Int) {
         guard (1...114).contains(surahID) else { return }
         var counts = decodeSurahCounts(surahOpenCountsData)
@@ -546,9 +716,6 @@ final class Settings: ObservableObject {
     @AppStorage("saveLastListenedAyah") var saveLastListenedAyah: Bool = true
     /// When on, the Quran tab shows the daily "Ayah of the Day" card.
     @AppStorage("showAyahOfTheDay") var showAyahOfTheDay: Bool = true
-    /// When on, the Quran tab collapses the Ayah of the Day / Last Listened / Last Read cards into one
-    /// compact section of tiles. On by default.
-    @AppStorage("quranSummaryMode") var quranSummaryMode: Bool = true
     /// Day key (yyyy-MM-dd) for which the Ayah of the Day card has been hidden via "Hide for Today".
     @AppStorage("ayahOfTheDayHiddenDate") var ayahOfTheDayHiddenDate: String = ""
     /// A shuffled replacement for TODAY's Ayah of the Day, as "dayKey|surahID|ayahID". Stale days no
@@ -568,8 +735,41 @@ final class Settings: ObservableObject {
     /// When on, SurahView shows a qiraat picker above the search bar to compare riwayat in that view.
     @AppStorage("qiraatComparisonMode") var qiraatComparisonMode: Bool = false
 
+
     /// When on, ReciterListView reveals non-Hafs qiraat reciters.
     @AppStorage("showOtherQiraatReciters") var showOtherQiraatReciters: Bool = false
+
+    /// Unlocks the 12 machine-extracted riwayat (Ibn Amir, Hamzah, al-Kisai, Abu Jafar,
+    /// Yaqub, Khalaf al-Ashir). Their text is BETA - digitized from a printed mushaf set
+    /// and not yet verified word-by-word, so it stays opt-in and never appears in
+    /// comparison mode while off. Turning it off also drops a selected beta riwayah back
+    /// to Hafs, so no unverified text can be left on screen by a stale setting.
+    @AppStorage("betaQiraatEnabled") var betaQiraatEnabled: Bool = false {
+        didSet {
+            guard oldValue != betaQiraatEnabled else { return }
+            if !betaQiraatEnabled {
+                if Self.Riwayah.isBeta(displayQiraah) {
+                    displayQiraah = Self.Riwayah.hafsTag
+                }
+                #if os(iOS)
+                BetaQiraatStore.shared.unloadAll()
+                #endif
+            }
+            objectWillChange.send()
+        }
+    }
+
+    /// The beta notice has been shown and accepted once; further picks skip the dialog.
+    @AppStorage("acceptedBetaQiraatNotice") var acceptedBetaQiraatNotice: Bool = false
+
+    /// One wording for the beta warning, shown by the toggle and every selection dialog.
+    static let betaQiraatNotice = """
+        These twelve riwayat were digitized by machine from a printed mushaf and have \
+        not yet been checked word by word. Their ayah numbering and surah divisions are \
+        verified, but individual marks or letters may still be wrong. Please do not rely \
+        on them for memorization or recitation - use Hafs or another verified riwayah \
+        for that.
+        """
 
     /// Shared expand/collapse state for qiraah details in Quran settings and reciter lists.
     var showQiraahDetails: Bool {
@@ -577,7 +777,7 @@ final class Settings: ObservableObject {
         set { showOtherQiraatReciters = newValue }
     }
 
-    /// Pass to Ayah.displayArabic(qiraah:clean:). Nil means Hafs.
+    /// Pass to Ayah.displayArabicText(surahId:clean:qiraahOverride:). Nil means Hafs.
     var displayQiraahForArabic: String? {
         let normalized = Self.normalizeLegacyRiwayahTag(displayQiraah)
         return normalized.isEmpty ? nil : normalized
@@ -591,12 +791,67 @@ final class Settings: ObservableObject {
     /// Arabic riwayah line for settings section headers (matches on-screen Arabic text riwayah).
     var displayQiraahArabicCaption: String {
         let key = Self.normalizeLegacyRiwayahTag(displayQiraah)
-        return Self.Riwayah.arabicCaptionByTag[key] ?? Self.Riwayah.arabicCaptionByTag[Self.Riwayah.hafsTag]!
+        return Self.Riwayah.arabicCaptionByTag[key] ?? Self.Riwayah.arabicCaptionByTag[Self.Riwayah.hafsTag] ?? ""
+    }
+
+    /// The displayed riwayah's tag when it is non-Hafs and ships a print-derived tajweed
+    /// color pack (`QiraahTajweedStore`); nil on Hafs or when no pack is bundled.
+    var riwayahTajweedPackTag: String? {
+        #if os(iOS)
+        guard let raw = displayQiraahForArabic else { return nil }
+        let tag = Self.Riwayah.canonicalTag(raw)
+        guard !tag.isEmpty, QiraahTajweedStore.shared.isAvailable(tag: tag) else { return nil }
+        return tag
+        #else
+        return nil
+        #endif
+    }
+
+    /// True when the DISPLAYED riwayah's selectable text is beta and the user hasn't
+    /// opted into beta text yet. Text surfaces show the consent card instead of text;
+    /// page mode falls back to the riwayah's printed mushaf (which is exact, not beta).
+    var displayBetaTextConsentNeeded: Bool {
+        guard let tag = displayQiraahForArabic else { return false }
+        return Self.Riwayah.isBeta(Self.Riwayah.canonicalTag(tag)) && !betaQiraatEnabled
+    }
+
+    /// Hidden riwayah tajweed rules, by rule KEY ("idgham", "silah_meem", ...), comma-joined.
+    /// Keys are meaning-stable across riwayat, so hiding "idgham" hides it in every riwayah.
+    @AppStorage("riwayahTajweedHiddenRules") var riwayahTajweedHiddenRules: String = ""
+
+    var riwayahTajweedHiddenRuleSet: Set<String> {
+        Set(riwayahTajweedHiddenRules.split(separator: ",").map(String.init))
+    }
+
+    func isRiwayahTajweedRuleVisible(_ key: String) -> Bool {
+        !riwayahTajweedHiddenRuleSet.contains(key)
+    }
+
+    func setRiwayahTajweedRule(_ key: String, visible: Bool) {
+        var set = riwayahTajweedHiddenRuleSet
+        if visible { set.remove(key) } else { set.insert(key) }
+        riwayahTajweedHiddenRules = set.sorted().joined(separator: ",")
     }
 
     @AppStorage("showArabicText") var showArabicText: Bool = true
-    @AppStorage("highlightAllahNames") var highlightAllahNames: Bool = false
-    @AppStorage("showTajweedColors") var showTajweedColors: Bool = false
+    /// ON by default, like the tajweed colors (user rule): the divine name reads red out of the box.
+    /// A user who explicitly turned it off has a stored false, which this default never overrides.
+    @AppStorage("highlightAllahNames") var highlightAllahNames: Bool = true
+    /// Tap a word in the reader to see what it means. ON by default - the meaning is the point of
+    /// reading, and a reader who doesn't know the feature exists will never go looking for it in
+    /// Settings. A tap that lands on a word opens its card; a tap anywhere else in the ayah still marks
+    /// the ayah exactly as before (see `WordByWordTextView.Coordinator`, which only claims the tap when
+    /// it is actually on a word). Only Hafs an Asim - the bundled glosses are indexed against its
+    /// wording, and another riwayah's words would not line up (see `WordByWordStore`, which the iOS
+    /// settings screen unloads when this is switched off).
+    @AppStorage("wordByWordMeanings") var wordByWordMeanings: Bool = true
+    /// Word-by-word INLINE: the reader lays the ayah out word by word with each word's English
+    /// meaning directly beneath it (the study layout). Rides on `wordByWordMeanings`' gloss pack
+    /// and gates (Hafs an Asim display only) - with the parent toggle off this one does nothing.
+    @AppStorage("wordByWordInline") var wordByWordInline: Bool = false
+    /// ON by default: the colors are the fastest way to read correctly, and word-by-word (also
+    /// default-on) leans on them - the tapped word's card names the rules its colors show.
+    @AppStorage("showTajweedColors") var showTajweedColors: Bool = true
     @AppStorage("showTajweedTafkhim") var showTajweedTafkhim: Bool = true
     @AppStorage("showTajweedQalqalah") var showTajweedQalqalah: Bool = true
     @AppStorage("showTajweedLamShamsiyah") var showTajweedLamShamsiyah: Bool = true
@@ -694,9 +949,8 @@ final class Settings: ObservableObject {
     /// Hadith's own "Highlight Allah" toggle, split from the Quran's `highlightAllahNames` so the two
     /// readers can differ. Seeded from the Quran toggle once in `init` so the split changes nothing
     /// until the user actually flips it.
-    @AppStorage("highlightAllahNamesHadith") var highlightAllahNamesHadith: Bool = false
-    /// Show the narrator ("It is narrated on the authority of...") line above the English text.
-    @AppStorage("showHadithNarrator") var showHadithNarrator = true
+    /// ON by default, matching the Quran toggle's new default (user rule).
+    @AppStorage("highlightAllahNamesHadith") var highlightAllahNamesHadith: Bool = true
     /// Hadith text sizes, independent of the Quran's own sliders.
     @AppStorage("hadithArabicFontSize") var hadithArabicFontSize: Double = Double(UIFont.preferredFont(forTextStyle: .body).pointSize + 4)
     @AppStorage("hadithEnglishFontSize") var hadithEnglishFontSize: Double = Double(UIFont.preferredFont(forTextStyle: .body).pointSize)
@@ -736,17 +990,23 @@ final class Settings: ObservableObject {
     @AppStorage("THEfontArabic") var fontArabic: String = "KFGQPCHAFSUthmanicScript-Regula"
     @AppStorage("fontArabicSize") var fontArabicSize: Double = Double(UIFont.preferredFont(forTextStyle: .title1).pointSize)
     @AppStorage("useFontArabic") var useFontArabic = true
+    /// Raw storage for `arabicScriptStyle` (see SettingsQuran). Empty means the reader has never
+    /// chosen, which resolves to Madani - the effective default. A value written here is always an
+    /// explicit choice and is honored as one, so the old "automatic" saves still mean Automatic.
+    @AppStorage("quranArabicScriptStyle") var arabicScriptStyleRaw: String = ""
 
     /// The Arabic face for the NON-Quran Arabic screens (Hadith, Adhkar, Duas, 99 Names, Arabic Alphabet).
     /// Independent of the Quran's own font picker.
     enum IslamArabicFace: String, CaseIterable {
         case uthmani, indopak, basic
 
-        /// Outside the Quran, "Uthmani" is ALWAYS the Qiraat Uthmani face - never the Hafs Quran face,
-        /// which is reserved for the mushaf itself.
+        /// Outside the Quran, "Uthmani" is the Hafs face - the same one the mushaf uses. It ships
+        /// no precomposed آ, which plain Arabic prose leans on constantly (5,616 times in six hadith
+        /// books alone); every Arabic string is handed through `decomposingAlefMadda` first, so the
+        /// face draws it from its own parts instead of falling back mid-word.
         var fontName: String {
             switch self {
-            case .uthmani: return Settings.qiraatUthmaniFontName
+            case .uthmani: return Settings.hafsUthmaniFontName
             case .indopak: return Settings.indopakFontName
             case .basic: return Settings.systemArabicFontName
             }
@@ -789,8 +1049,14 @@ final class Settings: ObservableObject {
     
     static let randomReciterName = "Random Reciter"
     static let hafsUthmaniFontName = "KFGQPCHAFSUthmanicScript-Regula"
-    static let qiraatUthmaniFontName = "KFGQPCQUMBULUthmanicScript-Regu"
+    /// Migration sentinel only. The app once bundled the KFGQPC Qunbul face (as `Qiraat.ttf`)
+    /// for non-Hafs qiraat and for all non-Quran Arabic; it is no longer shipped, and any stored
+    /// `fontArabic` still holding this name is migrated to the Hafs face at launch.
+    static let legacyQiraatFontName = "KFGQPCQUMBULUthmanicScript-Regu"
     static let indopakFontName = "Al_Mushaf"
+    /// Migration sentinels: names the IndoPak face briefly shipped under during testing. A stored
+    /// value matching one is rewritten at launch, or the reader keeps a name no font answers to.
+    static let legacyIndopakFontNames = ["KFGQPCNastaleeq-Regular", "AlQuranIndoPakbyQuranWBW"]
     /// Sentinel `fontArabic` value meaning "use the standard Apple system font" for Quran Arabic. It is not a
     /// real installed font, so any stray `.custom(_)` with it falls back to the system font anyway.
     static let systemArabicFontName = "AlIslamSystemArabicFont"
@@ -804,6 +1070,12 @@ final class Settings: ObservableObject {
     /// Hides the English readings ("ba", "bi", "bu") under the tashkeel glyphs on the Arabic Alphabet screens, so
     /// the marks can be practised from the Arabic alone rather than read off the transliteration.
     @AppStorage("hideEnglishInArabicLetters") var hideEnglishInArabicLetters: Bool = false
+
+    /// Writes the WITH HAMZA practice syllables with the Uthmani sukoon (U+06E1) instead of the plain
+    /// one (U+0652), so learners can practise the exact mark shape the mushaf prints. Persisted (unlike
+    /// the Tashkeel screen's ephemeral picker): letter screens are opened one at a time, and re-flipping
+    /// the script on every letter would get old fast.
+    @AppStorage("quranicSukoonInLetterPractice") var quranicSukoonInLetterPractice: Bool = false
 
     /// Starts at `.xSmall`, not `.large`: a floor is a *minimum*, so anchoring it at `.large` silently forced
     /// the alphabet up to the default text size for anyone whose system Dynamic Type is set smaller. The
@@ -907,9 +1179,119 @@ final class Settings: ObservableObject {
         return cleaned
     }
 
+    /// The silent-letter search lane: the mushaf-sukoon fold (drops letters the recitation skips,
+    /// e.g. the alif of ءَامَنُوا۟) followed by the alif-wiqaya trim. The trim runs on BOTH this
+    /// corpus lane and the query, so spellings with the silent alif, without it, or MIXING both
+    /// (ءامنو وعملوا) converge to the same bytes - the raw sukoon fold alone was all-or-nothing per
+    /// blob, which is why partially-truncated queries used to miss.
     func cleanSearchIgnoringSilentArabicLetters(_ text: String, whitespace: Bool = false) -> String {
         cleanSearch(text.removingSilentArabicLettersForSearch, whitespace: whitespace)
+            .removingAlifWiqayaForSearch
     }
+
+    /// The hamza-PRECISION lane: the same fold as `cleanSearch` except every hamza - the bare ء and the
+    /// waw/ya-seated ؤ ئ - survives as a single ء instead of being dropped or folded to its seat.
+    ///
+    /// `cleanSearch` deletes the hamza on purpose, so a typed نسا still finds نساء. The cost is that it
+    /// also makes نساء (women) and نسى (forgets) collapse to the same bytes نسا, so searching يانساء
+    /// returned يَنسَىٰ. This lane is the correction, and it is only consulted when the QUERY actually
+    /// carries a bare ء (see `HamzaPrecisionFilter`): type the hamza and it counts, leave it out and
+    /// nothing changes.
+    ///
+    /// Seated hamzas fold in because a word's hamza changes seat with its case ending - نِسَآءِ, نِسَآئِكُمۡ,
+    /// نِسَآؤُكُمۡ are one word - so a typed نساء has to reach all three. Alif-seated أ إ آ are deliberately
+    /// NOT folded here: they keep mapping to ا exactly as before, so word-initial spellings are untouched.
+    func cleanSearchKeepingHamza(_ text: String, whitespace: Bool = false) -> String {
+        var built = ""
+        built.unicodeScalars.reserveCapacity(text.unicodeScalars.count)
+        for scalar in text.unicodeScalars {
+            if let mapped = Self.hamzaPreservingArabicSearchScalarMap[scalar] {
+                guard let replacement = mapped else { continue }
+                if Self.unwantedCharSet.contains(replacement) { continue }
+                built.unicodeScalars.append(replacement)
+            } else {
+                if Self.unwantedCharSet.contains(scalar) { continue }
+                built.unicodeScalars.append(scalar)
+            }
+        }
+        var cleaned = collapsingWhitespace(built.lowercased())
+        if whitespace {
+            cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return cleaned
+    }
+
+    /// The hamza-precision test for one query, or nil when the query carries no bare ء and therefore
+    /// nothing extra should be checked. Build it once per query; ask it about each candidate.
+    ///
+    /// It only ever REMOVES results. `cleanSearch` drops the hamza, so every hamza-lane match is also a
+    /// plain-lane match - which is why this runs as a filter over what the normal search already found
+    /// instead of as another index: no extra blob per ayah, and no cost at all for queries without a ء.
+    struct HamzaPrecisionFilter {
+        /// The folded query in every lane the ordinary search offers - plain, vocative-joined, and
+        /// silent-letter - so this can only reject a candidate the normal search would have rejected
+        /// for lacking the hamza, never one it found through a lane this doesn't model.
+        private let needles: [String]
+
+        init?(query: String) {
+            guard query.containsBareHamza else { return nil }
+            let settings = Settings.shared
+            let base = query.removingAyahSearchOperators
+            let plain = settings.cleanSearchKeepingHamza(base, whitespace: true)
+            guard !plain.isEmpty else { return nil }
+            let silent = settings.cleanSearchKeepingHamza(base.removingSilentArabicLettersForSearch, whitespace: true)
+                .removingAlifWiqayaForSearch
+
+            var built: [String] = []
+            for candidate in [plain, silent] where !candidate.isEmpty {
+                if !built.contains(candidate) { built.append(candidate) }
+                let joined = candidate.joiningVocativeYaForSearch
+                if joined != candidate, !built.contains(joined) { built.append(joined) }
+            }
+            needles = built
+        }
+
+        /// The hamza-preserving haystack for one ayah, in the same lanes the ordinary index builds.
+        /// Returns nil when the text carries no hamza at all - such an ayah can never satisfy a query
+        /// that has one, so callers can skip storing anything and treat nil as "no match".
+        static func corpusLanes(for arabicTexts: [String]) -> String? {
+            let settings = Settings.shared
+            var lanes: [String] = []
+            for text in arabicTexts {
+                for variant in text.arabicDaggerVariantsForSearch {
+                    lanes.append(settings.cleanSearchKeepingHamza(variant))
+                    lanes.append(
+                        settings.cleanSearchKeepingHamza(variant.removingSilentArabicLettersForSearch)
+                            .removingAlifWiqayaForSearch
+                    )
+                }
+            }
+            let joined = lanes.joined(separator: " ")
+            return joined.containsBareHamza ? joined : nil
+        }
+
+        /// True when the prebuilt haystack still contains the query with hamzas kept on both sides.
+        func matches(lanes: String?) -> Bool {
+            guard let lanes else { return false }
+            return needles.contains { lanes.contains($0) }
+        }
+
+        /// Convenience for callers that hold the ayah's Arabic rather than a prebuilt haystack.
+        func matches(anyOf arabicTexts: [String]) -> Bool {
+            matches(lanes: Self.corpusLanes(for: arabicTexts))
+        }
+    }
+
+    /// `canonicalArabicSearchScalarMap` with every hamza form redirected to a surviving ء.
+    private static let hamzaPreservingArabicSearchScalarMap: [UnicodeScalar: UnicodeScalar?] = {
+        var out = canonicalArabicSearchScalarMap
+        let hamza = UnicodeScalar(0x0621)!
+        // Bare hamza and its variants, plus the waw/ya-seated forms. The seat is not a letter here.
+        for value in [0x0621, 0x0674, 0x0624, 0x0626, 0x0676, 0x0677, 0x0678] {
+            if let scalar = UnicodeScalar(value) { out.updateValue(hamza, forKey: scalar) }
+        }
+        return out
+    }()
 
     /// Scalar form of `canonicalArabicSearchMap`, built once: `key scalar → replacement scalar`, or `nil`
     /// to drop the scalar entirely. Lets `cleanSearch` normalize in a single pass instead of 22 string scans.
@@ -951,9 +1333,15 @@ final class Settings: ObservableObject {
         "ۥ": "و",
         // Ya variants
         "ۦ": "ي",
+        "\u{06E7}": "ي", // small high yeh (إِبۡرَٰهِـۧمَ) -> plain yaa, the dagger-alif treatment
         "ى": "ا", // alif maqsurah -> alif (matches both ى and ا forms in search)
         // Teh marbuta equivalence (broad)
-        "ة": "ه"
+        "ة": "ه",
+        // Tatweel: a stretching stroke, and in the mushaf a CARRIER for floating marks (the ـۧ of
+        // إِبۡرَٰهِـۧمَ, the ـٔ of يَٰٓـَٔادَمُ). The mark folds above; the carrier must not survive it,
+        // or the folded word keeps a phantom letter no typed query contains ("ابراهـم"). Search
+        // fold only - the display folds keep their carriers, so rendering is untouched.
+        "\u{0640}": ""
     ]
 
     private static let unwantedCharSet: CharacterSet = {
@@ -1095,6 +1483,25 @@ final class Settings: ObservableObject {
         case "gray":  return Color(red: 0.33, green: 0.33, blue: 0.35).opacity(0.55)
         case "custom": return adjustedCustomBackground(by: (customBackgroundLuminance ?? 1) < 0.5 ? 0.12 : -0.08)?.opacity(0.55)
         default:      return nil
+        }
+    }
+
+    /// Maps a reading-theme scheme string to the Light/Dark base it sits on ("sepia" -> "light",
+    /// "gray" -> "dark", "custom" -> by the picked background's luminance); base values pass through.
+    /// Lives HERE (not in WatchConnectivity.swift) because the watch migration in `init` needs it and
+    /// the Complication target compiles Settings without the connectivity file.
+    static func baseColorScheme(_ scheme: String, customHex: String) -> String {
+        switch scheme {
+        case "sepia": return "light"
+        case "gray": return "dark"
+        case "custom":
+            // Same brightness rule as `colorSchemeFromString`: a dark custom background reads as Dark.
+            var s = customHex.trimmingCharacters(in: .whitespacesAndNewlines)
+            if s.hasPrefix("#") { s.removeFirst() }
+            guard s.count == 6, let rgb = UInt64(s, radix: 16) else { return "light" }
+            let r = Double((rgb >> 16) & 0xFF) / 255, g = Double((rgb >> 8) & 0xFF) / 255, b = Double(rgb & 0xFF) / 255
+            return (0.299 * r + 0.587 * g + 0.114 * b) < 0.5 ? "dark" : "light"
+        default: return scheme
         }
     }
 

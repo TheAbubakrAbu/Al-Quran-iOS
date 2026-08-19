@@ -9,6 +9,7 @@ struct CreditsView: View {
         NavigationView {
             creditsList
         }
+        .navigationViewStyle(.stack)
     }
 
     private var creditsList: some View {
@@ -113,13 +114,11 @@ struct CreditsView: View {
 
     private var storySection: some View {
         Section {
-            Text("""
+            ProseText(text: """
             This app was inspired by my desire to help new reverts and non-Muslims learn about Islam and easily access the Quran. I’m deeply grateful to my parents for instilling in me a love for the faith (may Allah reward them).
 
             I also want to express my gratitude to my high school teacher, Mr. Joe Silvey, who, despite not being Muslim, stood with our Muslim Student Association and helped us organize weekly Jumuah prayers.
             """)
-                .font(.body)
-                .multilineTextAlignment(.leading)
 
             let urlText = "https://github.com/TheAbubakrAbu/Al-Quran-iOS"
             if let url = URL(string: urlText) {
@@ -181,7 +180,13 @@ struct CreditsView: View {
                 creditLink("Credit for the Adhan calculations, which does everything offline on the device, goes to Batoul Apps", url: "https://github.com/batoulapps/adhan-swift")
                 
                 creditLink("Credit for the Adhan sounds goes to Omar Al-Ejel", url: "https://github.com/oalejel/Athan-Utility")
-                
+
+                creditLink("The Serene adhan is \"Beautiful adhan\" by Adam-synagda (CC0, via Wikimedia Commons), trimmed and loudness-normalized", url: "https://commons.wikimedia.org/wiki/File:Beautiful_adhan.ogg")
+
+                creditLink("The Aaqib Azeez adhan is by Aaqib Azeez (CC BY-SA 4.0, via Wikimedia Commons), trimmed and loudness-normalized; the clips remain CC BY-SA 4.0", url: "https://commons.wikimedia.org/wiki/File:The_Adhan_-_Muslim_Call_to_Prayer_-_Aaqib_Azeez.mp3")
+
+                creditLink("The Takbir alert tone is the opening takbir pair of the Aaqib Azeez adhan (CC BY-SA 4.0, via Wikimedia Commons), trimmed and loudness-normalized; the clip remains CC BY-SA 4.0", url: "https://commons.wikimedia.org/wiki/File:The_Adhan_-_Muslim_Call_to_Prayer_-_Aaqib_Azeez.mp3")
+
                 // Al-Quran
                 
                 creditLink("Credit for the English transliteration of the Quran data goes to Risan Bagja Pradana", url: "https://github.com/risan/quran-json")
@@ -189,7 +194,11 @@ struct CreditsView: View {
                 creditLink("Credit for the English Saheeh International translation of the Quran data goes to Global Quran", url: "https://globalquran.com/download/data/")
                 
                 creditLink("Credit for all the Quranic Arabic text and all qiraat/riwayaat data goes to quran-data-kfgqpc (KFGQPC)", url: "https://github.com/thetruetruth/quran-data-kfgqpc")
-                                
+
+                creditLink("Credit for the printed mushaf PDFs (one per riwayah) and the beta qiraat text goes to Islamweb", url: "https://www.islamweb.net")
+
+                creditLink("Credit for the qiraat guide's companion reference on the ten imams and twenty narrators goes to QiraatHub", url: "https://qiraathub.com/")
+
                 creditLink("Credit for the Uthmani Quran font goes to King Fahad Complex (KFGQPC)", url: "https://qul.tarteel.ai/resources/font/245")
                 
                 creditLink("Credit for the Indopak Nastaleeq Quran font goes to Ayman Siddiqui and R. Siddiqua", url: "https://qul.tarteel.ai/resources/font/242")
@@ -201,6 +210,18 @@ struct CreditsView: View {
                 creditLink("Credit for additional Ayah Quran Recitations goes to EveryAyah", url: "https://everyayah.com/")
 
                 creditLink("Credit for the ayah audio timings that power offline ayah playback goes to the QDC audio API by Quran.com (Quran Foundation)", url: "https://api-docs.quran.foundation/")
+
+                creditLink("Credit for the word-by-word English meanings, shown when you tap a word while reading, goes to the QDC content API by Quran.com (Quran Foundation), whose per-word glosses come from the Quranic Arabic Corpus by Kais Dukes", url: "https://corpus.quran.com/")
+
+                creditLink("Credit for the word-by-word reader itself - the idea, and the assembled gloss corpus this app's pack was built from - goes to Tilawa, by my friend Jamil Hammoudeh", url: "https://github.com/jamilhammoudeh/quran-app")
+
+                creditLink("Credit for the verified Similar Ayahs matches goes to qurani.ai's similar-ayah corpus; the additional phrase-overlap matches come from Tilawa's generator, built on the Quranic Arabic Corpus morphology by Kais Dukes", url: "https://qurani.ai/")
+
+                creditLink("Credit for the Browse by Theme topics goes to the Quran Semantic Annotation Corpus (QSAC) by Ahmad Bilal, used under CC BY 4.0", url: "https://github.com/dev-ahmadbilal/quran-semantic-annotation-corpus")
+
+                creditLink("Credit for the surah outlines (the Outline source in About this Surah) goes to Quranpedia", url: "https://quranpedia.net/")
+
+                creditLink("Credit for the Tajweed Lessons course - every chapter, lesson, drill, and example - goes to my friend Jamil Hammoudeh, who wrote it for Tilawa and gave his permission to bring it here", url: "https://github.com/jamilhammoudeh/quran-app")
 
                 creditLink("Credit for the English Quran translation comparison API goes to Al Quran Cloud", url: "https://alquran.cloud/api")
 
@@ -214,6 +235,8 @@ struct CreditsView: View {
                 creditLink("Credit for the Hadith collections goes to hadith-json by Ahmed Baset", url: "https://github.com/AhmedBaset/hadith-json")
 
                 creditLink("The English narrations that hadith-json truncated are restored from the clean scrapes of fawazahmed0/hadith-api and CheeseWithSauce/HadithsJSONFormat; all of them trace back to sunnah.com", url: "https://sunnah.com")
+
+                creditLink("The scholar gradings (sahih, hasan, da'if) and the standard hadith numbering shown throughout the app also come from those two scrapes of sunnah.com, which quotes the published verdicts of Al-Albani, Zubair Ali Zai, Ahmad Muhammad Shakir, Shuaib Al Arnaut, the Darussalam editors, and others", url: "https://sunnah.com")
 
                 // All Apps
                 creditLink("Credit for the 99 Names of Allah goes to MyIslam", url: "https://myislam.org/99-names-of-allah/")
@@ -241,9 +264,7 @@ struct CreditsView: View {
 
     private var intentSection: some View {
         Section(header: Text("A NOTE ON INTENT")) {
-            Text("This app is offered as *sadaqah jariyah*, a contribution for the benefit of the Muslim community and anyone building tools to read, learn, and listen to the Quran. If it helps you, please keep the chain of attribution intact and consider contributing improvements back.")
-                .font(.body)
-                .multilineTextAlignment(.leading)
+            ProseText(text: "This app is offered as *sadaqah jariyah*, a contribution for the benefit of the Muslim community and anyone building tools to read, learn, and listen to the Quran. If it helps you, please keep the chain of attribution intact and consider contributing improvements back.")
         }
     }
 
@@ -279,7 +300,7 @@ struct CreditsView: View {
         .foregroundColor(settings.accentColor.color)
         .conditionalGlassEffect(useColor: 0.25)
         .padding(.horizontal, 24)
-        .padding(.bottom, 8)
+        .padding(.bottom, BottomBarCushion.standard)
     }
 }
 

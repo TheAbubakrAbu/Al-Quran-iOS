@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// The one format every ayah sheet titles itself with: "Surah Name S:A" (or "Surah Name S:A-B" for a sheet
 /// that covers a range, e.g. a tafsir that groups several ayahs). Kept in a single helper so the sheets can
@@ -31,6 +34,83 @@ func currentTranslationText(for ayah: Ayah) -> String? {
         : ayah.textEnglishMustafa
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? nil : trimmed
+}
+
+#if os(iOS)
+extension AyahHighlightColor {
+    /// The swatch as a real image rather than a tinted SF Symbol: a menu forces its own tint onto symbol
+    /// images, so `Image(systemName: "circle.fill").foregroundStyle(color)` comes out accent-colored in
+    /// every row - which defeats a color picker. An `alwaysOriginal` UIImage keeps the color it was drawn
+    /// with. Cached because a menu rebuilds its rows on every render pass of the row that owns it.
+    private static var swatchCache: [String: Image] = [:]
+
+    /// `selected` draws the checkmark INSIDE the swatch. A menu row can't carry both a colored icon and a
+    /// trailing checkmark (the trailing mark belongs to `Picker`, which can't express "tap the active
+    /// color to clear it"), so the swatch does both jobs.
+    func swatchImage(selected: Bool) -> Image {
+        let key = "\(rawValue)-\(selected)"
+        if let cached = Self.swatchCache[key] { return cached }
+
+        let size = CGSize(width: 20, height: 20)
+        let rendered = UIGraphicsImageRenderer(size: size).image { context in
+            UIColor(color).setFill()
+            context.cgContext.fillEllipse(in: CGRect(origin: .zero, size: size).insetBy(dx: 2, dy: 2))
+
+            guard selected else { return }
+            let check = UIImage(
+                systemName: "checkmark",
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold)
+            )?.withTintColor(.white, renderingMode: .alwaysOriginal)
+            let box = CGRect(x: 4, y: 4, width: 12, height: 12)
+            check?.draw(in: box)
+        }
+
+        let image = Image(uiImage: rendered.withRenderingMode(.alwaysOriginal))
+        Self.swatchCache[key] = image
+        return image
+    }
+}
+#endif
+
+/// The highlighter's palette, as menu rows. Every surface that offers highlighting (the list rows'
+/// long-press menu, page mode's actions sheet) renders THIS, so the palette, the checkmark state, and the
+/// bookmark-on-highlight rule can never drift apart between them.
+///
+/// Picking a color bookmarks the ayah if it wasn't already (`setBookmarkHighlight`), and picking the color
+/// it already wears lifts the highlight - the same tap-to-toggle grammar the bookmark button itself has.
+@ViewBuilder
+func ayahHighlightMenuItems(surah: Int, ayah: Int, settings: Settings) -> some View {
+    let current = settings.bookmarkHighlight(surah: surah, ayah: ayah)
+
+    ForEach(AyahHighlightColor.allCases) { color in
+        Button {
+            settings.hapticFeedback()
+            withAnimation(.easeInOut) {
+                settings.toggleBookmarkHighlight(surah: surah, ayah: ayah, color: color)
+            }
+        } label: {
+            #if os(iOS)
+            Label { Text(color.title) } icon: { color.swatchImage(selected: current == color) }
+            #else
+            Label(color.title, systemImage: current == color ? "checkmark.circle.fill" : "circle.fill")
+            #endif
+        }
+    }
+
+    if current != nil {
+        Divider()
+
+        Button(role: .destructive) {
+            settings.hapticFeedback()
+            withAnimation(.easeInOut) {
+                settings.setBookmarkHighlight(surah: surah, ayah: ayah, color: nil)
+            }
+        } label: {
+            // Removing the highlight deliberately keeps the bookmark - the label says so, because a
+            // destructive-red row otherwise reads as "this will unsave the ayah".
+            Label("Remove Highlight", systemImage: "highlighter")
+        }
+    }
 }
 
 struct SurahContextMenu: View {
@@ -141,28 +221,36 @@ struct SurahContextMenu: View {
 
 #if os(iOS)
 enum TafsirAuthor: String, CaseIterable, Identifiable {
-    // English (quranapi.pages.dev - all three arrive in one response).
+    // English (originally quranapi.pages.dev; now bundled as .tpk packs).
     case ibnKathir = "Ibn Kathir"
     case maarifUlQuran = "Maarif Ul Quran"
     case tazkirulQuran = "Tazkirul Quran"
-    // Arabic (spa5k/tafsir_api via the jsDelivr CDN - one file per ayah per edition).
+    // Arabic (originally spa5k/tafsir_api; now bundled as .tpk packs).
     case ibnKathirArabic = "Tafsir Ibn Kathir (Arabic)"
     case tabariArabic = "Tafsir al-Tabari (Arabic)"
     case saadiArabic = "Tafsir as-Sa'di (Arabic)"
 
     var id: String { rawValue }
 
-    /// The spa5k edition slug for Arabic tafsirs; nil for the English bundle.
-    var arabicSlug: String? {
+    /// The bundled pack for this edition (Resources/Data/Tafsir/{slug}.tpk, built by
+    /// Tafsir-Corpus/build_tpk.py).
+    var packSlug: String {
         switch self {
+        case .ibnKathir:       return "en-tafsir-ibn-kathir"
+        case .maarifUlQuran:   return "en-tafsir-maarif-ul-quran"
+        case .tazkirulQuran:   return "en-tafsir-tazkirul-quran"
         case .ibnKathirArabic: return "ar-tafsir-ibn-kathir"
         case .tabariArabic:    return "ar-tafsir-al-tabari"
         case .saadiArabic:     return "ar-tafsir-as-saadi"
-        default:               return nil
         }
     }
 
-    var isArabic: Bool { arabicSlug != nil }
+    var isArabic: Bool {
+        switch self {
+        case .ibnKathirArabic, .tabariArabic, .saadiArabic: return true
+        default: return false
+        }
+    }
 
     static var englishCases: [TafsirAuthor] { allCases.filter { !$0.isArabic } }
     static var arabicCases: [TafsirAuthor] { allCases.filter { $0.isArabic } }
@@ -201,8 +289,9 @@ enum TafsirAuthor: String, CaseIterable, Identifiable {
     }
 }
 
-/// The standard "this content comes from the Internet" card, shared by the tafsir sheet and the online
-/// translation comparison so online-backed sheets all disclose it the same way.
+/// The standard "this content comes from the Internet" card, used by the online translation
+/// comparison so online-backed sheets all disclose it the same way. (The tafsir sheet no longer
+/// qualifies - every tafsir is bundled and read offline.)
 struct OnlineNoticeCard: View {
     let text: String
 
@@ -224,14 +313,10 @@ struct OnlineNoticeCard: View {
     }
 }
 
-struct AyahTafsirResponse: Decodable {
-    let surahName: String
-    let surahNo: Int
-    let ayahNo: Int
-    let tafsirs: [AyahTafsirEntry]
-}
-
-struct AyahTafsirEntry: Decodable, Identifiable {
+/// One tafsir entry as the sheets consume it. `groupVerse` is the source's own group sentence,
+/// verbatim ("You are reading a tafsir for the group of verses 2:4 to 2:5"), which the sheet's
+/// existing parser turns into the "Al-Baqarah 2:4-5" title; the Arabic editions carry none.
+struct AyahTafsirEntry: Identifiable {
     let author: String
     let groupVerse: String?
     let content: String
@@ -239,301 +324,66 @@ struct AyahTafsirEntry: Decodable, Identifiable {
     var id: String { author }
 }
 
-/// One spa5k per-ayah file: `tafsir/{slug}/{surah}/{ayah}.json` -> `{"text": "..."}` (plain text with
-/// blank-line paragraph breaks, which the markdown block renderer already handles).
-struct SpaTafsirAyahResponse: Decodable {
-    let text: String
-}
-
-/// The tafsir data layer: a disk + memory cache over quranapi.pages.dev, shared by every tafsir sheet, plus
-/// the "Download All Tafsirs" sweep.
-///
-/// Before this existed, each sheet presentation owned its own StateObject and re-fetched from the network on
-/// every open - THAT was the "why is it redownloading?!" refresh. Fetched responses now persist in
-/// Application Support (excluded from iCloud backup - it's re-downloadable content), so an ayah's tafsir is
-/// fetched from the network exactly once, ever.
+/// The tafsir data layer: six memory-mapped bundled packs (Resources/Data/Tafsir/*.tpk), one per
+/// edition. Everything is on disk inside the app, so every read is synchronous and offline - there
+/// is no fetch, no cache to warm, and no download machinery. Opening a pack costs its ~75 KB ayah
+/// index; a read decompresses one ~256 KB block through the shared TafsirBlockCache.
 @MainActor
-final class TafsirStore: ObservableObject {
+final class TafsirStore {
     static let shared = TafsirStore()
-    private init() {}
 
-    // Download progress, published for the settings rows. One sweep runs at a time; a sweep may cover
-    // several targets in sequence (e.g. "Download Everything").
-    @Published private(set) var isDownloading = false
-    @Published private(set) var downloadingTargetName = ""
-    @Published private(set) var downloadCompleted = 0
-    @Published private(set) var downloadTotal = 0
-    @Published private(set) var downloadBytes: Int64 = 0
-    @Published var downloadError: String?
-    /// Per-target disk usage (files, bytes), keyed by `TafsirDownloadTarget.rawValue`. Refreshed by
-    /// `refreshDiskUsage()`.
-    @Published private(set) var diskUsage: [String: (files: Int, bytes: Int64)] = [:]
-
-    private let memory: NSCache<NSString, NSData> = {
-        let cache = NSCache<NSString, NSData>()
-        cache.countLimit = 48
-        return cache
-    }()
-    private var downloadTask: Task<Void, Never>?
-
-    private nonisolated static let directory: URL = {
-        let base = (try? FileManager.default.url(
-            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-        )) ?? FileManager.default.temporaryDirectory
-        var dir = base.appendingPathComponent("TafsirCache", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try? dir.setResourceValues(values)
-        return dir
-    }()
-
-    /// English bundle responses live flat in the cache root (the original layout); each Arabic edition gets
-    /// its own subfolder so it can be sized and deleted independently.
-    private nonisolated static func fileURL(editionSlug: String?, surah: Int, ayah: Int) -> URL {
-        guard let slug = editionSlug else {
-            return directory.appendingPathComponent("\(surah)_\(ayah).json")
+    private init() {
+        // The decompressed blocks are rebuildable from the bundle in a millisecond each - under
+        // real memory pressure they all go rather than letting jetsam make the decision (the
+        // HadithStore pattern). The packs stay mapped: a memory map is not resident memory.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
+        ) { _ in
+            TafsirBlockCache.shared.purge()
         }
-        let dir = directory.appendingPathComponent(slug, isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("\(surah)_\(ayah).json")
     }
 
-    private nonisolated static func endpoint(editionSlug: String?, surah: Int, ayah: Int) -> URL? {
-        if let slug = editionSlug {
-            return URL(string: "https://cdn.jsdelivr.net/gh/spa5k/tafsir_api@main/tafsir/\(slug)/\(surah)/\(ayah).json")
+    private var packs: [String: TafsirPack] = [:]
+    /// Slugs whose bundled pack failed to open (missing from the bundle, or corrupt) - remembered
+    /// so a broken pack is probed once, not on every read.
+    private var failed: Set<String> = []
+
+    private func pack(_ author: TafsirAuthor) -> TafsirPack? {
+        let slug = author.packSlug
+        if let open = packs[slug] { return open }
+        guard !failed.contains(slug) else { return nil }
+        guard let url = TafsirPack.bundledURL(slug), let pack = TafsirPack(slug: slug, url: url) else {
+            failed.insert(slug)
+            return nil
         }
-        return URL(string: "https://quranapi.pages.dev/api/tafsir/\(surah)_\(ayah).json")
+        packs[slug] = pack
+        return pack
     }
 
-    /// Cache-first: memory, then disk, then network (writing back to both). Only the network branch can throw.
-    /// `editionSlug` nil = the English bundle; a spa5k slug = that Arabic edition's per-ayah file.
-    func data(editionSlug: String? = nil, surah: Int, ayah: Int) async throws -> Data {
-        let key = "\(editionSlug ?? "en")_\(surah)_\(ayah)" as NSString
-        if let hit = memory.object(forKey: key) {
-            return hit as Data
-        }
-
-        let file = Self.fileURL(editionSlug: editionSlug, surah: surah, ayah: ayah)
-        if let disk = await Task.detached(priority: .userInitiated, operation: { try? Data(contentsOf: file) }).value {
-            memory.setObject(disk as NSData, forKey: key)
-            return disk
-        }
-
-        guard let remote = Self.endpoint(editionSlug: editionSlug, surah: surah, ayah: ayah) else { throw URLError(.badURL) }
-        let (data, response) = try await URLSession.shared.data(from: remote)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw URLError(.badServerResponse)
-        }
-        memory.setObject(data as NSData, forKey: key)
-        Task.detached(priority: .utility) {
-            try? data.write(to: file, options: .atomic)
-        }
-        return data
+    /// One edition's tafsir for one ayah - synchronous, instant, always offline.
+    func entry(author: TafsirAuthor, surah: Int, ayah: Int) -> AyahTafsirEntry? {
+        guard let entry = pack(author)?.entry(surah: surah, ayah: ayah) else { return nil }
+        return AyahTafsirEntry(author: author.rawValue, groupVerse: entry.groupVerse, content: entry.content)
     }
 
-    /// Sweep the given targets' every-ayah files into the disk cache, one target after another. Skips files
-    /// already downloaded, fetches the rest with bounded concurrency, and is cancellable. Individual failures
-    /// are skipped (rerun to fill gaps).
-    func startDownload(targets: [TafsirDownloadTarget]) {
-        guard !isDownloading, !targets.isEmpty else { return }
-        let pairs = QuranData.shared.quran.flatMap { surah in
-            surah.ayahs.map { (surah: surah.id, ayah: $0.id) }
-        }
-        guard !pairs.isEmpty else { return }
-
-        isDownloading = true
-        downloadError = nil
-        downloadTask = Task { [weak self] in
-            var totalFailures = 0
-
-            for target in targets {
-                if Task.isCancelled { break }
-                guard let self else { return }
-
-                self.downloadingTargetName = target.displayName
-                self.downloadTotal = pairs.count
-                self.downloadCompleted = 0
-                self.downloadBytes = 0
-                let slug = target.editionSlug
-
-                // Inventory pass, off-main: what's already on disk counts as done.
-                let missing = await Task.detached(priority: .userInitiated) { () -> [(surah: Int, ayah: Int)] in
-                    var missing: [(surah: Int, ayah: Int)] = []
-                    var have = 0
-                    var bytes: Int64 = 0
-                    for pair in pairs {
-                        let file = Self.fileURL(editionSlug: slug, surah: pair.surah, ayah: pair.ayah)
-                        if let size = (try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
-                            have += 1
-                            bytes += Int64(size)
-                        } else {
-                            missing.append(pair)
-                        }
-                    }
-                    let doneHave = have
-                    let doneBytes = bytes
-                    await MainActor.run {
-                        self.downloadCompleted = doneHave
-                        self.downloadBytes = doneBytes
-                    }
-                    return missing
-                }.value
-
-                // A modest window: fast enough to finish in minutes, polite enough not to hammer the CDN.
-                let windowSize = 6
-                var index = 0
-                while index < missing.count, !Task.isCancelled {
-                    let window = Array(missing[index..<min(index + windowSize, missing.count)])
-                    index += window.count
-
-                    await withTaskGroup(of: Int64?.self) { group in
-                        for pair in window {
-                            group.addTask {
-                                guard !Task.isCancelled,
-                                      let url = Self.endpoint(editionSlug: slug, surah: pair.surah, ayah: pair.ayah) else { return nil }
-                                guard let (data, response) = try? await URLSession.shared.data(from: url),
-                                      let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                                    return nil
-                                }
-                                try? data.write(to: Self.fileURL(editionSlug: slug, surah: pair.surah, ayah: pair.ayah), options: .atomic)
-                                return Int64(data.count)
-                            }
-                        }
-                        for await bytes in group {
-                            if let bytes {
-                                self.downloadCompleted += 1
-                                self.downloadBytes += bytes
-                            } else {
-                                totalFailures += 1
-                            }
-                        }
-                    }
-                }
+    /// Delete the pre-pack download cache, once. Before the editions shipped inside the app they
+    /// were fetched to `Application Support/TafsirCache`, and a reader who had downloaded them all
+    /// is carrying up to ~345 MB there that nothing will ever read again - and with the Downloads
+    /// screen gone, no way to find it. Runs off-main at launch, and only until it succeeds.
+    /// (The HadithStore.purgeLegacyDownloadCache pattern.)
+    static func purgeLegacyDownloadCache() {
+        let flag = "tafsirLegacyCachePurged"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        Task.detached(priority: .background) {
+            guard let base = try? FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false
+            ) else { return }
+            let directory = base.appendingPathComponent("TafsirCache", isDirectory: true)
+            if FileManager.default.fileExists(atPath: directory.path) {
+                try? FileManager.default.removeItem(at: directory)
             }
-
-            guard let self else { return }
-            if totalFailures > 0, !Task.isCancelled {
-                self.downloadError = "\(totalFailures) ayahs failed to download. Run the download again to retry them."
-            }
-            self.isDownloading = false
-            self.downloadingTargetName = ""
-            self.refreshDiskUsage()
+            await MainActor.run { UserDefaults.standard.set(true, forKey: flag) }
         }
-    }
-
-    func cancelDownload() {
-        downloadTask?.cancel()
-        downloadTask = nil
-        isDownloading = false
-        downloadingTargetName = ""
-    }
-
-    /// Delete one target's saved files (or all of them when `target` is nil).
-    func deleteDownloads(target: TafsirDownloadTarget? = nil) {
-        if target == nil { cancelDownload() }
-        memory.removeAllObjects()
-        Task.detached(priority: .utility) { [weak self] in
-            let fm = FileManager.default
-            if let target {
-                if let slug = target.editionSlug {
-                    try? fm.removeItem(at: Self.directory.appendingPathComponent(slug, isDirectory: true))
-                } else {
-                    // English bundle = the flat .json files in the cache root.
-                    let contents = (try? fm.contentsOfDirectory(at: Self.directory, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
-                    for file in contents where (try? file.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory != true {
-                        try? fm.removeItem(at: file)
-                    }
-                }
-            } else {
-                let contents = (try? fm.contentsOfDirectory(at: Self.directory, includingPropertiesForKeys: nil)) ?? []
-                for file in contents {
-                    try? fm.removeItem(at: file)
-                }
-            }
-            await self?.refreshDiskUsage()
-        }
-    }
-
-    func refreshDiskUsage() {
-        Task.detached(priority: .utility) { [weak self] in
-            func usage(of dir: URL, filesOnly: Bool) -> (files: Int, bytes: Int64) {
-                let contents = (try? FileManager.default.contentsOfDirectory(
-                    at: dir, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey]
-                )) ?? []
-                var files = 0
-                var bytes: Int64 = 0
-                for url in contents {
-                    let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey])
-                    if values?.isDirectory == true { continue }
-                    files += 1
-                    bytes += Int64(values?.fileSize ?? 0)
-                }
-                return (files, bytes)
-            }
-
-            var result: [String: (files: Int, bytes: Int64)] = [:]
-            for target in TafsirDownloadTarget.allCases {
-                if let slug = target.editionSlug {
-                    result[target.rawValue] = usage(of: Self.directory.appendingPathComponent(slug, isDirectory: true), filesOnly: true)
-                } else {
-                    result[target.rawValue] = usage(of: Self.directory, filesOnly: true)
-                }
-            }
-            let finalResult = result
-            await MainActor.run { [weak self] in
-                self?.diskUsage = finalResult
-            }
-        }
-    }
-}
-
-/// One downloadable tafsir package: the English bundle (all 3 authors arrive together from quranapi) or a
-/// single Arabic edition (spa5k, one file per ayah).
-enum TafsirDownloadTarget: String, CaseIterable, Identifiable {
-    case english
-    case ibnKathirArabic
-    case tabariArabic
-    case saadiArabic
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .english:         return "English (Ibn Kathir, Maarif, Tazkirul)"
-        case .ibnKathirArabic: return "Tafsir Ibn Kathir (Arabic)"
-        case .tabariArabic:    return "Tafsir al-Tabari (Arabic)"
-        case .saadiArabic:     return "Tafsir as-Sa'di (Arabic)"
-        }
-    }
-
-    /// nil = the English bundle endpoint; otherwise the spa5k edition slug.
-    var editionSlug: String? {
-        switch self {
-        case .english:         return nil
-        case .ibnKathirArabic: return "ar-tafsir-ibn-kathir"
-        case .tabariArabic:    return "ar-tafsir-al-tabari"
-        case .saadiArabic:     return "ar-tafsir-as-saadi"
-        }
-    }
-
-    var isArabic: Bool { editionSlug != nil }
-
-    /// Measured against the live sources (uncompressed on disk).
-    var estimatedMegabytes: Int {
-        switch self {
-        case .english:         return 135
-        case .ibnKathirArabic: return 90
-        case .tabariArabic:    return 105
-        case .saadiArabic:     return 15
-        }
-    }
-
-    static var englishTargets: [TafsirDownloadTarget] { allCases.filter { !$0.isArabic } }
-    static var arabicTargets: [TafsirDownloadTarget] { allCases.filter { $0.isArabic } }
-
-    static func estimatedTotal(_ targets: [TafsirDownloadTarget]) -> Int {
-        targets.reduce(0) { $0 + $1.estimatedMegabytes }
     }
 }
 
@@ -560,6 +410,11 @@ struct AyahContextMenuModifier: ViewModifier {
     let lastRead: Bool
     /// When true, the menu leads with "Hide for Today" + "Delete Forever" (the Ayah of the Day card).
     var ayahOfTheDay: Bool = false
+    /// When true, an ellipsis actions button is overlaid at the row's top-trailing corner - the
+    /// HadithRow header grammar for the compact search rows, which reserve a 22pt slot for it. The
+    /// button opens the SAME menu the long-press does, from the same modifier, so both entrances
+    /// share every sheet and confirmation for free.
+    var inlineEllipsis: Bool = false
 
     @State var showAyahSheet = false
 
@@ -568,6 +423,7 @@ struct AyahContextMenuModifier: ViewModifier {
     @State private var showRespectAlert = false
     @State private var showCustomRangeSheet = false
     @State private var showTafsirSheet = false
+    @State private var showSimilarAyahsSheet = false
     @State private var showQiraahComparisonSheet = false
     @State private var showEnglishComparisonSheet = false
 
@@ -594,6 +450,10 @@ struct AyahContextMenuModifier: ViewModifier {
     private var isBookmarkedHere: Bool { bookmarkIndex != nil }
     private var currentNote: String {
         settings.bookmarkNoteText(surah: surah, ayah: ayah)
+    }
+
+    private var currentHighlight: AyahHighlightColor? {
+        settings.bookmarkHighlight(surah: surah, ayah: ayah)
     }
 
     private var canCompareEnglishText: Bool {
@@ -656,16 +516,12 @@ struct AyahContextMenuModifier: ViewModifier {
         }
     }
 
+    /// The full action list, shared verbatim by the long-press context menu and (when
+    /// `inlineEllipsis` is on) the header ellipsis Menu - one list, two entrances, the HadithRow
+    /// grammar. Lives on this modifier because every sheet it opens presents from here.
+    #if os(iOS)
     @ViewBuilder
-    func body(content: Content) -> some View {
-        // O(1) dictionary lookup, not an O(114) linear scan. This `body` re-evaluates whenever
-        // `settings` publishes, and the modifier sits on every history/bookmark/favorite row - the
-        // linear scan added up across all visible rows.
-        let surahObj = quranData.surah(surah)
-
-        #if os(iOS)
-        content
-            .contextMenu {
+    private func menuItems(surahObj: Surah?) -> some View {
                 if ayahOfTheDay {
                     Button(role: .destructive) {
                         settings.hapticFeedback()
@@ -707,6 +563,17 @@ struct AyahContextMenuModifier: ViewModifier {
                     )
                 }
 
+                // Directly under the bookmark row, because it IS a bookmark action: picking a color saves
+                // the ayah and paints its bookmark in that color.
+                Menu {
+                    ayahHighlightMenuItems(surah: surah, ayah: ayah, settings: settings)
+                } label: {
+                    Label(
+                        currentHighlight == nil ? "Highlight" : "Highlight: \(currentHighlight!.title)",
+                        systemImage: "highlighter"
+                    )
+                }
+
                 Button {
                     settings.hapticFeedback()
                     if !isBookmarked {
@@ -735,6 +602,19 @@ struct AyahContextMenuModifier: ViewModifier {
                         showTafsirSheet = true
                     } label: {
                         Label("See Tafsir", systemImage: "text.book.closed")
+                    }
+                }
+
+                // Similar Ayahs reads against the Hafs text (the pack's targets and phrases are
+                // Hafs wording), mirroring the tafsir gate above. The row shows whenever the pack
+                // is bundled - probing "does THIS ayah have matches" here would parse 4.5 MB of
+                // JSON on menu open, so the sheet handles the no-matches case instead.
+                if settings.isHafsDisplay && SimilarAyahsStore.isBundled {
+                    Button {
+                        settings.hapticFeedback()
+                        showSimilarAyahsSheet = true
+                    } label: {
+                        Label("Similar Ayahs", systemImage: "doc.text.magnifyingglass")
                     }
                 }
 
@@ -794,6 +674,42 @@ struct AyahContextMenuModifier: ViewModifier {
                         scrollToSurahID: $scrollToSurahID
                     )
                 }
+    }
+    #endif
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        // O(1) dictionary lookup, not an O(114) linear scan. This `body` re-evaluates whenever
+        // `settings` publishes, and the modifier sits on every history/bookmark/favorite row - the
+        // linear scan added up across all visible rows.
+        let surahObj = quranData.surah(surah)
+
+        #if os(iOS)
+        content
+            .contextMenu {
+                menuItems(surahObj: surahObj)
+            }
+            .overlay(alignment: .topTrailing) {
+                if inlineEllipsis {
+                    Menu {
+                        Text("Ayah Actions")
+                            .foregroundStyle(.secondary)
+
+                        menuItems(surahObj: surahObj)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 19, height: 19)
+                            .foregroundColor(settings.accentColor.color)
+                            .conditionalGlassEffect()
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    // Lands in the 22pt slot the compact search row reserves at its header's
+                    // trailing edge; the 2pt matches the row's own vertical padding.
+                    .padding(.top, 2)
+                }
             }
             .sheet(isPresented: $showAyahSheet) {
                 ShareAyahSheet(
@@ -811,6 +727,9 @@ struct AyahContextMenuModifier: ViewModifier {
                     )
                     .smallMediumSheetPresentation()
                 }
+            }
+            .sheet(isPresented: $showSimilarAyahsSheet) {
+                SimilarAyahsSheet(surahNumber: surah, ayahNumber: ayah)
             }
             .sheet(isPresented: $showCustomRangeSheet) {
                 if let surahObj = surahObj {
@@ -918,7 +837,8 @@ extension View {
         searchText: Binding<String>,
         scrollToSurahID: Binding<Int>,
         lastRead: Bool = false,
-        ayahOfTheDay: Bool = false
+        ayahOfTheDay: Bool = false,
+        inlineEllipsis: Bool = false
     ) -> some View {
         self.modifier(AyahContextMenuModifier(
             surah: surah,
@@ -928,7 +848,8 @@ extension View {
             searchText: searchText,
             scrollToSurahID: scrollToSurahID,
             lastRead: lastRead,
-            ayahOfTheDay: ayahOfTheDay
+            ayahOfTheDay: ayahOfTheDay,
+            inlineEllipsis: inlineEllipsis
         ))
     }
 }
@@ -1208,8 +1129,12 @@ struct NoteEditorSheet: View {
                 )
             }
             .padding(.horizontal)
+            // Full-size BEFORE the wash: this VStack hugs its content, and a background on a hugging
+            // view would paint a floating rectangle instead of covering the sheet.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
+            .accentWashedBackground()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(role: .cancel) {
@@ -1238,6 +1163,7 @@ struct NoteEditorSheet: View {
                 }
             }
         }
+        .navigationViewStyle(.stack)
     }
 }
 
@@ -1317,23 +1243,64 @@ struct SelectAyahTextSheet: View {
     // The sheet's own riwayah, seeded from the reading view's, so switching here never disturbs the reader.
     @State private var selectedQiraah: String = Settings.normalizeLegacyRiwayahTag(Settings.shared.displayQiraah)
 
+    // The reader's riwayah at open time - the numbering `ayah.id` was tapped under. Smart matching
+    // anchors through Hafs from this origin; `selectedQiraah` moves with the picker, this never does.
+    private let originQiraah: String = Settings.normalizeLegacyRiwayahTag(Settings.shared.displayQiraah)
+
+    // Same preference the comparison sheet stores: follow the WORDS across riwayat (numbering differs),
+    // not the raw number.
+    @AppStorage("qiraahSmartComparison") private var smartAyahMatching = true
+
     // The sheet's own cleanup switches - the reading view's exact Hide Tashkeel / Hide Dots options,
     // seeded from its settings but scoped to the text you are selecting here.
     @State private var hideTashkeel = Settings.shared.cleanArabicText
     @State private var hideDots = Settings.shared.removeArabicDots
 
+    // The sheet's own Arabic face, seeded from what the reader is showing for the current riwayah -
+    // switching here restyles only the text being selected, never the reading view.
+    @State private var selectedFontName: String = Settings.shared.quranArabicFontName(
+        for: Settings.normalizeLegacyRiwayahTag(Settings.shared.displayQiraah)
+    )
+
     private var usesCustomArabicFace: Bool {
-        // The bundled faces carry no glyphs for the dotless skeleton letters, so hiding dots
-        // falls back to the system face - the reading view's own rule.
-        !hideDots && settings.quranUsesCustomArabicFace
+        selectedFontName != Settings.systemArabicFontName
+    }
+
+    /// The tapped ayah's Hafs anchor (identity when the reader was on Hafs or a Kufi-counted riwayah).
+    private var anchorHafsAyah: Int {
+        QiraahComparison.hafsAnchor(surahID: surah.id, ayahNumber: ayah.id, tag: originQiraah, quranData: QuranData.shared)
+    }
+
+    /// The ayah whose ARABIC the sheet serves under `selectedQiraah`. Smart matching resolves the
+    /// riwayah's own number for the tapped words via the Hafs anchor; off, the tapped ayah as-is (the
+    /// old direct read, which for merged/shifted numbering shows whatever verse sits at that number).
+    private var arabicAyah: Ayah {
+        guard smartAyahMatching else { return ayah }
+        let tag = Settings.Riwayah.canonicalTag(selectedQiraah)
+        let number: Int
+        if tag.isEmpty {
+            number = anchorHafsAyah
+        } else if let alignment = QiraahComparison.alignment(surahID: surah.id, tag: tag, quranData: QuranData.shared) {
+            number = alignment.riwayahNumberForHafs[anchorHafsAyah] ?? ayah.id
+        } else {
+            number = ayah.id
+        }
+        return surah.ayahs.first(where: { $0.id == number }) ?? ayah
+    }
+
+    /// Hafs-keyed companions (transliteration, both translations) read from the Hafs anchor when smart
+    /// matching is on, so they always describe the words in the Arabic block above.
+    private var hafsAyah: Ayah {
+        guard smartAyahMatching else { return ayah }
+        return surah.ayahs.first(where: { $0.id == anchorHafsAyah }) ?? ayah
     }
 
     private var ayahExistsInSelectedQiraah: Bool {
-        ayah.existsInQiraah(selectedQiraah)
+        arabicAyah.existsInQiraah(selectedQiraah, surahID: surah.id)
     }
 
     private var arabicText: String {
-        var text = ayah.displayArabicText(
+        var text = arabicAyah.displayArabicText(
             surahId: surah.id,
             clean: hideTashkeel,
             qiraahOverride: selectedQiraah
@@ -1343,7 +1310,19 @@ struct SelectAyahTextSheet: View {
     }
 
     private var arabicFontName: String {
-        usesCustomArabicFace ? settings.quranArabicFontName(for: selectedQiraah) : settings.fontArabic
+        selectedFontName
+    }
+
+    /// The riwayah section footer: names the resolved number when smart matching moved it, explains
+    /// the numbering drift otherwise.
+    private var riwayahFooterText: String {
+        if smartAyahMatching {
+            if arabicAyah.id != ayah.id {
+                return "Switching the riwayah changes the Arabic text only. Smart Ayah Matching: these words sit at ayah \(arabicAyah.id) in this riwayah (ayah numbering differs between riwayat), so that ayah is shown."
+            }
+            return "Switching the riwayah changes the Arabic text only. Ayah numbering can differ between riwayat: no ayah is ever missing, but some are joined or split differently. Smart Ayah Matching follows the words, so the matching ayah is shown even where numbering differs."
+        }
+        return "Switching the riwayah changes the Arabic text only. Ayah numbering can differ between riwayat: no ayah is ever missing, but some are joined or split differently (for example, \"Alif Lam Meem\" and \"Dhalika al-Kitab...\" form a single ayah in most qiraat). With Smart Ayah Matching off, the exact tapped number is shown as-is."
     }
 
     var body: some View {
@@ -1352,15 +1331,32 @@ struct SelectAyahTextSheet: View {
                 Group {
                     if settings.showQiraahDetails {
                         Section {
-                            ArabicTextRiwayahPicker(selection: $selectedQiraah.animation(.easeInOut), useSimpleIOSPicker: true)
+                            ArabicTextRiwayahPicker(selection: $selectedQiraah.animation(.easeInOut), useMenuRow: true)
+
+                            // The same words across riwayat (anchored through Hafs, like the comparison
+                            // sheet) vs. whatever verse sits at the raw tapped number.
+                            Toggle(isOn: $smartAyahMatching.animation(.easeInOut)) {
+                                Label("Smart Ayah Matching", systemImage: "wand.and.stars")
+                            }
+                            .font(.subheadline)
+                            .onChange(of: smartAyahMatching) { _ in settings.hapticFeedback() }
                         } footer: {
-                            Text("Switching the riwayah changes the Arabic text only. Ayah numbering can differ between riwayat: no ayah is ever missing, but some are joined or split differently (for example, \"Alif Lam Meem\" and \"Dhalika al-Kitab...\" form a single ayah in most qiraat), so this ayah may appear under a different number or merged with its neighbor.")
+                            Text(riwayahFooterText)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
 
                     Section {
+                        Picker("Arabic Font", selection: $selectedFontName.animation(.easeInOut)) {
+                            Text("Uthmani").tag(Settings.hafsUthmaniFontName)
+                            Text("Maghribi").tag(Settings.warshUthmaniFontName)
+                            Text("Indopak").tag(Settings.indopakFontName)
+                            Text("Basic").tag(Settings.systemArabicFontName)
+                        }
+                        .pickerStyle(SegmentedPickerStyle())
+                        .onChange(of: selectedFontName) { _ in settings.hapticFeedback() }
+
                         Toggle("Hide Tashkeel (Vowel Diacritics) and Signs", isOn: $hideTashkeel.animation(.easeInOut))
                             .font(.subheadline)
                             .onChange(of: hideTashkeel) { _ in settings.hapticFeedback() }
@@ -1393,28 +1389,28 @@ struct SelectAyahTextSheet: View {
                         }
                     }
 
-                    if !ayah.textTransliteration.isEmpty {
+                    if !hafsAyah.textTransliteration.isEmpty {
                         selectableBlock(
                             title: "TRANSLITERATION",
-                            text: ayah.textTransliteration,
+                            text: hafsAyah.textTransliteration,
                             font: .system(size: settings.englishFontSize),
                             isArabic: false
                         )
                     }
 
-                    if !ayah.textEnglishSaheeh.isEmpty {
+                    if !hafsAyah.textEnglishSaheeh.isEmpty {
                         selectableBlock(
                             title: "SAHEEH INTERNATIONAL",
-                            text: ayah.textEnglishSaheeh,
+                            text: hafsAyah.textEnglishSaheeh,
                             font: .system(size: settings.englishFontSize),
                             isArabic: false
                         )
                     }
 
-                    if !ayah.textEnglishMustafa.isEmpty {
+                    if !hafsAyah.textEnglishMustafa.isEmpty {
                         selectableBlock(
                             title: "CLEAR QURAN (MUSTAFA KHATTAB)",
-                            text: ayah.textEnglishMustafa,
+                            text: hafsAyah.textEnglishMustafa,
                             font: .system(size: settings.englishFontSize),
                             isArabic: false
                         )
@@ -1434,14 +1430,16 @@ struct SelectAyahTextSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .sheetDismissToolbar()
         }
+        .navigationViewStyle(.stack)
     }
 
     @ViewBuilder
     private func selectableBlock(title: String, text: String, font: Font, isArabic: Bool) -> some View {
         Section {
-            // A real (read-only) UITextView, not `Text(...).textSelection(.enabled)`. Inside a List row, that
-            // modifier loses the press-and-drag to the list's own scroll gesture, so all you ever get is a
-            // whole-block "Copy" on long press - never the partial highlight this sheet exists to provide.
+            // A real (read-only) UITextView, not `Text(...).textSelection(.enabled)` - see the note
+            // on `SelectableTextView` in Helpers/SelectableText.swift for why the modifier can't do
+            // this job inside a List. This sheet was where that was first worked out; the type now
+            // lives in Helpers so the rest of the app's prose can use it too.
             SelectableTextView(
                 text: text,
                 font: resolvedUIFont(font, isArabic: isArabic),
@@ -1493,40 +1491,4 @@ struct SelectAyahTextSheet: View {
     }
 }
 
-/// Read-only, selectable text. `isEditable = false` with `isSelectable = true` gives exactly what is wanted
-/// here: you can drag to highlight any part of the passage and copy it, but you cannot alter a word of it.
-private struct SelectableTextView: UIViewRepresentable {
-    let text: String
-    let font: UIFont
-    let isArabic: Bool
-    let lineSpacing: CGFloat
-
-    func makeUIView(context: Context) -> UITextView {
-        let tv = UITextView()
-        tv.isEditable = false
-        tv.isSelectable = true
-        tv.isScrollEnabled = false            // let it size itself; the List scrolls
-        tv.backgroundColor = .clear
-        tv.textContainerInset = .zero
-        tv.textContainer.lineFragmentPadding = 0
-        tv.adjustsFontForContentSizeCategory = false
-        // Without this the text view reports a huge intrinsic width and the row stops wrapping.
-        tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        tv.setContentHuggingPriority(.required, for: .vertical)
-        return tv
-    }
-
-    func updateUIView(_ tv: UITextView, context: Context) {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = isArabic ? .right : .natural
-        paragraph.baseWritingDirection = isArabic ? .rightToLeft : .natural
-        paragraph.lineSpacing = lineSpacing
-
-        tv.attributedText = NSAttributedString(string: text, attributes: [
-            .font: font,
-            .foregroundColor: UIColor.label,
-            .paragraphStyle: paragraph,
-        ])
-    }
-}
 #endif

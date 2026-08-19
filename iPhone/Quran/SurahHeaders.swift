@@ -209,6 +209,8 @@ struct SurahSectionHeader: View {
 
     var surah: Surah
     var compact: Bool = false
+    /// One step smaller again than `compact` - the page footer pill's row (user rule: caption2 there).
+    var micro: Bool = false
 
     var body: some View {
         #if os(watchOS)
@@ -249,7 +251,10 @@ struct SurahSectionHeader: View {
 
     private var symbolFont: Font {
         #if os(iOS)
-        compact ? .caption : .subheadline
+        // Micro sizes are absolute, a step under caption2/caption: the strip has to sit comfortably
+        // inside its hairline pill (user rule: "make the text and the emoji and the star a little
+        // smaller to fit comfortably inside").
+        micro ? .system(size: 9) : (compact ? .caption : .subheadline)
         #else
         .title3
         #endif
@@ -259,7 +264,7 @@ struct SurahSectionHeader: View {
     /// match exactly (same size as `symbolFont`) so they look balanced.
     private var starFont: Font {
         #if os(iOS)
-        compact ? .subheadline : .body
+        micro ? .system(size: 11) : (compact ? .subheadline : .body)
         #else
         .title3
         #endif
@@ -272,9 +277,11 @@ struct SurahSectionHeader: View {
     }
 
     private var ayahSummary: some View {
+        // Compact (the mushaf page header): .subheadline with the smaller side icons - the page reader
+        // wants its chrome tight, not tiny.
         Text("\(surah.ayahCountLabel(for: settings.displayQiraahForArabic)) - \(surah.pageCountLabel)")
             .textCase(.uppercase)
-            .font(compact ? .caption.weight(.semibold) : .subheadline)
+            .font(micro ? .system(size: 10, weight: .semibold) : .subheadline)
             .lineLimit(1)
             .minimumScaleFactor(compact ? 0.6 : 0.25)
     }
@@ -376,7 +383,9 @@ struct HeaderRow: View {
                 .padding(.vertical, 4)
             }
         }
-        .padding(.top, -8)
+        // Was -8, which pressed the Arabic's tall marks against the card's top edge - the Quran line
+        // read as chopped (user report). -2 keeps the row snug without starving the ink of air.
+        .padding(.top, -2)
         #if os(iOS)
         .contextMenu {
             Text("Ayah Actions")
@@ -411,15 +420,16 @@ struct HeaderRow: View {
             cleanedText = cleanedText.removingArabicDots
         }
         if settings.beginnerMode || ayahBeginnerMode {
-            return cleanedText.map { "\($0) " }.joined()
+            return cleanedText.beginnerSpaced
         }
         return cleanedText
     }
 
-    /// "Remove Arabic dots" forces the system face, and so does picking "Basic" in the font picker. In both cases
-    /// the bismillah / ta'awwudh is really system text, so it should stay rounded like the rest of the UI.
+    /// Picking "Basic" in the font picker means system text, so the bismillah / ta'awwudh stays rounded like
+    /// the rest of the UI. (Dots-removed text no longer forces the system face: the bundled ttfs carry real
+    /// dotless skeleton glyphs now - `Scripts/patch_dotless_glyphs.py`.)
     private var usesCustomArabicFace: Bool {
-        !settings.removeArabicDots && settings.quranUsesCustomArabicFace
+        settings.quranUsesCustomArabicFace
     }
 
     private var arabicFont: Font {

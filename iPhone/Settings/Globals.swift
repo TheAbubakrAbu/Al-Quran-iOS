@@ -1,4 +1,10 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+#if os(watchOS)
+import WatchKit
+#endif
 
 // MARK: - App identifiers
 /// Central place for reverse-DNS strings and the App Group name.
@@ -228,6 +234,24 @@ extension View {
     }
 }
 
+extension String {
+    /// آ (U+0622) written as its canonical parts: ا + the combining maddah (U+0653).
+    ///
+    /// The KFGQPC Hafs face - the one the Quran is set in, and the only one whose tajweed colouring
+    /// stays crisp - ships no precomposed آ, because the Madinah mushaf itself writes the maddah as a
+    /// separate mark. Ordinary Arabic prose (hadith, adhkar, duas, the 99 Names) uses the precomposed
+    /// character constantly, so rendering it in that face left thousands of characters to the system
+    /// fallback mid-word. The face DOES carry both pieces and positions marks (`mark`/`mkmk` GPOS), so
+    /// swapping in the decomposition renders identically without touching the font itself - which the
+    /// KFGQPC licence forbids ("no modifying, altering").
+    ///
+    /// Canonical equivalence, so search, copy and share are unaffected; the other faces (IndoPak,
+    /// system) draw the decomposed form the same way they draw the composed one.
+    var decomposingAlefMadda: String {
+        contains("\u{0622}") ? replacingOccurrences(of: "\u{0622}", with: "\u{0627}\u{0653}") : self
+    }
+}
+
 extension Font {
     /// The app's Arabic font resolver. A real bundled face (Uthmani / Qiraat / IndoPak) renders as
     /// authored; the "Basic" sentinel resolves to the ROUNDED system face explicitly. A bare
@@ -438,9 +462,9 @@ extension String {
                 continue
             }
 
-            if base.value == 0x0671 {
-                continue
-            }
+            // ٱ (hamzatul-wasl) is KEPT - `cleanSearch` folds it to a plain ا downstream. Dropping the
+            // whole cluster here made the silent-lane blob start "لذين" instead of "الذين", so every
+            // silent-letter query beginning with ال missed for a reason users could never see.
 
             let hasStandardSukoon = scalars.contains { $0.value == 0x0652 }
             let hasDaggerAlif = scalars.contains { $0.value == 0x0670 }
@@ -475,11 +499,98 @@ extension String {
         return out
     }
 
+    /// Search twin of the mushaf's alif al-wiqaya: every whitespace-delimited token ending in "وا"
+    /// loses that final silent alif (ءامنوا → ءامنو, وعملوا → وعملو). Applied to the ALREADY FOLDED
+    /// corpus lane AND the folded query alike, so spellings with the alif, without it, or mixing
+    /// both converge to identical bytes - the mushaf-sukoon fold above can't do that for queries,
+    /// which carry no sukoon marks. Runs only on folded search text; NEVER fold this into the
+    /// highlighter's per-cluster normalization, where a context-sensitive rule desyncs its index map.
+    var removingAlifWiqayaForSearch: String {
+        guard contains("وا") else { return self }
+        var out = ""
+        out.reserveCapacity(count)
+        var token = ""
+
+        func flushToken() {
+            if token.hasSuffix("وا") {
+                token.removeLast()
+            }
+            out += token
+            token = ""
+        }
+
+        for character in self {
+            if character == " " {
+                flushToken()
+                out.append(" ")
+            } else {
+                token.append(character)
+            }
+        }
+        flushToken()
+
+        return out
+    }
+
+    /// Search-lane twin of the dagger alif: the mushaf writes some long-a sounds as a superscript alef
+    /// (يَٰنِسَآءَ, إِبۡرَٰهِـۧمَ). `cleanSearch` folds that dagger into a full ا - matching a typed
+    /// "يانساء" / "ابراهيم" - and THIS fold removes it instead, matching the equally common typed
+    /// spellings that omit the alif ("ينساء" / "ابرهيم"). Run it on the RAW text BEFORE `cleanSearch`
+    /// (afterwards the dagger is already a full ا) and index both lanes so either spelling finds the ayah.
+    var removingDaggerAlifForSearch: String {
+        guard unicodeScalars.contains(where: { $0.value == 0x0670 }) else { return self }
+        return String(unicodeScalars.filter { $0.value != 0x0670 })
+    }
+
+    /// Query-side twin of the mushaf's attached vocative: the Uthmani script writes "يا + noun" as ONE
+    /// word (يَٰنِسَآءَ, يَٰٓأَيُّهَا), so a typed "يا نساء" can never substring-match the folded corpus,
+    /// where the يا is glued to the word it calls. Joining a standalone folded "يا" token onto the token
+    /// after it converges the typed form with the mushaf's. Whole tokens only - a word merely ENDING in
+    /// "يا" (الدنيا) is untouched. Applied to FOLDED QUERIES as an additional lane, never to corpus blobs
+    /// (which carry no standalone يا) and never inside the highlighter's per-cluster fold, where any
+    /// context-sensitive rule desyncs its index map.
+    var joiningVocativeYaForSearch: String {
+        guard contains("يا ") else { return self }
+        let tokens = split(separator: " ", omittingEmptySubsequences: true)
+        var out: [String] = []
+        out.reserveCapacity(tokens.count)
+        var index = 0
+        while index < tokens.count {
+            if tokens[index] == "يا", index + 1 < tokens.count {
+                out.append("يا" + tokens[index + 1])
+                index += 2
+            } else {
+                out.append(String(tokens[index]))
+                index += 1
+            }
+        }
+        return out.joined(separator: " ")
+    }
+
+    /// Whether the text carries a BARE hamza (ء) - the one the reader has to go out of their way to
+    /// type, and therefore the one that should mean something. Seated hamzas (أ إ آ ؤ ئ) don't count:
+    /// they come along for free with ordinary spellings.
+    var containsBareHamza: Bool {
+        unicodeScalars.contains { $0.value == 0x0621 }
+    }
+
+    /// The dagger-alif variants a corpus text has to be checked against, deduplicated. The mushaf writes
+    /// some long-a sounds as a superscript alef; the main fold turns it into a full ا and this pairs that
+    /// with the spelling that omits it, which is the same two-lane treatment the search index uses.
+    var arabicDaggerVariantsForSearch: [String] {
+        let dropped = removingDaggerAlifForSearch
+        return dropped == self ? [self] : [self, dropped]
+    }
+
+    /// Noon maps to U+06BA (not U+066E like ba/ta/tha): in the early rasm a FINAL noon keeps its
+    /// deep bowl while ba/ta/tha finals stay flat, and U+06BA is exactly that skeleton - bowl in
+    /// isolated/final position, tooth elsewhere. Must stay in lockstep with `dotlessArabicScalar`
+    /// (QuranData.swift), the scalar-level twin the tajweed projection uses.
     var removingArabicDots: String {
         let dotlessMap: [Character: Character] = [
             "أ": "ا", "إ": "ا", "ؤ": "ء", "ئ": "ء",
             "آ": "ا", "ٱ": "ا", "ى": "ى",
-            "ب": "ٮ", "ت": "ٮ", "ث": "ٮ", "ن": "ٮ", "ي": "ى",
+            "ب": "ٮ", "ت": "ٮ", "ث": "ٮ", "ن": "ں", "ي": "ى",
             "ج": "ح", "خ": "ح", "ذ": "د", "ز": "ر", "ش": "س", "ض": "ص",
             "ظ": "ط", "غ": "ع", "ف": "ڡ", "ق": "ٯ", "ة": "ه"
         ]
@@ -536,20 +647,59 @@ struct LazyDestination<Content: View>: View {
 /// same fit-to-page). Raw values are persisted in `Settings.mushafPageLanguage`.
 enum MushafPageLanguage: String, CaseIterable, Identifiable {
     case arabic
+    /// The bundled printed-mushaf facsimile for the selected riwayah (see `MushafPDFLibrary`). Page mode
+    /// only - a printed page has no list equivalent - and only offered when that riwayah's PDF is bundled.
+    case pdf
     case transliteration
     case clearQuran
     case saheeh
 
     var id: String { rawValue }
-    var isEnglish: Bool { self != .arabic }
+    /// The PDF is Arabic, but it is NOT composed text: it renders as a page image, so everything gated on
+    /// "is this page English" (tajweed, qiraat comparison, the text composer) must treat it as neither.
+    var isEnglish: Bool { self != .arabic && self != .pdf }
+    var isPDF: Bool { self == .pdf }
 
     var displayName: String {
         switch self {
         case .arabic:          return "Arabic"
+        case .pdf:             return "Printed Mushaf (PDF)"
         case .transliteration: return "Transliteration (English)"
         case .clearQuran:      return "The Clear Quran (English)"
         case .saheeh:          return "Saheeh International (English)"
         }
+    }
+}
+
+/// How the printed-mushaf facsimile is lit. `auto` (the default) follows the app's light/dark
+/// appearance; `light` always shows the printed page as printed; `night` always applies the
+/// hue-preserving invert. Raw values are persisted in `Settings.mushafPDFAppearance`.
+enum MushafPDFAppearance: String, CaseIterable, Identifiable {
+    case auto
+    case light
+    case night
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .auto:  return "Automatic"
+        case .light: return "Light"
+        case .night: return "Night"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .auto:  return "circle.lefthalf.filled"
+        case .light: return "sun.max"
+        case .night: return "moon"
+        }
+    }
+
+    /// Whether the invert applies, given whether the surrounding appearance is dark.
+    func isNight(inDarkScheme dark: Bool) -> Bool {
+        self == .night || (self == .auto && dark)
     }
 }
 
@@ -573,4 +723,14 @@ extension EnvironmentValues {
 /// environment key (Watch app, previews); only the iPhone app root writes it.
 @MainActor enum AppReveal {
     static var revealed = true
+
+    /// Parks a task until the launch/splash cover has lifted. Deferred launch work (the 17-book
+    /// hadith sweep, the broad surah sweep, the NLEmbedding probe) waits on this so the under-cover
+    /// warm - the window the launch screen's reveal is actually gated on - keeps the main actor and
+    /// the disk to itself. 100ms poll: reveal latency is invisible at that grain.
+    static func waitUntilRevealed() async {
+        while !revealed, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
 }

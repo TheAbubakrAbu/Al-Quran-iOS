@@ -66,6 +66,14 @@ struct SurahRow: View, Equatable {
     /// The listening twin: this surah holds the last-listened full-surah playback position, so the
     /// pill gets a speaker badge. Star > book > speaker when a surah qualifies for more than one.
     let isLastListened: Bool
+    /// Compared alongside `accentColor`: with the `.custom` accent, `.color` resolves through this
+    /// hex, so an edit to it must fail `==` - comparing only the enum case left visible rows on the
+    /// old tint until they scrolled off (the `ReciterRow` fix, applied here too).
+    let customAccentHex: String
+    /// The Arabic surah name renders through `cleanedQuranArabic`, which reads these two toggles -
+    /// snapshotted so flipping either re-renders visible rows. (`removeArabicDots` also feeds the
+    /// compared `fontArabic` default, but only on Hafs - on other riwayat only this snapshot moves.)
+    let cleanArabicKey: String
 
     init(
         surah: Surah,
@@ -97,6 +105,8 @@ struct SurahRow: View, Equatable {
         self.displayQiraahKey = Settings.shared.displayQiraahForArabic ?? ""
         self.isLastRead = Settings.shared.saveLastReadAyah && Settings.shared.lastReadSurah == surah.id
         self.isLastListened = Settings.shared.lastListenedSurah?.surahNumber == surah.id
+        self.customAccentHex = Settings.shared.customAccentColorHex
+        self.cleanArabicKey = "\(Settings.shared.cleanArabicText ? 1 : 0)\(Settings.shared.removeArabicDots ? 1 : 0)"
     }
 
     private var revelationEmoji: String {
@@ -195,45 +205,51 @@ struct SurahRow: View, Equatable {
     
     @ViewBuilder
     private var surahNumberPill: some View {
-        ZStack(alignment: .topTrailing) {
-            Text("\(surah.id)")
-                .font(.caption.weight(.bold))
-                .foregroundColor(accentColor.color)
-                .frame(width: badgeWidth)
-                .frame(maxHeight: .infinity)
-                .conditionalGlassEffect(
-                    useColor: favoriteState ? 0.3 : nil,
-                    customTint: favoriteState ? accentColor.color : nil
-                )
-                .onTapGesture {
-                    settings.hapticFeedback()
-                    settings.toggleSurahFavorite(surah: surah.id)
-                }
-                .accessibilityLabel("Surah \(surah.id)\(isLastRead ? ", last read" : isLastListened ? ", last listened" : "")")
-
-            if favoriteState {
-                Image(systemName: "star.fill")
-                    .font(.caption2)
-                    .foregroundStyle(settings.accentColor.color)
-                    .padding(4)
-                    .offset(x: 8, y: -6)
-            } else if isLastRead {
-                Image(systemName: "book.fill")
-                    .font(.caption2)
-                    .foregroundStyle(settings.accentColor.color)
-                    .padding(4)
-                    .offset(x: 8, y: -6)
-            } else if isLastListened {
-                Image(systemName: "speaker.wave.2.fill")
-                    .font(.caption2)
-                    .foregroundStyle(settings.accentColor.color)
-                    .padding(4)
-                    .offset(x: 8, y: -6)
+        Text("\(surah.id)")
+            .font(.caption.weight(.bold))
+            .foregroundColor(accentColor.color)
+            .frame(width: badgeWidth)
+            .frame(maxHeight: .infinity)
+            .conditionalGlassEffect(
+                useColor: favoriteState ? 0.3 : nil,
+                customTint: favoriteState ? accentColor.color : nil
+            )
+            .onTapGesture {
+                settings.hapticFeedback()
+                settings.toggleSurahFavorite(surah: surah.id)
             }
-        }
-        .padding(.vertical, {
-            if #available(iOS 26, *) { 0 } else { 8 }
-        }())
+            .accessibilityLabel("Surah \(surah.id)\(isLastRead ? ", last read" : isLastListened ? ", last listened" : "")")
+            // The favourite star keeps the RIGHT corner - that is where favouriting a surah has always
+            // shown up. Reading position moves to the LEFT (user rule), so the two stop competing for one
+            // corner: a favourited surah that is also where you left off now shows both badges, where the
+            // star used to hide the book outright.
+            .overlay(alignment: .topTrailing) {
+                if favoriteState {
+                    Image(systemName: "star.fill")
+                        .font(.caption2)
+                        .foregroundStyle(settings.accentColor.color)
+                        .padding(4)
+                        .offset(x: 8, y: -6)
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if isLastRead {
+                    Image(systemName: "book.fill")
+                        .font(.caption2)
+                        .foregroundStyle(settings.accentColor.color)
+                        .padding(4)
+                        .offset(x: -6, y: -6)
+                } else if isLastListened {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.caption2)
+                        .foregroundStyle(settings.accentColor.color)
+                        .padding(4)
+                        .offset(x: -6, y: -6)
+                }
+            }
+            .padding(.vertical, {
+                if #available(iOS 26, *) { 0 } else { 8 }
+            }())
     }
     
     var body: some View {
@@ -283,14 +299,17 @@ struct SurahRow: View, Equatable {
                         .lineLimit(1)
                 }
 
+                // `lineLimit: 1` INSIDE both snippets: HighlightedSnippet applies its own `.lineLimit`
+                // to the inner Text, so the outer clamps here were silently overridden and long names
+                // ("The Enshrouded One" + the revelation emoji) wrapped to a second line.
                 HighlightedSnippet(
                     source: surah.nameTransliteration,
                     term: searchQuery,
                     font: .subheadline.weight(.semibold),
                     accent: accentColor.color,
-                    fg: .primary
+                    fg: .primary,
+                    lineLimit: 1
                 )
-                .lineLimit(1)
 
                 HighlightedSnippet(
                     source: surah.nameEnglish,
@@ -298,9 +317,9 @@ struct SurahRow: View, Equatable {
                     font: .caption,
                     accent: accentColor.color,
                     fg: showInfo ? .primary : .secondary,
-                    trailingSuffix: showInfo ? "" : " \(revelationEmoji)"
+                    trailingSuffix: showInfo ? "" : " \(revelationEmoji)",
+                    lineLimit: 1
                 )
-                .lineLimit(1)
 
                 if showInfo {
                     Text(pageLine)
@@ -399,14 +418,15 @@ struct SurahRow: View, Equatable {
                     .foregroundColor(accentColor.color)
                     .layoutPriority(1)
 
+                // Inner `lineLimit: 1`, same as the list row - the outer clamp was overridden.
                 HighlightedSnippet(
                     source: surah.nameTransliteration,
                     term: searchQuery,
                     font: .subheadline.weight(.semibold),
                     accent: accentColor.color,
-                    fg: .primary
+                    fg: .primary,
+                    lineLimit: 1
                 )
-                .lineLimit(1)
             }
             .minimumScaleFactor(0.6)
 
@@ -416,9 +436,9 @@ struct SurahRow: View, Equatable {
                 font: .caption,
                 accent: accentColor.color,
                 fg: showInfo ? .primary : .secondary,
-                trailingSuffix: showInfo ? "" : " \(revelationEmoji)"
+                trailingSuffix: showInfo ? "" : " \(revelationEmoji)",
+                lineLimit: 1
             )
-            .lineLimit(1)
             .minimumScaleFactor(0.6)
 
             if showInfo {
@@ -484,7 +504,9 @@ struct SurahRow: View, Equatable {
         lhs.sortModeKey == rhs.sortModeKey &&
         lhs.displayQiraahKey == rhs.displayQiraahKey &&
         lhs.isLastRead == rhs.isLastRead &&
-        lhs.isLastListened == rhs.isLastListened
+        lhs.isLastListened == rhs.isLastListened &&
+        lhs.customAccentHex == rhs.customAccentHex &&
+        lhs.cleanArabicKey == rhs.cleanArabicKey
     }
 }
 
@@ -520,7 +542,16 @@ struct SurahAyahRow: View, Equatable {
     }
 
     private var isBookmarked: Bool {
-        settings.bookmarkedAyahs.contains { $0.surah == surah.id && $0.ayah == ayah.id }
+        // Through the indexed accessor, not a scan of the list: this row renders in the bookmarks list,
+        // the histories, and the search results, all of which mount many of it at once.
+        settings.isBookmarked(surah: surah.id, ayah: ayah.id)
+    }
+
+    /// A highlighted ayah's bookmark carries the highlight's color into every list that shows it - the
+    /// bookmarks list, the histories, the search results - so the color is a property of the SAVED ayah
+    /// rather than something that only exists on the page you highlighted it on.
+    private var bookmarkTint: Color {
+        settings.bookmarkHighlight(surah: surah.id, ayah: ayah.id)?.color ?? settings.accentColor.color
     }
 
     private func toggleBookmarkWithNoteGuard() {
@@ -532,7 +563,7 @@ struct SurahAyahRow: View, Equatable {
     private func arabicDisplayText() -> String {
         let clean = settings.cleanArabicText
         let text = ayah.displayArabicText(surahId: surah.id, clean: clean)
-        return settings.beginnerMode ? text.map { String($0) }.joined(separator: " ") : text
+        return settings.beginnerMode ? text.beginnerSpaced : text
     }
 
     private var shouldShowTajweedColors: Bool {
@@ -546,7 +577,7 @@ struct SurahAyahRow: View, Equatable {
         guard shouldShowTajweedColors else { return nil }
         let text = ayah.displayArabicText(surahId: surah.id, clean: false)
         let displayText = settings.cleanArabicText ? ayah.displayArabicText(surahId: surah.id, clean: true) : text
-        let renderedDisplayText = settings.beginnerMode ? displayText.map { String($0) }.joined(separator: " ") : displayText
+        let renderedDisplayText = settings.beginnerMode ? displayText.beginnerSpaced : displayText
         return TajweedStore.shared.attributedText(
             surah: surah.id,
             ayah: ayah.id,
@@ -581,16 +612,19 @@ struct SurahAyahRow: View, Equatable {
                     Text("\(surah.id):\(ayah.id)")
                         .font(.headline)
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
                         #if os(iOS)
-                        .frame(width: badgeWidth, alignment: .center)
-                        .padding(4)
+                        .frame(width: badgeWidth + 6, alignment: .center)
+                        .padding(.vertical, 7)
+                        .padding(.horizontal, 4)
                         #else
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 8)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 11)
                         #endif
                         .conditionalGlassEffect(
                             useColor: isBookmarked ? 0.3 : nil,
-                            customTint: isBookmarked ? settings.accentColor.color : nil,
+                            customTint: isBookmarked ? bookmarkTint : nil,
                             interactive: false
                         )
                         .onTapGesture {
@@ -601,7 +635,7 @@ struct SurahAyahRow: View, Equatable {
                     if isBookmarked {
                         Image(systemName: "bookmark.fill")
                             .font(.caption2)
-                            .foregroundStyle(settings.accentColor.color)
+                            .foregroundStyle(bookmarkTint)
                             .padding(4)
                             .offset(x: 8, y: -6)
                     }
@@ -617,9 +651,9 @@ struct SurahAyahRow: View, Equatable {
                     .minimumScaleFactor(0.5)
             }
             #if os(iOS)
-            .frame(width: 65, alignment: .center)
+            .frame(width: 74, alignment: .center)
             #else
-            .frame(width: 50, alignment: .center)
+            .frame(width: 58, alignment: .center)
             #endif
             .foregroundColor(settings.accentColor.color)
             .padding(.trailing, 8)
@@ -709,7 +743,7 @@ struct SurahAyahRow: View, Equatable {
         .overlay(alignment: .topTrailing) {
             Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(isBookmarked ? settings.accentColor.color : .secondary)
+                .foregroundColor(isBookmarked ? bookmarkTint : .secondary)
                 // Same fix as `gridFavoriteStar`: the target is a 30pt square centered on the GLYPH.
                 // The old shape came after the corner paddings and inflated by 10 more, hit-testing a
                 // ~40pt+ zone that swallowed the tile's right side (taps opened the bookmark, not the ayah).
@@ -779,14 +813,14 @@ struct AyahArabicSnippet: View, Equatable {
 
     private func arabicDisplayText() -> String {
         let text = ayah.displayArabicText(surahId: surah.id, clean: settings.cleanArabicText)
-        return settings.beginnerMode ? text.map { String($0) }.joined(separator: " ") : text
+        return settings.beginnerMode ? text.beginnerSpaced : text
     }
 
     private func arabicTajweedText() -> AttributedString? {
         guard shouldShowTajweedColors else { return nil }
         let text = ayah.displayArabicText(surahId: surah.id, clean: false)
         let displayText = settings.cleanArabicText ? ayah.displayArabicText(surahId: surah.id, clean: true) : text
-        let renderedDisplayText = settings.beginnerMode ? displayText.map { String($0) }.joined(separator: " ") : displayText
+        let renderedDisplayText = settings.beginnerMode ? displayText.beginnerSpaced : displayText
         return TajweedStore.shared.attributedText(
             surah: surah.id,
             ayah: ayah.id,
@@ -860,6 +894,8 @@ struct AyahSearchResultRow: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
         }
 
@@ -978,7 +1014,13 @@ struct AyahSearchRow: View, Equatable {
     private var isBookmarked: Bool {
         bookmarkedAyahs.contains("\(surah)-\(ayah)")
     }
-    
+
+    /// Same rule as `SurahAyahRow.bookmarkTint`: highlighted ayahs carry their color into the search and
+    /// history rows too, so one saved ayah looks the same wherever it surfaces.
+    private var bookmarkTint: Color {
+        settings.bookmarkHighlight(surah: surah, ayah: ayah)?.color ?? settings.accentColor.color
+    }
+
     private var badgeWidth: CGFloat {
         BadgeWidthCache.width(template: "10:100")
     }
@@ -1003,6 +1045,8 @@ struct AyahSearchRow: View, Equatable {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
     }
 
@@ -1019,12 +1063,14 @@ struct AyahSearchRow: View, Equatable {
                 .font(.caption.weight(.semibold))
                 .foregroundColor(settings.accentColor.color)
                 .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
                 .frame(width: badgeWidth, alignment: .center)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 4)
                 .conditionalGlassEffect(
                     useColor: isBookmarked ? 0.3 : nil,
-                    customTint: isBookmarked ? settings.accentColor.color : nil
+                    customTint: isBookmarked ? bookmarkTint : nil
                 )
                 .onTapGesture {
                     settings.hapticFeedback()
@@ -1034,7 +1080,7 @@ struct AyahSearchRow: View, Equatable {
             if isBookmarked {
                 Image(systemName: "bookmark.fill")
                     .font(.caption2)
-                    .foregroundStyle(settings.accentColor.color)
+                    .foregroundStyle(bookmarkTint)
                     .padding(4)
                     .offset(x: 8, y: -6)
             }
@@ -1053,7 +1099,7 @@ struct AyahSearchRow: View, Equatable {
     }
 
     private func arabicDisplayText() -> String {
-        settings.beginnerMode ? arabic.map { String($0) }.joined(separator: " ") : arabic
+        settings.beginnerMode ? arabic.beginnerSpaced : arabic
     }
 
     private func arabicTajweedText() -> AttributedString? {
@@ -1167,33 +1213,111 @@ struct AyahSearchRow: View, Equatable {
         )
     }
 
+    /// Cross-language word highlight (iOS, Hafs, non-beginner): an Arabic query also lights the
+    /// aligned English words in the translation lines, and an English query also lights the Arabic
+    /// tokens whose gloss carries it - so a hit like ضاقت shows WHERE it sits in the translation.
+    /// Routed through the word-by-word gloss pack, whose per-ayah alignment is exact.
+    ///
+    /// Deliberately NOT gated on `visibility` (which only reports LITERAL field matches): the AI
+    /// (semantic) results and the string results are the same rows, and a semantic hit is exactly
+    /// the case where "where is this in the ayah?" matters most. The alignment itself decides -
+    /// when the query's words aren't in this ayah, both directions return no spans anyway. Where
+    /// the pack's alignment contract doesn't hold (other riwayat, beginner spacing) this returns
+    /// empty and the row renders exactly as before.
+    ///
+    /// The per-ayah pass finds nothing for a query whose wording isn't literally in this ayah (a
+    /// semantic hit, a different inflection), so both directions fall back to the corpus-wide
+    /// Quran lexicon - the same path the hadith rows use.
+    private func crossLanguageSpans() -> (arabic: [NSRange], saheeh: [NSRange], mustafa: [NSRange]) {
+        #if os(iOS)
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              settings.isHafsDisplay,
+              !settings.beginnerMode,
+              WordByWordStore.isBundled else { return ([], [], []) }
+
+        let displayText = arabicDisplayText()
+        // The gloss pack's token order is defined against the RAW (unstripped) text; with "Hide
+        // Tashkeel and Signs" off the display text IS raw, so the lookup is skipped.
+        let rawText = settings.cleanArabicText
+            ? (QuranData.shared.ayah(surah: surah, ayah: ayah)?.displayArabicText(surahId: surah, clean: false) ?? displayText)
+            : arabic
+
+        if trimmed.containsArabicLetters {
+            // Per-ayah exact terms UNIONED with the corpus lexicon's - not a fallback. The aligned gloss
+            // is one wording of the word ("straitened"); the lexicon carries the word family's gloss
+            // variants from every occurrence, which is what bridges to a translation that phrased it
+            // differently ("confining"). The union is what "maximize" buys here.
+            var terms = CrossLanguageWordHighlight.englishTermsForArabicMatch(
+                query: trimmed, surah: surah, ayah: ayah, rawText: rawText, displayText: displayText
+            )
+            for term in CrossLanguageWordHighlight.englishTermsForUnalignedArabicQuery(trimmed)
+            where !terms.contains(term) {
+                terms.append(term)
+            }
+            // The morphological Arabic spans are ADDITIVE: tokens of the same word family the plain
+            // highlighter misses (صلاتهم for a صلاة query) light up in the Arabic line too.
+            let arabicExtra = CrossLanguageWordHighlight.arabicSpansForArabicQuery(
+                query: trimmed, in: displayText
+            )
+            guard !terms.isEmpty || !arabicExtra.isEmpty else { return ([], [], []) }
+            return (arabicExtra,
+                    CrossLanguageWordHighlight.wordSpans(of: terms, in: englishSaheeh),
+                    CrossLanguageWordHighlight.wordSpans(of: terms, in: englishMustafa))
+        } else {
+            // Union here too: the per-ayah alignment and the corpus lexicon each catch tokens the
+            // other misses (an inflected form the exact gloss missed; a gloss wording the lexicon
+            // dropped under its noise cap).
+            var spans = CrossLanguageWordHighlight.arabicSpansForEnglishMatch(
+                query: trimmed, surah: surah, ayah: ayah, rawText: rawText, displayText: displayText
+            )
+            for span in CrossLanguageWordHighlight.arabicSpansForEnglishQuery(trimmed, arabicText: displayText)
+            where !spans.contains(where: { NSIntersectionRange($0, span).length > 0 }) {
+                spans.append(span)
+            }
+            return (spans, [], [])
+        }
+        #else
+        return ([], [], [])
+        #endif
+    }
+
     @ViewBuilder
     private func buildCompactSearchRow() -> some View {
         let visibility = searchVisibility()
+        let cross = crossLanguageSpans()
 
         VStack(alignment: .leading, spacing: 8) {
+            // The HadithRow header grammar: the reference pill leading, the ellipsis actions button
+            // trailing. The button itself is OVERLAID by `ayahContextMenuModifier(inlineEllipsis:)`
+            // (which owns the menu items and every sheet they present) - this row just reserves its
+            // 22pt slot so the header lays out around it.
             HStack(spacing: 8) {
                 ayahReferenceBadge
 
-                if visibility.showArabicLine {
-                    HighlightedSnippet(
-                        source: arabicDisplayText(),
-                        term: (visibility.mArabic || visibility.forceArabicHighlight) ? query : "",
-                        font: .custom(searchArabicFontName, size: UIFont.preferredFont(forTextStyle: .body).pointSize),
-                        accent: settings.accentColor.color,
-                        fg: .primary,
-                        preStyledSource: arabicTajweedText(),
-                        beginnerMode: settings.beginnerMode,
-                        lineLimit: nil,
-                        guaranteeMatch: visibility.forceArabicHighlight
-                    )
-                    .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .multilineTextAlignment(.trailing)
-                    // Inside this badge+Arabic HStack SwiftUI otherwise truncates a long ayah to one line;
-                    // fixedSize lets it wrap to as many lines as needed.
-                    .fixedSize(horizontal: false, vertical: true)
-                }
+                Spacer(minLength: 0)
+
+                Color.clear
+                    .frame(width: 22, height: 22)
+            }
+
+            if visibility.showArabicLine || !cross.arabic.isEmpty {
+                HighlightedSnippet(
+                    source: arabicDisplayText(),
+                    term: (visibility.mArabic || visibility.forceArabicHighlight) ? query : "",
+                    font: .custom(searchArabicFontName, size: UIFont.preferredFont(forTextStyle: .body).pointSize),
+                    accent: settings.accentColor.color,
+                    fg: .primary,
+                    preStyledSource: arabicTajweedText(),
+                    beginnerMode: settings.beginnerMode,
+                    lineLimit: nil,
+                    guaranteeMatch: visibility.forceArabicHighlight,
+                    extraHighlightRanges: cross.arabic
+                )
+                .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             if visibility.showTrLine {
@@ -1206,23 +1330,27 @@ struct AyahSearchRow: View, Equatable {
                 )
             }
 
-            if visibility.showSaheehLine {
+            // Cross-language spans FORCE the translation line visible: an Arabic hit whose aligned
+            // English words were found must show them even when the user's translation toggle is off.
+            if visibility.showSaheehLine || !cross.saheeh.isEmpty {
                 HighlightedSnippet(
                     source: englishSaheeh,
                     term: visibility.mSaheeh ? query : "",
                     font: .footnote,
                     accent: settings.accentColor.color,
-                    fg: .secondary
+                    fg: .secondary,
+                    extraHighlightRanges: cross.saheeh
                 )
             }
 
-            if visibility.showMustafaLine {
+            if visibility.showMustafaLine || (!cross.mustafa.isEmpty && !visibility.showSaheehLine && cross.saheeh.isEmpty) {
                 HighlightedSnippet(
                     source: englishMustafa,
                     term: visibility.mMustafa ? query : "",
                     font: .footnote,
                     accent: settings.accentColor.color,
-                    fg: .secondary
+                    fg: .secondary,
+                    extraHighlightRanges: cross.mustafa
                 )
             }
 
@@ -1244,18 +1372,21 @@ struct AyahSearchRow: View, Equatable {
     @ViewBuilder
     private func buildFullSearchRow() -> some View {
         let visibility = searchVisibility()
+        let cross = crossLanguageSpans()
 
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 ayahReferenceBadge
 
                 Text(surahName)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
             .font(.caption)
             .foregroundColor(settings.accentColor.color)
             .transition(.opacity)
 
-            if visibility.showArabicLine {
+            if visibility.showArabicLine || !cross.arabic.isEmpty {
                 HighlightedSnippet(
                     source: arabicDisplayText(),
                     term: (visibility.mArabic || visibility.forceArabicHighlight) ? query : "",
@@ -1265,7 +1396,8 @@ struct AyahSearchRow: View, Equatable {
                     preStyledSource: arabicTajweedText(),
                     beginnerMode: settings.beginnerMode,
                     lineLimit: nil,
-                    guaranteeMatch: visibility.forceArabicHighlight
+                    guaranteeMatch: visibility.forceArabicHighlight,
+                    extraHighlightRanges: cross.arabic
                 )
                 .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -1283,23 +1415,26 @@ struct AyahSearchRow: View, Equatable {
                 )
             }
 
-            if visibility.showSaheehLine {
+            // Cross-language spans FORCE the translation line visible - see buildCompactSearchRow.
+            if visibility.showSaheehLine || !cross.saheeh.isEmpty {
                 HighlightedSnippet(
                     source: englishSaheeh,
                     term: visibility.mSaheeh ? query : "",
                     font: .footnote,
                     accent: settings.accentColor.color,
-                    fg: .secondary
+                    fg: .secondary,
+                    extraHighlightRanges: cross.saheeh
                 )
             }
 
-            if visibility.showMustafaLine {
+            if visibility.showMustafaLine || (!cross.mustafa.isEmpty && !visibility.showSaheehLine && cross.saheeh.isEmpty) {
                 HighlightedSnippet(
                     source: englishMustafa,
                     term: visibility.mMustafa ? query : "",
                     font: .footnote,
                     accent: settings.accentColor.color,
-                    fg: .secondary
+                    fg: .secondary,
+                    extraHighlightRanges: cross.mustafa
                 )
             }
 
@@ -1338,10 +1473,12 @@ struct AyahSearchRow: View, Equatable {
             favoriteSurahs: favoriteSurahs,
             bookmarkedAyahs: bookmarkedAyahs,
             searchText: $searchText,
-            scrollToSurahID: $scrollToSurahID
+            scrollToSurahID: $scrollToSurahID,
+            // Compact rows carry the HadithRow-style header, whose trailing slot this fills.
+            inlineEllipsis: compact
         )
     }
-    
+
     static func == (l: Self, r: Self) -> Bool {
         l.surah == r.surah && l.ayah == r.ayah &&
         l.query == r.query &&

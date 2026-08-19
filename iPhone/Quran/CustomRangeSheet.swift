@@ -414,50 +414,72 @@ struct PlayCustomRangeSheet: View {
 
     var body: some View {
         NavigationView {
-            GeometryReader { geo in
-                VStack(spacing: 0) {
-                    // Top: settings-style List. Ayah Range first, then reciter / surah / repeats.
-                    List {
-                        Section {
-                            rangeSectionContent
-                        } header: {
-                            if selectionMode == .pages && hasPageData {
-                                Label("Page Range", systemImage: "doc.text")
-                            } else {
-                                Label("Ayah Range", systemImage: "number")
-                            }
-                        }
-
-                        Section {
-                            SurahRow(surah: surah, hideInfo: false)
-                        }
-
-                        Section {
-                            reciterRow
-                        } header: {
-                            Label("Reciter", systemImage: "person.wave.2.fill")
-                        }
-
-                        Section {
-                            repeatRow(title: "Each ayah", value: $repeatPerAyah, text: $repeatPerAyahText, isFocused: $repeatPerAyahFocused)
-                            repeatRow(title: "Whole section", value: $repeatSection, text: $repeatSectionText, isFocused: $repeatSectionFocused)
-                        } header: {
-                            Label("Repeats", systemImage: "repeat")
+            // LAYERED layout (user-picked, brought back): a settings List on top and the live preview
+            // pinned as its own List at the bottom, so the first/last ayah (and the plays badge) stay
+            // on screen while the range is adjusted. The old implementation sized the bottom pane with
+            // a GeometryReader (a third of the reported height), and at the half-height (.medium) sheet
+            // detent the GeometryReader is proposed the FULL-detent size - the pane overflowed the
+            // visible sheet and drew over the From/To section. A fixed height avoids the lying geometry
+            // entirely: the pane is the same size at every detent, and the top List scrolls above it.
+            VStack(spacing: 0) {
+                List {
+                    Section {
+                        rangeSectionContent
+                    } header: {
+                        if selectionMode == .pages && hasPageData {
+                            Label("Page Range", systemImage: "doc.text")
+                        } else {
+                            Label("Ayah Range", systemImage: "number")
                         }
                     }
-                    .listStyle(.insetGrouped)
-                    .applyConditionalListStyle(disableNowPlayingInset: true)
 
-                    Divider()
-
-                    // Bottom: compact, read-only first & last ayah preview. Capped at a third of the
-                    // height so the top section keeps priority.
-                    List {
-                        arabicVersesPreview
+                    Section {
+                        SurahRow(surah: surah, hideInfo: false)
                     }
-                    .applyConditionalListStyle(disableNowPlayingInset: true)
-                    .frame(height: geo.size.height / 3)
+
+                    Section {
+                        reciterRow
+                    } header: {
+                        Label("Reciter", systemImage: "person.wave.2.fill")
+                    }
+
+                    Section {
+                        repeatRow(title: "Each ayah", value: $repeatPerAyah, text: $repeatPerAyahText, isFocused: $repeatPerAyahFocused)
+                        repeatRow(title: "Whole section", value: $repeatSection, text: $repeatSectionText, isFocused: $repeatSectionFocused)
+                    } header: {
+                        Label("Repeats", systemImage: "repeat")
+                    }
                 }
+                .listStyle(.insetGrouped)
+                .applyConditionalListStyle(disableNowPlayingInset: true)
+
+                Divider()
+
+                // Bottom layer: first/last ayah + summary always visible, and scrolling this pane
+                // reveals EVERY ayah the range will play, each on its own row (user request).
+                List {
+                    Section {
+                        arabicVersesPreview
+                    } header: {
+                        Label("Preview", systemImage: "text.quote")
+                    }
+
+                    if ayahCount > 0 {
+                        Section {
+                            ForEach(rangeAyahs, id: \.id) { ayah in
+                                fullVerseRow(ayah: ayah)
+                            }
+                        } header: {
+                            Label(
+                                startAyah == endAyah ? "Ayah \(startAyah)" : "Ayahs \(startAyah)–\(endAyah)",
+                                systemImage: "play.circle"
+                            )
+                        }
+                    }
+                }
+                .listStyle(.insetGrouped)
+                .applyConditionalListStyle(disableNowPlayingInset: true)
+                .frame(height: Self.previewPaneHeight)
             }
             .navigationTitle("Custom Ayah Range")
             .navigationBarTitleDisplayMode(.inline)
@@ -476,6 +498,7 @@ struct PlayCustomRangeSheet: View {
                 playButtonBar
             }
         }
+        .navigationViewStyle(.stack)
         .onAppear {
             clampRangeToMaxAyah()
             clampStoredRepeatValues()
@@ -837,8 +860,40 @@ struct PlayCustomRangeSheet: View {
         #endif
     }
 
-    /// Compact, read-only preview card pinned above the Play button: a summary line (count, repeats,
-    /// total plays) followed by the first & last ayah. Line-limited (no minimum scale factor) so it
+    /// The bottom preview pane's fixed height. Deliberately NOT geometry-derived: at the sheet's
+    /// half (.medium) detent a GeometryReader is proposed the full-detent size, which is exactly the
+    /// bug that killed the previous layered layout. ~a third of the full-detent sheet.
+    private static let previewPaneHeight: CGFloat = 250
+
+    /// Every ayah the chosen range will actually play, in playback order - clamped to the active
+    /// qiraah (an ayah absent from the riwayah's text is skipped by playback too).
+    private var rangeAyahs: [Ayah] {
+        surah.ayahs.filter {
+            $0.id >= startAyah && $0.id <= endAyah
+                && $0.existsInQiraah(settings.displayQiraahForArabic, surahID: surah.id)
+        }
+    }
+
+    /// One row of the all-ayahs preview section: the ayah's label (number + mushaf page) over its FULL
+    /// Arabic text - unlike the compact first/last preview, nothing is line-limited here, because this
+    /// section exists to show exactly what will play.
+    private func fullVerseRow(ayah: Ayah) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(ayahPageLabel(ayah.id))
+                .font(.caption2.weight(.medium))
+                .foregroundColor(Color(.tertiaryLabel))
+
+            Text(ayah.displayArabicText(surahId: surah.id, clean: settings.cleanArabicText, qiraahOverride: settings.displayQiraahForArabic))
+                .font(Font.arabic(settings.quranDisplayFontName, size: UIFont.preferredFont(forTextStyle: .title3).pointSize))
+                .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
+                .multilineTextAlignment(.trailing)
+                .foregroundColor(.primary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
+    /// Compact, read-only preview (the main List's last section): the first & last ayah followed by
+    /// a summary line (count, repeats, total plays). Line-limited (no minimum scale factor) so it
     /// stays small regardless of ayah length.
     private var arabicVersesPreview: some View {
         Group {

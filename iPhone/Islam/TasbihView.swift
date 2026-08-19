@@ -36,6 +36,13 @@ final class TasbihCounters: ObservableObject {
         })
     }
 
+    /// Everything ever counted here - the free counter plus every preset row. Read by the profile's
+    /// dhikr card and its badges; the individual counts stay private so nothing outside this object can
+    /// write them behind `binding(for:)`'s back.
+    var totalCount: Int {
+        freeCount + presetCounts.values.reduce(0, +)
+    }
+
     func binding(for index: Int) -> Binding<Int> {
         if index == Self.freeIndex {
             return Binding(
@@ -339,6 +346,9 @@ struct ActiveTasbihCard: View {
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
+        // iOS-only: on the watch this card is a LIST ROW, and the system row platter already gives it
+        // chrome - glass on top would double-card it. On iOS it floats in a safe-area inset, so the
+        // glass IS its only background.
         #if os(iOS)
         .conditionalGlassEffect(rectangle: true, useColor: 0.12)
         #endif

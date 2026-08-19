@@ -71,7 +71,7 @@ struct HaramView: View {
                     Text("1. **Multiplied Rewards**: Praying in Masjid Al-Haram is rewarded 100,000 times more than praying elsewhere.")
                         .font(.body)
                     Text("2. **Forgiveness of Sins**: Performing Hajj or Umrah with sincerity cleanses one’s sins. The Prophet Muhammad (peace and blessings be upon him) said:").font(.body)
-                    ScriptureQuote(text: "“Whoever performs Hajj (pilgrimage) and does not have sexual relations (with his wife), nor commits sin, nor disputes unjustly (during Hajj), then he returns from Hajj as pure and free from sins as on the day on which his mother gave birth to him” (Riyad as-Salihin 1274).", dimmed: true)
+                    ScriptureQuote(text: "“Whoever performs Hajj (pilgrimage) and does not have sexual relations (with his wife), nor commits sin, nor disputes unjustly (during Hajj), then he returns from Hajj as pure and free from sins as on the day on which his mother gave birth to him” (Sahih al-Bukhari 1521).", dimmed: true)
                     Text("3. **Unity of the Ummah**: Millions of Muslims from diverse cultures and backgrounds gather in Masjid Al-Haram, symbolizing the unity and equality of the Muslim Ummah under the worship of Allah.")
                         .font(.body)
                 }
@@ -113,7 +113,7 @@ struct HaramView: View {
             }
             .themedListRowBackground()
         }
-        .applyConditionalListStyle()
+        .selectableArticleList()
         .navigationTitle("Masjid Al-Haram")
     }
 }
@@ -217,7 +217,7 @@ struct NabawiView: View {
             }
             .themedListRowBackground()
         }
-        .applyConditionalListStyle()
+        .selectableArticleList()
         .navigationTitle("Masjid An-Nabawi")
     }
 }
@@ -305,7 +305,7 @@ struct AqsaView: View {
             }
             .themedListRowBackground()
         }
-        .applyConditionalListStyle()
+        .selectableArticleList()
         .navigationTitle("Masjid Al-Aqsa")
     }
 }
@@ -485,7 +485,7 @@ struct WudhuView: View {
                         .font(.body)
                     ScriptureQuote(text: "“There is no one among you who performs wudhu and does it well, then says: I bear witness that there is no god but Allah alone with no partner, and that Muhammad is His slave and Messenger, but the eight gates of Paradise will be opened for him, and he may enter through whichever of them he wishes” (Sahih Muslim 234).", dimmed: true)
 
-                    Text("Do not be wasteful with water, even at a flowing river. That was the Prophet's instruction (Sunan Ibn Majah 425).")
+                    Text("Do not be wasteful with water, even at a flowing river, as reported in a narration in Sunan Ibn Majah 425 whose grading scholars have debated; the principle itself is explicit in the Quran: “and eat and drink, but be not excessive. Indeed, He likes not those who commit excess” (Quran 7:31).")
                         .font(.body)
                 }
 
@@ -537,7 +537,7 @@ struct WudhuView: View {
             }
             .themedListRowBackground()
         }
-        .applyConditionalListStyle()
+        .selectableArticleList()
         .navigationTitle("How to Make Wudhu")
     }
 }
@@ -641,7 +641,7 @@ struct GhuslView: View {
             }
             .themedListRowBackground()
         }
-        .applyConditionalListStyle()
+        .selectableArticleList()
         .navigationTitle("How to Make Ghusl")
     }
 }
@@ -690,19 +690,19 @@ struct JumuahView: View {
                     Text("1. **Reciting Surah Al-Kahf (سُورَة ٱلكَهف):** The Prophet Muhammad (peace and blessings be upon him) said:")
                         .font(.body)
 
-                    Text("“Whoever reads Surah Al-Kahf on Friday will have a light between this Friday and the next” (Mishkat al-Masabih 2175).")
+                    Text("“Whoever reads Surah Al-Kahf on Friday will have a light between this Friday and the next” (al-Hakim and al-Bayhaqi; graded sahih by al-Albani, Sahih al-Jami' 6470).")
                         .font(.body)
                         .foregroundColor(settings.accentColor.color)
 
                     Text("2. **Sending Salawat on the Prophet (peace and blessings be upon him):**")
                         .font(.body)
 
-                    ScriptureQuote(text: "“Increase your supplications for me on the day and night of Friday. Whoever blesses me once, Allah will bless him ten times” (al-Sunan al-Kubra lil-Bayhaqi 5994).", dimmed: true)
+                    ScriptureQuote(text: "“Increase your supplications for me on the day and night of Friday. Whoever blesses me once, Allah will bless him ten times” (al-Sunan al-Kubra lil-Bayhaqi 5994, graded hasan by al-Albani; the tenfold blessing is also in Sahih Muslim 408).", dimmed: true)
 
                     Text("3. **Making Dua (Supplication)**: There is a special hour on Friday during which all supplications are accepted. The Prophet Muhammad (peace and blessings be upon him) said:")
                         .font(.body)
 
-                    ScriptureQuote(text: "“Friday is twelve hours in which there is no Muslim slave who asks Allah for something but He will give it to him, so seek it in the last hour after Asr” (Sunan an-Nasa'i 1389).", dimmed: true)
+                    ScriptureQuote(text: "“Friday is twelve hours in which there is no Muslim slave who asks Allah for something but He will give it to him, so seek it in the last hour after Asr” (Sunan an-Nasa'i 1389; graded sahih by al-Albani, Sahih Abi Dawud 1048).", dimmed: true)
                 }
 
                 Section(header: Text("ETIQUETTE")) {
@@ -730,7 +730,7 @@ struct JumuahView: View {
             }
             .themedListRowBackground()
         }
-        .applyConditionalListStyle()
+        .selectableArticleList()
         .navigationTitle("Jumuah")
     }
 }
@@ -866,7 +866,7 @@ struct AdhanOtherView: View {
             }
             .themedListRowBackground()
         }
-        .applyConditionalListStyle()
+        .selectableArticleList()
         .navigationTitle("Adhan")
     }
 }
@@ -977,7 +977,7 @@ struct IqamahView: View {
             }
             .themedListRowBackground()
         }
-        .applyConditionalListStyle()
+        .selectableArticleList()
         .navigationTitle("Iqamah")
     }
 }
@@ -1115,7 +1115,7 @@ struct TakbiratView: View {
 
                     لَا إِلَهَ إِلَّا اللَّهُ، وَلَا نَعبُدُ إِلَّا إِيَّاهُ، مُخلِصِينَ لَهُ الدِّينَ وَلَو كَرِهَ الكَافِرُونَ
 
-                    اللَّهُمَّ صَلِّ عَلَى سَيِّدِنَا مُحَمَّدٍ، وَعَلَى آلِ سَيِّدِنَا مُحَمَّدٍ، وَعَلَى أَصحَابِ سَيِّدِنَا مُحَمَّدٍ، وَعَلَى أَنصَارِ سَيِّدِنَا مُحَمَّدٍ، وَعَلَى أَزوَاجِ سَيِّدِنَا مُحَمَّدٍ، وَعَلَى ذُرِّيَّةِ سَيِّدِنَا مُحَمَّدٍ، وَسَلِّم تَسلِيمًا كَثِيرًا
+                    اللَّهُمَّ صَلِّ عَلَى سَيِّدِنَا مُحَمَّدٍ، وَعَلَى آلِ سَيِّدِنَا مُحَمَّدٍ، وَعَلَى أَصحَابِ سَيِّدِنَا مُحَمَّدٍ، وَعَلَى أَنصَارِ سَيِّدِنَا مُحَمَّدٍ، وَعَلَى أَزوَاجِ سَيِّدِنَا مُحَمَّدٍ، وَعَلَى ذُرِّيَّةِ سَيِّدِنَا مُحَمَّدٍ، وَسَلِّم تَسلِيمًا كَثِيرًا
                     """)
                     .font(.body)
                     .foregroundColor(settings.accentColor.color)
@@ -1163,7 +1163,7 @@ struct TakbiratView: View {
             .themedListRowBackground()
         }
         .navigationTitle("How to Pray Eid")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -1234,7 +1234,7 @@ struct HijriCalendarView: View {
             .themedListRowBackground()
         }
         .navigationTitle("Hijri Calendar")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -1288,13 +1288,16 @@ struct CompileView: View {
                 }
 
                 Section(header: Text("STANDARDIZATION UNDER UTHMAN")) {
-                    Text("As Islam spread, differences in regional reading threatened dispute. Caliph Uthman ibn Affan formed a committee led by Zayd ibn Thabit with senior Qurayshi scholars to produce standardized copies based on the Abu Bakr compilation and the established Uthmanic rasm (consonantal skeleton) that could accommodate the revealed modes.")
+                    Text("As Islam spread, differences in regional reading threatened dispute. Caliph Uthman ibn Affan formed a committee led by Zayd ibn Thabit with senior Qurayshi scholars to produce standardized copies based on the Abu Bakr compilation and the established Uthmanic rasm (consonantal skeleton). Written without dots or tashkeel (vowel marks), this skeletal script could accommodate the seven revealed Ahruf.")
                         .font(.body)
 
-                    Text("Uthman sent official copies to major centers (e.g., Kufa, Basra, Sham) and asked that non-verified personal materials be retired to prevent confusion between private notes/duas and the Quranic text. The Companions agreed with this measure, preserving unity upon the authenticated text.")
+                    Text("This was not a limitation of the copies; it was how Arabic was written. Dots (i'jam) and tashkeel simply did not exist in the script at that time, and the Arabs, masters of their own language, did not need them to read. Precisely BECAUSE the rasm was bare, one written skeleton could be read in every revealed way that matched it: the same letters carried all the Ahruf, and the verified oral transmission determined how each was recited.")
                         .font(.body)
 
-                    Text("This standardization did not remove revelation; rather, it unified the community upon the verified mushaf that preserved what remained from the seven Ahruf in the Uthmanic rasm and ensured consistent public recitation.")
+                    Text("Uthman sent official copies to all the major cities (Makkah, Kufa, Basra, Sham, and others, with one kept in Madinah) and asked that non-verified personal materials be retired to prevent confusion between private notes/duas and the Quranic text. The Companions agreed with this measure, preserving unity upon the authenticated text.")
+                        .font(.body)
+
+                    Text("This standardization did not remove revelation; rather, it unified the community upon the verified mushaf, whose skeletal rasm supported the seven Ahruf, and ensured consistent public recitation.")
                         .font(.body)
                 }
 
@@ -1307,7 +1310,7 @@ struct CompileView: View {
                 }
 
                 Section(header: Text("THE FOUR MASTERS & LEADING TRANSMITTERS")) {
-                    Text("Prophet Muhammad (peace and blessings be upon him) said: “Take the Quran from four: Abdullah ibn Masud, Salim (the freed slave of Abu Hudhayfah), Ubayy ibn Ka‘b, and Mu‘adh ibn Jabal.” (Sahih al-Bukhari)")
+                    Text("Prophet Muhammad (peace and blessings be upon him) said: “Take the Quran from four: Abdullah ibn Masud, Salim (the freed slave of Abu Hudhayfah), Ubayy ibn Ka‘b, and Mu‘adh ibn Jabal.” (Sahih al-Bukhari 4999)")
                         .font(.title3)
                         .foregroundColor(settings.accentColor.color.opacity(0.85))
 
@@ -1316,7 +1319,7 @@ struct CompileView: View {
                 }
 
                 Section(header: Text("AHRUF, QIRAAT, AND THE UTHMANIC RASM")) {
-                    Text("Prophet Muhammad (peace and blessings be upon him) taught that the Quran was revealed in seven Ahruf (modes) for ease. The Quran was first compiled into one manuscript under Abu Bakr (may Allah be pleased with him), around one year after the Prophet’s death. Later, the Uthmanic rasm allowed what remained of those modes to be read and transmitted through canonical Qiraat verified by chains. The 10 Qiraat (with their 20 Riwayaat) are mutawatir and reflect how the prophetic recitation was preserved in writing and oral teaching.")
+                    Text("Prophet Muhammad (peace and blessings be upon him) taught that the Quran was revealed in seven Ahruf (modes) for ease. The Quran was first compiled into one manuscript under Abu Bakr (may Allah be pleased with him), around one year after the Prophet’s death. Under Uthman (may Allah be pleased with him), official copies were sent to all the major cities; because the rasm was a skeletal script without dots or tashkeel, it supported the seven Ahruf, which continued to be read and transmitted through canonical Qiraat verified by chains. The 10 Qiraat (with their 20 Riwayaat) are mutawatir and reflect how the prophetic recitation was preserved in writing and oral teaching.")
                         .font(.body)
 
                     Text("Thus, standardization did not limit revelation; it safeguarded it, preventing private notes and unverified materials from being mistaken for the Quran, while preserving the legitimate readings taught by Prophet Muhammad (peace and blessings be upon him).")
@@ -1324,7 +1327,7 @@ struct CompileView: View {
                 }
 
                 Section(header: Text("KEY REPORTS (BRIEF)")) {
-                    Text("• 7 Ahruf: “The Quran was revealed in seven Ahruf, so recite whichever is easiest for you.” (Sahih al-Bukhari; Sahih Muslim)")
+                    Text("• 7 Ahruf: “The Quran was revealed in seven Ahruf, so recite whichever is easiest for you.” (Sahih al-Bukhari 4992; Sahih Muslim 818)")
                         .font(.body)
                     Text("• Double review in final Ramadan (al-Ardah al-Akhirah): reported in authentic narrations.")
                         .font(.body)
@@ -1382,7 +1385,7 @@ struct CompileView: View {
             .themedListRowBackground()
         }
         .navigationTitle("Compilation of the Quran")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -1487,12 +1490,13 @@ struct TajweedView: View {
             .themedListRowBackground()
         }
         .navigationTitle("Tajweed")
-        .applyConditionalListStyle()
+        .selectableArticleList()
         #if os(iOS)
         .sheet(isPresented: $showTajweedLegend) {
             NavigationView {
                 TajweedLegendView()
             }
+            .navigationViewStyle(.stack)
             .smallMediumSheetPresentation()
         }
         #endif
@@ -1591,7 +1595,7 @@ struct JuzView: View {
             .themedListRowBackground()
         }
         .navigationTitle("Thirty Juz")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -1625,18 +1629,29 @@ struct AhrufView: View {
                         .font(.body)
                 }
 
+                Section(header: Text("THE WISDOM BEHIND THE VARIETY")) {
+                    Text("Classical scholars draw out several wisdoms behind the revealed variety, beyond ease of recitation:")
+                        .font(.body)
+
+                    Text("• Mercy and ease: a largely unlettered nation of many dialects could all recite the Quran as it was revealed, without hardship.\n• A sign of inimitability (i'jaz): the wordings vary, yet the meanings align and complete one another; no mode contradicts another in a single ruling or belief.\n• Proof of its divine origin: had the Quran been from other than Allah (Glorified and Exalted be He), such parallel wordings would inevitably clash. They never do.\n• Extra preservation: each mode was memorized and passed on through its own verified channels, multiplying the independent lines guarding the text.")
+                        .font(.body)
+
+                    Text("As the narrations in Sahih Muslim make clear, the variation between the modes lies in how the words are recited, not in what the Quran commands: no harf permits what another forbids, and none changes the halal or the haram.")
+                        .font(.body)
+                }
+
                 Section(header: Text("PROPHETIC HADITH ON THE SEVEN AHRUF")) {
                     Text("Prophet Muhammad (peace and blessings be upon him) said:")
                         .font(.body)
 
-                    ScriptureQuote(text: "“The Quran was revealed in seven Ahruf, so recite whichever is easiest for you.”\n- Sahih al-Bukhari • Sahih Muslim", dimmed: true)
+                    ScriptureQuote(text: "“The Quran was revealed in seven Ahruf, so recite whichever is easiest for you.”\n- Sahih al-Bukhari 4992 • Sahih Muslim 818", dimmed: true)
 
                     Text("Another narration explains how Jibril kept requesting ease for the Ummah:")
                         .font(.body)
 
-                    ScriptureQuote(text: "“Jibril recited to me in one harf. I asked him to increase it… until he ended with seven Ahruf.”\n- Sahih Muslim", dimmed: true)
+                    ScriptureQuote(text: "“Jibril recited to me in one harf. I asked him to increase it… until he ended with seven Ahruf.”\n- Sahih al-Bukhari 4991 • Sahih Muslim 819", dimmed: true)
 
-                    Text("In the famous incident of Umar and Hisham ibn Hakim: both of them recited differently, and Prophet Muhammad (peace and blessings be upon him) said that both were revealed, proving that the variations are not mistakes but revelation.")
+                    Text("In the famous incident of Umar and Hisham ibn Hakim: both of them recited differently, and Prophet Muhammad (peace and blessings be upon him) said that both were revealed, proving that the variations are not mistakes but revelation (Sahih al-Bukhari 4992; Sahih Muslim 818).")
                         .font(.title3)
                         .foregroundColor(settings.accentColor.color.opacity(0.85))
                 }
@@ -1661,11 +1676,23 @@ struct AhrufView: View {
                     Text("• Prophet Muhammad (peace and blessings be upon him) taught the Companions each harf personally.\n• Jibril reviewed the Quran with Prophet Muhammad (peace and blessings be upon him) every year in Ramadan.\n• In the year Prophet Muhammad (peace and blessings be upon him) passed away, Jibril reviewed it twice (al-Ardah al-Akhirah).")
                         .font(.body)
 
-                    Text("About one year after the Prophet’s passing, Abu Bakr (may Allah be pleased with him) commissioned the first complete compilation of the Quran into one manuscript. During the caliphate of Uthman (may Allah be pleased with him), the Ummah was then unified upon official copies from that preserved compilation, written in the Uthmanic rasm, which preserved what the Ummah recited, containing what remained from the seven Ahruf in the rasm.")
+                    Text("About one year after the Prophet’s passing, Abu Bakr (may Allah be pleased with him) commissioned the first complete compilation of the Quran into one manuscript. During the caliphate of Uthman (may Allah be pleased with him), the Ummah was then unified upon official copies from that preserved compilation, written in the Uthmanic rasm and sent to all the major cities. Because the rasm was a bare skeletal script, without dots or tashkeel (vowel marks), it could carry the seven Ahruf, preserving what the Ummah recited. Dots and tashkeel did not even exist in Arabic writing yet; the Arabs did not need them, and it is precisely that bareness that let one written skeleton be read in every revealed way that matched it.")
                         .font(.body)
 
                     Text("The Ahruf are preserved through oral transmission, ijazahs, and chains of narration (isnad).")
                         .font(.body)
+                }
+
+                Section(header: Text("AN ANALOGY: SEVEN NUMBERS, MANY PASSWORDS")) {
+                    Text("Think of the seven Ahruf as seven numbers you are handed, and each Qiraah as a password formed from them. The numbers (Ahruf) are the revealed building blocks; a password (Qiraah) is one specific, fixed combination drawn from them, whether it uses one digit, a few, or all seven.")
+                        .font(.body)
+
+                    Text("Seven numbers could form far more than ten passwords, and likewise more readings than ten were transmitted historically. The 10 Qiraat are the combinations preserved with mass transmission (mutawatir): rigorously verified, widely taught, and famous across the Ummah.")
+                        .font(.body)
+
+                    Text("Since every harf is revealed by Allah (Glorified and Exalted be He), every canonical combination of them is fully Quran, and no combination was ever invented: each Qiraah was received from Prophet Muhammad (peace and blessings be upon him) through an unbroken chain and applies its rules with complete consistency, exactly as taught.")
+                        .font(.body)
+                        .foregroundColor(settings.accentColor.color)
                 }
 
                 Section(header: Text("WHAT ABOUT THE 10 QIRAAT?")) {
@@ -1687,14 +1714,14 @@ struct AhrufView: View {
 
 
                 Section(header: Text("IN SUMMARY")) {
-                    Text("The seven ahruf are all from Allah; the surviving canonical recitations preserve what remained after the Uthmanic standardization of the text.")
+                    Text("The seven ahruf are all from Allah; the Uthmanic mushaf, written in a skeletal rasm without dots or tashkeel and sent to all the major cities, supported them, and the canonical recitations preserve them to this day.")
                         .font(.body)
                 }
             }
             .themedListRowBackground()
         }
         .navigationTitle("7 Ahruf (Modes)")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -1713,7 +1740,28 @@ struct QiraatView: View {
                     Text("The 10 Qiraat (قِرَاءَات), from the root q–r–a (قرأ) meaning “to read/recite,” literally means “readings/recitations.” Islamically and Quranically, a Qiraah (قِرَاءَة) is a specific, verified method of reciting the Quran. The 10 Qiraat are the preserved, mass-transmitted (mutawatir, مُتَوَاتِر) recitations of the Quran, each a precise method taught by Prophet Muhammad (peace and blessings be upon him) and transmitted through authentic chains of narrators (isnad إِسنَاد). They do not represent different Qurans, but different prophetic ways of reciting the same revelation.")
                         .font(.body)
 
-                    Text("As covered in the previous section, the Quran was revealed by Allah (Glorified and Exalted be He) in seven Ahruf (أَحرُف), modes of recitation for ease. Jibril (Gabriel) brought these modes to Prophet Muhammad (peace and blessings be upon him), who taught them to the Ummah. Around one year after the Prophet’s passing, Abu Bakr (may Allah be pleased with him) commissioned the first complete compilation of the Quran into one manuscript, and later Uthman (may Allah be pleased with him) unified public recitation upon official copies from that preserved text. The Qiraat show how those Ahruf were preserved in practice through the Uthmanic rasm (الرَّسم العُثمَانِي), the consonantal skeleton of the mushaf (مُصحَف).")
+                    Text("As covered in the previous section, the Quran was revealed by Allah (Glorified and Exalted be He) in seven Ahruf (أَحرُف), modes of recitation for ease. Jibril (Gabriel) brought these modes to Prophet Muhammad (peace and blessings be upon him), who taught them to the Ummah. Around one year after the Prophet’s passing, Abu Bakr (may Allah be pleased with him) commissioned the first complete compilation of the Quran into one manuscript, and later Uthman (may Allah be pleased with him) unified public recitation upon official copies from that preserved text, sent to all the major cities. The Qiraat show how those Ahruf were preserved in practice through the Uthmanic rasm (الرَّسم العُثمَانِي), the consonantal skeleton of the mushaf (مُصحَف): dots and tashkeel did not yet exist in Arabic writing (nor did the Arabs need them), so the bare skeleton naturally supported the seven Ahruf, readable in every revealed way that matched the rasm.")
+                        .font(.body)
+                }
+
+                Section(header: Text("AN ANALOGY: SEVEN NUMBERS, MANY PASSWORDS")) {
+                    Text("Imagine being handed seven numbers and asked to form passwords from them. The seven numbers are like the seven Ahruf: every one of them revealed by Allah (Glorified and Exalted be He). A password formed from those numbers is like a Qiraah: one specific, fixed combination drawn from the revealed modes.")
+                        .font(.body)
+
+                    Text("A password does not have to use all seven digits; it may draw on one, a few, or all of them. In the same way, a Qiraah may reflect one harf, several, or elements of many, and it is fully Quran either way, because every harf on its own is revealed Quran, and any single Qiraah on its own is sufficient, complete Quran.")
+                        .font(.body)
+
+                    Text("Just as seven numbers can form far more than ten passwords, the revealed modes could combine into more readings than ten, and other readings were indeed transmitted historically. The 10 Qiraat are the combinations that reached us mutawatir (mass-transmitted): rigorously verified, taught continuously from teacher to student, and famous across the Ummah. Together they keep the seven Ahruf alive, carried by the Uthmanic rasm, whose skeletal script (no dots or tashkeel) supported them all.")
+                        .font(.body)
+
+                    Text("But no one sat down and invented these combinations. Each Qiraah was received, not designed: it descends through an unbroken chain (isnad) from its reciters → their teachers → a Companion → Prophet Muhammad (peace and blessings be upon him), who taught it exactly this way.")
+                        .font(.body)
+                        .foregroundColor(settings.accentColor.color)
+
+                    Text("Because each Qiraah is Quran, reciting one ayah in one Qiraah and the next ayah in another is still reciting nothing but the Book of Allah (Glorified and Exalted be He); the Companions themselves recited in different revealed ways, and Prophet Muhammad (peace and blessings be upon him) approved them all.")
+                        .font(.body)
+
+                    Text("And like a password that must be entered exactly, each Qiraah keeps its own rules from the Ahruf alive with complete internal consistency: its madd lengths, imalah, assimilations, and word-forms are applied the same way every single time, exactly as transmitted.")
                         .font(.body)
                 }
 
@@ -1730,6 +1778,21 @@ struct QiraatView: View {
 
                     Text("Important: The Qiraat are not arbitrary. They reflect how the seven Ahruf were preserved through both writing and oral transmission, essentially a “mix and preserve” of the revealed modes into rigorously taught, verifiable recitational methods.")
                         .font(.body)
+
+                    Text("This precision goes back to how the Quran was taught from the very beginning: the Companions would take a portion of ayat from Prophet Muhammad (peace and blessings be upon him) and not move past it until they had mastered both its recitation and what it contained. The Qiraat continue that discipline, teacher to student, to this day.")
+                        .font(.body)
+                }
+
+                Section(header: Text("HOW THE READINGS DIFFER")) {
+                    Text("Imam Ibn al-Jazari (d. 833 AH), the foremost authority of this science, grouped the differences between the canonical readings into three kinds:")
+                        .font(.body)
+
+                    Text("• The same word, pronounced in more than one revealed way, with the meaning unchanged.\n• Different word-forms pointing to the same reality: in Surah al-Fatihah, “Maliki yawmid-din” (King of the Day of Judgment) and “Maaliki yawmid-din” (Owner of the Day of Judgment) are both revealed, and both describe Allah (Glorified and Exalted be He).\n• Different words carrying complementary meanings: each reading adds a facet, and none contradicts another.")
+                        .font(.body)
+
+                    Text("There is no fourth category of contradiction. Across all the canonical readings, not a single ayah makes lawful what another forbids or affirms what another denies; the differences enrich the meaning, never oppose it.")
+                        .font(.body)
+                        .foregroundColor(settings.accentColor.color)
                 }
 
                 Section(header: Text("QIRAAH (قراءة) VS RIWAYAH (رواية)")) {
@@ -1769,10 +1832,14 @@ struct QiraatView: View {
 
                     Text("They do not affect preservation; rather, they manifest it: letter for letter, word for word, in all the ways Prophet Muhammad (peace and blessings be upon him) taught.")
                         .font(.body)
+
+                    Text("Every canonical reading is equally Quran. As classical scholars explain, each one is revelation received by Prophet Muhammad (peace and blessings be upon him) and taught by him; none is a scholar's preference or a later refinement. Whoever recites by any canonical riwayah is reciting the Book of Allah (Glorified and Exalted be He) itself.")
+                        .font(.body)
+                        .foregroundColor(settings.accentColor.color)
                 }
 
                 Section(header: Text("THE FOUR MASTERS OF THE QURAN")) {
-                    Text("Prophet Muhammad (peace and blessings be upon him) said: “Take the Quran from four: Abdullah ibn Masud, Salim (the freed slave of Abu Hudhayfah), Ubayy ibn Ka‘b, and Mu‘adh ibn Jabal.” (Sahih al-Bukhari)")
+                    Text("Prophet Muhammad (peace and blessings be upon him) said: “Take the Quran from four: Abdullah ibn Masud, Salim (the freed slave of Abu Hudhayfah), Ubayy ibn Ka‘b, and Mu‘adh ibn Jabal.” (Sahih al-Bukhari 4999)")
                         .font(.title3)
                         .foregroundColor(settings.accentColor.color.opacity(0.85))
 
@@ -1781,70 +1848,37 @@ struct QiraatView: View {
                 }
 
                 Section(header: Text("THE 10 QIRAAT (القراءات)")) {
-                    Text("The 10 Qiraat are the canonical recitation methods of the Quran. Each is named after its primary teacher (the Imam of that recitation).")
+                    Text("The 10 Qiraat are the canonical recitation methods of the Quran. Each is named after its primary teacher (the Imam of that recitation). Tap any of them to read about the imam and reach his two narrators.")
                         .font(.body)
 
-                    Group {
-                        Text("• Abu Jafar (أَبُو جَعفَر)")
-                        Text("• Abu Amr (أَبُو عَمرٍو)")
-                        Text("• al-Kisai (الكِسَائِي)")
-                        Text("• Asim (عَاصِم)")
-                        Text("• Hamzah (حَمزَة)")
-                        Text("• Ibn Amir (ابنُ عَامِر)")
-                        Text("• Ibn Kathir (ابنِ كَثِير)")
-                        Text("• Khalaf al-Ashir (خَلَف العَاشِر)")
-                        Text("• Nafi (نَافِع)")
-                        Text("• Yaqoub (يَعقُوب)")
+                    ForEach(QiraatProfiles.masters) { master in
+                        NavigationLink(destination: QiraahMasterDetailView(profile: master)) {
+                            QiraatProfileRow(
+                                title: master.id,
+                                arabic: master.arabic,
+                                detail: "\(master.city), died \(master.diedAH) AH"
+                            )
+                        }
                     }
-                    .font(.body)
                 }
 
                 Section(header: Text("THE 20 RIWAYAAT (روايات)")) {
-                    Text("Each Qiraah (recitation method) has two primary riwayaat (narrations). These are the 20 canonical transmissions used in teaching and ijazah (chain certification).")
+                    Text("Each Qiraah (recitation method) has two primary riwayaat (narrations). These are the 20 canonical transmissions used in teaching and ijazah (chain certification). Tap any of them to read about the narrator.")
                         .font(.body)
 
-                    Group {
-                        // Abu Jafar
-                        Text("• Ibn Wardan an Abi Jafar (ابنُ وَردَان عَن أَبِي جَعفَر)")
-                        Text("• Ibn Jammaz an Abi Jafar (ابنُ جَمَّاز عَن أَبِي جَعفَر)")
-
-                        // Abu Amr
-                        Text("• ad-Duri an Abi Amr (الدُّورِي عَن أَبِي عَمرٍو)")
-                        Text("• as-Susi an Abi Amr (السُّوسِي عَن أَبِي عَمرٍو)")
-
-                        // al-Kisai
-                        Text("• Abu al-Harith an al-Kisai (أَبُو الحَارِث عَن الكِسَائِي)")
-                        Text("• ad-Duri an al-Kisai (الدُّورِي عَن الكِسَائِي)")
-
-                        // Asim
-                        Text("• Shubah an Asim (شُعبَة عَن عَاصِم)")
-                        Text("• Hafs an Asim (حَفص عَن عَاصِم)")
-
-                        // Hamzah
-                        Text("• Khalaf an Hamzah (خَلَف عَن حَمزَة)")
-                        Text("• Khallad an Hamzah (خَلَّاد عَن حَمزَة)")
-
-                        // Ibn Amir
-                        Text("• Hisham an Ibn Amir (هِشَام عَن ابنِ عَامِر)")
-                        Text("• Ibn Dhakwan an Ibn Amir (ابنُ ذَكوَان عَن ابنِ عَامِر)")
-
-                        // Ibn Kathir
-                        Text("• al-Bazzi an Ibn Kathir (البَزِّي عَن ابنِ كَثِير)")
-                        Text("• Qunbul an Ibn Kathir (قُنبُل عَن ابنِ كَثِير)")
-
-                        // Khalaf al-Ashir
-                        Text("• Ishaq an Khalaf al-Ashir (إِسحَاق عَن خَلَف العَاشِر)")
-                        Text("• Idris an Khalaf al-Ashir (إِدرِيس عَن خَلَف العَاشِر)")
-
-                        // Nafi
-                        Text("• Warsh an Nafi (وَرش عَن نَافِع)")
-                        Text("• Qalun an Nafi (قَالُون عَن نَافِع)")
-
-                        // Yaqoub
-                        Text("• Ruways an Yaqoub (رُوَيس عَن يَعقُوب)")
-                        Text("• Rawh an Yaqoub (رَوح عَن يَعقُوب)")
+                    // Grouped under their imam, in the same order as the ten above, so the pairing is
+                    // visible rather than something you reconstruct from the names.
+                    ForEach(QiraatProfiles.masters) { master in
+                        ForEach(QiraatProfiles.narrators(ofMaster: master.id)) { narrator in
+                            NavigationLink(destination: RiwayahNarratorDetailView(profile: narrator)) {
+                                QiraatProfileRow(
+                                    title: "\(narrator.name) an \(master.id)",
+                                    arabic: narrator.arabic,
+                                    detail: "died \(narrator.diedAH) AH"
+                                )
+                            }
+                        }
                     }
-                    .font(.body)
                 }
 
                 Section(header: Text("THE COMPANIONS BEHIND EACH QIRAAH")) {
@@ -1910,7 +1944,7 @@ struct QiraatView: View {
                 }
 
                 Section(header: Text("IN-APP AUDIO")) {
-                    Text("In this app, you can listen to multiple Qiraat/riwayaat (not all twenty are available). Availability varies by full-surah vs. ayah-by-ayah playback.")
+                    Text("In this app, every one of the 20 riwayaat has at least one complete full-surah reciter. Ayah-by-ayah playback remains Hafs-based, so availability varies by full-surah vs. ayah-by-ayah playback.")
                         .font(.body)
                 }
 
@@ -1976,7 +2010,7 @@ struct QiraatView: View {
             .themedListRowBackground()
         }
         .navigationTitle("10 Qiraat (Recitations)")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 
     /// A tappable Instagram handle that opens the creator's profile, used for the infographic credits.
@@ -2014,7 +2048,7 @@ struct FarewellView: View {
 
                 Section(header: Text("FINAL DAYS OF THE PROPHET")) {
                     Text("""
-                         After delivering this sermon, the Prophet (peace be upon him) continued to guide the Muslim Ummah until his passing on 12th Rabi’ al-Awwal, 11 AH (632 CE). His final words were, “O Allah, with the highest companions,” expressing his longing to meet Allah. He passed away in the home of Aisha (may Allah be pleased with her), leaving behind a legacy of faith and compassion.
+                         After delivering this sermon, the Prophet (peace be upon him) continued to guide the Muslim Ummah until his passing on 12th Rabi’ al-Awwal, 11 AH (632 CE). His final words were, “O Allah, with the highest companions” (Sahih al-Bukhari 4463), expressing his longing to meet Allah. He passed away in the home of Aisha (may Allah be pleased with her), leaving behind a legacy of faith and compassion.
                          """)
                     .font(.body)
                 }
@@ -2033,9 +2067,12 @@ struct FarewellView: View {
 
                          All mankind is from Adam and Eve. No Arab is superior to a non-Arab, nor is a non-Arab superior to an Arab; no white is superior to a black, nor is a black superior to a white, except in piety and good deeds. Every Muslim is a brother to every other Muslim. Do not commit injustices.
 
-                         After me, no prophet will come, and no new religion will be born. I leave behind the Quran and the Sunnah; if you adhere to them, you will never go astray. Be my witness, O Allah, that I have conveyed Your message.
+                         After me, no prophet will come, and no new religion will be born. I leave behind the Book of Allah; if you hold fast to it, you will never go astray. Be my witness, O Allah, that I have conveyed Your message.
                          """)
                     .font(.body)
+
+                    Text("This is a composite rendering of the Farewell Sermon, bringing together its authentically narrated portions (Sahih Muslim 1218; Sahih al-Bukhari 1739; Musnad Ahmad 23489, and others).")
+                        .font(.caption)
                 }
 
                 Section(header: Text("KEY MESSAGES OF THE SERMON")) {
@@ -2057,7 +2094,7 @@ struct FarewellView: View {
             .themedListRowBackground()
         }
         .navigationTitle("Farewell Sermon")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -2103,7 +2140,7 @@ struct SahabahView: View {
                     Text("Umar (may Allah be pleased with him) was known for his strength, justice, and piety. He was the second Caliph and expanded the Islamic state significantly.")
                         .font(.body)
 
-                    Text("The Prophet (peace be upon him) said: “If there were to be a Prophet after me, it would be Umar ibn Al-Khattab” (Sunan al-Tirmidhi 3686).")
+                    Text("The Prophet (peace be upon him) said: “If there were to be a Prophet after me, it would be Umar ibn Al-Khattab” (Sunan al-Tirmidhi 3686; graded hasan by al-Albani, as-Silsilah as-Sahihah 327).")
                         .font(.title3)
                         .foregroundColor(settings.accentColor.color.opacity(0.85))
 
@@ -2163,7 +2200,7 @@ struct SahabahView: View {
             .themedListRowBackground()
         }
         .navigationTitle("The Sahabah")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -2308,7 +2345,7 @@ struct WivesView: View {
             .themedListRowBackground()
         }
         .navigationTitle("The Wives")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -2454,7 +2491,7 @@ struct CaliphatesView: View {
             .themedListRowBackground()
         }
         .navigationTitle("The Caliphates")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -2570,7 +2607,7 @@ struct MadhabView: View {
             .themedListRowBackground()
         }
         .navigationTitle("The 4 Madhahib")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 
     /// One imam's entry: a bold name (with the Arabic name), a secondary line of school / region / dates, and a
@@ -2705,7 +2742,7 @@ struct AhlulBaytView: View {
             .themedListRowBackground()
         }
         .navigationTitle("The People of the House")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -2778,7 +2815,7 @@ struct AhlusSunnahView: View {
                 }
 
                 Section(header: Text("THE SAVED GROUP")) {
-                    Text("The Prophet (peace be upon him) said: “The Jews split into seventy-one sects, the Christians into seventy-two, and my nation will split into seventy-three sects, all of them in the Fire except one.“ They asked, “Who are they, O Messenger of Allah?“ He said: “Those who are upon what I and my Companions are upon today” (Sunan al-Tirmidhi 2641).")
+                    Text("The Prophet (peace be upon him) said: “The Jews split into seventy-one sects, the Christians into seventy-two, and my nation will split into seventy-three sects, all of them in the Fire except one.“ They asked, “Who are they, O Messenger of Allah?“ He said: “Those who are upon what I and my Companions are upon today” (Sunan al-Tirmidhi 2641; graded hasan by al-Albani, Sahih al-Tirmidhi).")
                         .font(.title3)
                         .foregroundColor(settings.accentColor.color.opacity(0.85))
 
@@ -2819,7 +2856,7 @@ struct AhlusSunnahView: View {
             .themedListRowBackground()
         }
         .navigationTitle("Ahl As-Sunnah")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -2897,7 +2934,7 @@ struct SeerahView: View {
 
                     ScriptureQuote(text: "“And We have not sent you except as a mercy to the worlds” (Quran 21:107).")
 
-                    Text("When Aishah (may Allah be pleased with her) was asked about his character, she said that his character was the Quran: he embodied its teachings in the most complete way.")
+                    Text("When Aishah (may Allah be pleased with her) was asked about his character, she said that his character was the Quran (Sahih Muslim 746): he embodied its teachings in the most complete way.")
                         .font(.body)
                 }
 
@@ -2909,7 +2946,7 @@ struct SeerahView: View {
             .themedListRowBackground()
         }
         .navigationTitle("The Seerah")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -2969,7 +3006,12 @@ struct TafsirView: View {
                     Text("Explaining the Quran is not by desire or guesswork. It requires sound belief, knowledge of the Arabic language, the Sunnah, the sayings of the early scholars, and the sciences of the Quran.")
                         .font(.body)
 
-                    Text("The Prophet (peace be upon him) warned: “Whoever speaks about the Quran without knowledge, let him take his seat in the Fire” (Sunan al-Tirmidhi 2950).")
+                    Text("Allah (Glorified and Exalted be He) warned:")
+                        .font(.body)
+
+                    ScriptureQuote(text: "“And do not pursue that of which you have no knowledge. Indeed, the hearing, the sight and the heart - about all those [one] will be questioned.” (Quran 17:36)")
+
+                    Text("And He counted among what He has forbidden “that you say about Allah that which you do not know” (Quran 7:33). The Prophet (peace and blessings be upon him) also said: “Whoever tells a lie against me intentionally, then (surely) let him occupy his seat in Hell-fire” (Sahih al-Bukhari 108).")
                         .font(.title3)
                         .foregroundColor(settings.accentColor.color.opacity(0.85))
                 }
@@ -2987,7 +3029,7 @@ struct TafsirView: View {
             .themedListRowBackground()
         }
         .navigationTitle("Tafsir")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -3054,7 +3096,7 @@ struct FiqhAqeedahManhajView: View {
             .themedListRowBackground()
         }
         .navigationTitle("Fiqh, Aqeedah, Manhaj")
-        .applyConditionalListStyle()
+        .selectableArticleList()
     }
 }
 
@@ -3063,3 +3105,4 @@ struct FiqhAqeedahManhajView: View {
         PillarsView()
     }
 }
+

@@ -12,10 +12,10 @@
 	<string>Used to save wallpapers you choose to your Photo Library.</string>
 	<key>UIAppFonts</key>
 	<array>
-		<string>Qiraat.ttf</string>
 		<string>Uthmani.ttf</string>
 		<string>Indopak.ttf</string>
 		<string>QuranCommon.ttf</string>
+		<string>Warsh.ttf</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>

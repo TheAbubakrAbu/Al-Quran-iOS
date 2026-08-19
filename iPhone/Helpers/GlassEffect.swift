@@ -14,6 +14,16 @@ struct ConditionalGlassEffect: ViewModifier {
     /// already-tinted card) so it doesn't read as a heavy double-tinted box.
     var themeTint: Bool = true
 
+    /// A 24pt radius reads right on iPhone-sized cards; on the watch's small tiles it rounds them into
+    /// near-stadiums that look chopped, so the watch uses a gentler curve.
+    private var rectangleCornerRadius: CGFloat {
+        #if os(watchOS)
+        14
+        #else
+        24
+        #endif
+    }
+
     func body(content: Content) -> some View {
         if #available(iOS 26.0, watchOS 26.0, *) {
             modernGlass(content: content)
@@ -42,7 +52,7 @@ struct ConditionalGlassEffect: ViewModifier {
             if circle {
                 content.glassEffect(clear ? clearStyle : regularStyle, in: Circle())
             } else if rectangle {
-                content.glassEffect(clear ? clearStyle : regularStyle, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                content.glassEffect(clear ? clearStyle : regularStyle, in: RoundedRectangle(cornerRadius: rectangleCornerRadius, style: .continuous))
             } else if clear {
                 content.glassEffect(clearStyle)
             } else {
@@ -57,7 +67,7 @@ struct ConditionalGlassEffect: ViewModifier {
         if circle {
             fallbackGlassShape(content: content, shape: Circle())
         } else if rectangle {
-            fallbackGlassShape(content: content, shape: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            fallbackGlassShape(content: content, shape: RoundedRectangle(cornerRadius: rectangleCornerRadius, style: .continuous))
         } else {
             fallbackGlassShape(content: content, shape: Capsule())
         }
@@ -77,7 +87,15 @@ struct ConditionalGlassEffect: ViewModifier {
         return content
             .background {
                 if #available(iOS 15.0, watchOS 10.0, *) {
-                    shape.fill(.ultraThinMaterial)
+                    // Regular material, not ultra-thin: on pre-Liquid-Glass systems these pills float
+                    // straight over list content, and ultra-thin let the rows bleed through them
+                    // ("wayyy too transparent" - user report). `clear` keeps the see-through variant
+                    // for surfaces that want it.
+                    if clear {
+                        shape.fill(.ultraThinMaterial)
+                    } else {
+                        shape.fill(.regularMaterial)
+                    }
                 } else {
                     shape.fill(fallbackBaseFill)
                 }

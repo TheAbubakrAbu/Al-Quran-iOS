@@ -53,4 +53,33 @@ enum AppLifecycle {
         WatchConnectivityManager.shared.flushPendingSync()
     }
 }
+
+#elseif os(watchOS)
+import SwiftUI
+
+/// The watch app's foreground/background orchestration - the iPhone `AppLifecycle`'s little sibling,
+/// and the same contract: the app root delegates its scene-phase transition HERE in one line, and
+/// this is the only place that knows which subsystems care. Deliberately much smaller than the
+/// iPhone's: no adhan player, no Live Activity, no Quran-widget snapshots, no daily hadith on the
+/// wrist - add a domain section only when the watch actually ships the feature.
+enum AppLifecycle {
+
+    @MainActor
+    static func scenePhaseChanged(to phase: ScenePhase) {
+        let settings = Settings.shared
+
+        if phase == .active {
+            // No location work here: prayer times (and the location sensing they need) are
+            // Al-Islam/Al-Adhan features; this app's watch wake needs nothing refreshed.
+        } else {
+            // A page flip within the last second may still have its last-read write pending.
+            settings.flushPendingLastRead()
+            // A khatm mark made in the last 250ms is still on the debounce timer; persist it before
+            // the system can suspend or kill the process.
+            settings.flushPendingKhatmProgress()
+            // Flush any just-made setting change before suspension so it reliably reaches the iPhone.
+            WatchConnectivityManager.shared.flushPendingSync()
+        }
+    }
+}
 #endif

@@ -4,7 +4,7 @@ import UIKit
 #if os(iOS)
 
 enum AyahSecondarySheet: String, Identifiable {
-    case tafsir, qiraah, translations, customRange, note, share
+    case tafsir, qiraah, translations, customRange, note, share, selectText
     var id: String { rawValue }
 }
 
@@ -58,6 +58,9 @@ struct AyahActionsSheet: View {
     @ObservedObject private var settings = Settings.shared
     @ObservedObject private var quranData = QuranData.shared
     @ObservedObject private var quranPlayer = QuranPlayer.shared
+    /// The per-ayah beginner spacing, shared with the list rows and the page composer - so the tile below
+    /// shows the ayah's real current state and toggling it re-composes the page behind the sheet.
+    @ObservedObject private var beginnerOverrides = AyahBeginnerOverrides.shared
     @Environment(\.dismiss) private var dismiss
 
     let surah: Surah
@@ -66,8 +69,16 @@ struct AyahActionsSheet: View {
 
     @State private var confirmRemoveNote = false
 
+    /// Word-by-word: the tapped word's card (the Hafs gloss + tajweed-rules card, or the riwayah word
+    /// card), presented OVER this sheet so closing it returns to the actions.
+    @State private var tappedWord: TappedWord?
+    @State private var tappedRiwayahWord: RiwayahTappedWord?
+
     private var isBookmarked: Bool { settings.bookmarkIndex(surah: surah.id, ayah: ayah.id) != nil }
     private var currentNote: String { settings.bookmarkNoteText(surah: surah.id, ayah: ayah.id) }
+    private var currentHighlight: AyahHighlightColor? {
+        settings.bookmarkHighlight(surah: surah.id, ayah: ayah.id)
+    }
     private var canShowTafsir: Bool { settings.isHafsDisplay }
     /// The comparison tile is worth showing as soon as either comparison is available.
     private var canCompare: Bool { settings.showQiraahDetails || settings.isHafsDisplay }
@@ -78,50 +89,97 @@ struct AyahActionsSheet: View {
     private var ayahPreview: some View {
         let arabic = ayah.displayArabicText(surahId: surah.id, clean: settings.cleanArabicText)
         let showsTajweed = settings.showTajweedColors && settings.showArabicText && settings.isHafsDisplay
+        let riwayahTajweedTag = settings.showTajweedColors && settings.showArabicText
+            ? settings.riwayahTajweedPackTag : nil
+
+        // The tajweed-colored preview text, when either store paints this ayah.
+        let preStyled: AttributedString? = {
+            if showsTajweed,
+               let styled = TajweedStore.shared.attributedText(
+                   surah: surah.id,
+                   ayah: ayah.id,
+                   text: ayah.displayArabicText(surahId: surah.id, clean: false),
+                   displayText: arabic,
+                   cleanDisplayText: settings.cleanArabicText,
+                   beginnerSpacing: false
+               ) {
+                return styled
+            }
+            if let tag = riwayahTajweedTag,
+               let styled = QiraahTajweedStore.shared.attributedText(
+                   tag: tag, surah: surah.id, ayah: ayah.id, displayText: arabic,
+                   hiddenRules: settings.riwayahTajweedHiddenRuleSet
+               ) {
+                return styled
+            }
+            return nil
+        }()
+        // Hafs: glosses lined up with the preview's tokens, so a tapped word opens the same meaning +
+        // tajweed card the list rows offer. Empty (but still tappable) when the pack can't line up -
+        // the card then shows the word's rules without a gloss.
+        let glosses: [String] = settings.isHafsDisplay
+            ? (WordByWordStore.shared.glosses(
+                surah: surah.id, ayah: ayah.id,
+                rawText: ayah.displayArabicText(surahId: surah.id, clean: false, qiraahOverride: nil),
+                displayText: arabic
+              ) ?? [])
+            : []
+        // Non-Hafs: a tapped word opens the riwayah word card instead (its rules + the Hafs
+        // counterpart) - same rule as the list rows, only when the riwayah's pack is bundled.
+        let riwayahWordTag: String? = {
+            guard !settings.isHafsDisplay else { return nil }
+            let tag = Settings.Riwayah.canonicalTag(settings.displayQiraahForArabic ?? "")
+            return !tag.isEmpty && QiraahTajweedStore.shared.isAvailable(tag: tag) ? tag : nil
+        }()
 
         VStack(spacing: 6) {
-            Group {
-                if showsTajweed,
-                   let styled = TajweedStore.shared.attributedText(
-                       surah: surah.id,
-                       ayah: ayah.id,
-                       text: ayah.displayArabicText(surahId: surah.id, clean: false),
-                       displayText: arabic,
-                       cleanDisplayText: settings.cleanArabicText,
-                       beginnerSpacing: false
-                   ) {
-                    Text(styled) + Text(" \(ayah.idArabic)").foregroundColor(settings.accentColor.accent1)
-                } else {
-                    Text(arabic) + Text(" \(ayah.idArabic)").foregroundColor(settings.accentColor.accent1)
+            // Rendered through the word-by-word TextKit view so every word is tappable (task: tap a word
+            // in this sheet to open its card) - same colors and trailing alignment the plain Text had.
+            // Deliberately smaller than the reader's own size: this is a reminder of which ayah you
+            // tapped, not a place to read from, and at full size it pushed every action off the sheet.
+            WordByWordText(
+                displayText: arabic,
+                preStyled: preStyled,
+                fontName: settings.quranDisplayUsesCustomArabicFace ? settings.quranDisplayFontName : nil,
+                fontSize: min(CGFloat(settings.fontArabicSize) * 0.55, 20),
+                ayahNumberArabic: ayah.idArabic,
+                glosses: glosses,
+                alwaysTappable: (settings.isHafsDisplay && glosses.isEmpty) || riwayahWordTag != nil,
+                selectedWord: tappedWord?.index ?? tappedRiwayahWord?.index,
+                onSelectWord: { index in
+                    let tokens = WordTokens.tokens(in: arabic)
+                    guard tokens.indices.contains(index) else { return }
+                    if let tag = riwayahWordTag {
+                        tappedRiwayahWord = RiwayahTappedWord(
+                            index: index, word: tokens[index], total: tokens.count, tag: tag
+                        )
+                    } else if settings.isHafsDisplay {
+                        tappedWord = TappedWord(
+                            index: index,
+                            word: tokens[index],
+                            meaning: glosses.indices.contains(index) ? glosses[index] : "",
+                            total: glosses.isEmpty ? tokens.count : glosses.count
+                        )
+                    }
                 }
-            }
-            // Deliberately smaller than the reader's own size: this is a reminder of which ayah you tapped,
-            // not a place to read from, and at full size it pushed every action off the sheet.
-            .font(Font.arabic(settings.quranDisplayFontName, size: min(settings.fontArabicSize * 0.55, 20)))
-            .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
-            // NO `.environment(\.layoutDirection, .rightToLeft)` here - in an RTL context `.trailing`
-            // resolves to the LEFT edge, so that override made this exact modifier left-align wrapped
-            // Arabic (the "still not trailing" bug). The bidi algorithm already lays the Arabic out
-            // right-to-left from the characters themselves; what we want is the visual right edge, which
-            // in the app's LTR layout is `.trailing` - on both the wrapped lines AND the frame (a
-            // max-width frame with no alignment CENTERS a short single-line ayah).
-            .multilineTextAlignment(.trailing)
-            .lineSpacing(4)
+            )
             .frame(maxWidth: .infinity, alignment: .trailing)
 
             // The same reference format every ayah sheet uses, plus the ayah's ACTUAL text in the active
             // translation (not just the translation's name).
-            VStack(spacing: 3) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(ayahSheetTitle(surahNumber: surah.id, ayahNumber: ayah.id))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 if let translation = currentTranslationText(for: ayah) {
                     Text(translation)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+                        .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
 
@@ -162,8 +220,13 @@ struct AyahActionsSheet: View {
         .buttonStyle(.plain)
     }
 
-    private func actionTileLabel(_ title: String, systemImage: String, destructive: Bool = false) -> some View {
-        VStack(spacing: 5) {
+    private func actionTileLabel(_ title: String, systemImage: String, destructive: Bool = false,
+                                 tint: Color? = nil) -> some View {
+        // `tint` overrides the accent for one tile (the highlighter, showing its color). `destructive`
+        // still wins - a red tile is a warning, and nothing should be able to paint over that.
+        let color = destructive ? Color.red : (tint ?? settings.accentColor.accent1)
+
+        return VStack(spacing: 5) {
             Image(systemName: systemImage)
                 .font(.system(size: 17, weight: .semibold))
 
@@ -173,13 +236,13 @@ struct AyahActionsSheet: View {
                 .lineLimit(2)
                 .minimumScaleFactor(0.7)
         }
-        .foregroundStyle(destructive ? Color.red : settings.accentColor.accent1)
+        .foregroundStyle(color)
         .frame(maxWidth: .infinity)
         .frame(height: 62)
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill((destructive ? Color.red : settings.accentColor.accent1).opacity(0.10))
+                .fill(color.opacity(0.10))
         )
     }
 
@@ -188,13 +251,16 @@ struct AyahActionsSheet: View {
     private struct AyahAction: Identifiable {
         /// The two tiles that open a menu instead of firing an action: the repeat count and the comparison
         /// (qiraah vs translation) both need a choice before anything happens.
-        enum Kind { case button, repeatMenu, comparisonMenu }
+        enum Kind { case button, repeatMenu, comparisonMenu, highlightMenu }
 
         let id: String
         let title: String
         let systemImage: String
         var kind: Kind = .button
         var destructive = false
+        /// Paints the tile in the ayah's highlight color instead of the accent - only the highlight tile
+        /// uses it, so the tile shows which color the ayah is wearing without being opened.
+        var tint: Color? = nil
         var action: () -> Void = {}
     }
 
@@ -212,6 +278,16 @@ struct AyahActionsSheet: View {
                         confirmRemoveNote = true
                     }
                 }
+            ),
+            // Next to the bookmark tile, because it is one: picking a color saves the ayah and colors its
+            // bookmark. The tile itself wears the current color, so page mode can answer "what did I mark
+            // this in?" without opening the menu.
+            AyahAction(
+                id: "highlight",
+                title: currentHighlight?.title ?? "Highlight",
+                systemImage: "highlighter",
+                kind: .highlightMenu,
+                tint: currentHighlight?.color
             ),
             AyahAction(
                 id: "note",
@@ -279,14 +355,43 @@ struct AyahActionsSheet: View {
             }))
         }
 
-        list.append(AyahAction(id: "copy", title: "Copy", systemImage: "doc.on.doc", action: {
+        // The page's text view is deliberately non-selectable (taps and presses are ayah gestures), so this
+        // is page mode's route to the same select-and-copy sheet the list rows offer. It sits ahead of the
+        // copy tiles because picking out part of an ayah is the finer-grained version of copying it whole.
+        list.append(AyahAction(id: "selectText", title: "Select Text", systemImage: "highlighter", action: {
+            settings.hapticFeedback()
+            onRequestSheet?(.selectText)
+        }))
+
+        // The per-ayah letter spacing, offered here exactly as the list rows offer it in their context menu -
+        // page mode had no route to it at all. Hidden while the GLOBAL beginner mode is on, since then every
+        // ayah is already spaced and the toggle would do nothing (same rule as the list's).
+        if settings.showArabicText && !settings.beginnerMode {
+            let isBeginner = beginnerOverrides.contains(surah: surah.id, ayah: ayah.id)
+            list.append(AyahAction(
+                id: "beginner",
+                title: "Beginner",
+                systemImage: isBeginner ? "textformat.size.larger.ar" : "textformat.size.ar",
+                action: {
+                    settings.hapticFeedback()
+                    withAnimation(.easeInOut) {
+                        beginnerOverrides.toggle(surah: surah.id, ayah: ayah.id)
+                    }
+                }
+            ))
+        }
+
+        // ONE copy tile, in the remembered mode - the same "Copy Ayah" the list rows offer (user rule).
+        // This used to be two tiles, Copy Text and Copy Image, which is the one thing page mode did
+        // differently from the list for no reason the reader could see.
+        list.append(AyahAction(id: "copy", title: "Copy Ayah", systemImage: "doc.on.doc", action: {
             settings.hapticFeedback()
             ShareAyahSheet.copyAyahToPasteboard(surahNumber: surah.id, ayahNumber: ayah.id,
                                                 settings: settings, quranData: quranData)
             dismiss()
         }))
 
-        list.append(AyahAction(id: "share", title: "Share", systemImage: "square.and.arrow.up", action: {
+        list.append(AyahAction(id: "share", title: "Share Ayah", systemImage: "square.and.arrow.up", action: {
             settings.hapticFeedback()
             onRequestSheet?(.share)
         }))
@@ -294,19 +399,11 @@ struct AyahActionsSheet: View {
         return list
     }
 
-    /// Three across, unless that would leave a last row holding a single tile - a 10th tile stranded on its own
-    /// row reads as a mistake. In that case two across (which divides evenly), else four.
-    private var columnCount: Int {
-        let count = actions.count
-        for candidate in [3, 2, 4] where count % candidate != 1 {
-            return candidate
-        }
-        return 3
-    }
-
     private var actionGrid: some View {
+        // Always three across: a stable grid beats the old adaptive 2/3/4 column count, which made the
+        // sheet re-arrange itself depending on whether the ayah happened to carry a note.
         LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: columnCount),
+            columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3),
             spacing: 10
         ) {
             ForEach(actions) { item in
@@ -348,6 +445,13 @@ struct AyahActionsSheet: View {
                         actionTileLabel(item.title, systemImage: item.systemImage)
                     }
 
+                case .highlightMenu:
+                    Menu {
+                        ayahHighlightMenuItems(surah: surah.id, ayah: ayah.id, settings: settings)
+                    } label: {
+                        actionTileLabel(item.title, systemImage: item.systemImage, tint: item.tint)
+                    }
+
                 case .button:
                     actionTile(item.title, systemImage: item.systemImage, destructive: item.destructive, action: item.action)
                 }
@@ -377,7 +481,9 @@ struct AyahActionsSheet: View {
             .navigationTitle(ayahSheetTitle(surahNumber: surah.id, ayahNumber: ayah.id))
             .navigationBarTitleDisplayMode(.inline)
             .sheetDismissToolbar()
+            .accentWashedBackground()
         }
+        .navigationViewStyle(.stack)
         .confirmationDialog(Settings.bookmarkNoteRemovalDialogTitle, isPresented: $confirmRemoveNote, titleVisibility: .visible) {
             Button("Remove", role: .destructive) {
                 settings.hapticFeedback()
@@ -386,6 +492,31 @@ struct AyahActionsSheet: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(Settings.bookmarkNoteRemovalDialogMessage)
+        }
+        // The tapped word's card, presented over this sheet (the one deliberate sheet-on-sheet here:
+        // closing the card should land you back on the actions, mid-exploration). `item:` so tapping a
+        // different word re-presents with the new word.
+        .sheet(item: $tappedWord) { tapped in
+            WordMeaningSheet(
+                surah: surah,
+                ayah: ayah,
+                word: tapped.word,
+                meaning: tapped.meaning,
+                position: tapped.index + 1,
+                total: tapped.total
+            )
+            .environmentObject(settings)
+        }
+        .sheet(item: $tappedRiwayahWord) { tapped in
+            RiwayahWordSheet(
+                surah: surah,
+                ayah: ayah,
+                tag: tapped.tag,
+                word: tapped.word,
+                index: tapped.index,
+                total: tapped.total
+            )
+            .environmentObject(settings)
         }
     }
 }

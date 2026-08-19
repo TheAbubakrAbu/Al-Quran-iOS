@@ -187,7 +187,10 @@ final class NamesViewModel: ObservableObject {
 
     private func startLoading() {
         guard loadTask == nil else { return }
-        loadTask = Task(priority: .utility) { [weak self] in
+        // .userInitiated, not .utility: the LAUNCH SCREEN's reveal awaits `waitUntilLoaded`, and
+        // .utility is the QoS tier Low Power Mode throttles hardest - under LPM a tiny 100-entry
+        // parse could ride the throttle toward the 8s cap while the launch sat on it.
+        loadTask = Task(priority: .userInitiated) { [weak self] in
             await self?.loadNames()
         }
     }
@@ -427,10 +430,30 @@ struct NamesView: View {
     /// A MANUAL ask that found nothing to ground on or errored - the tapped row must answer with
     /// SOMETHING instead of silently restoring the prompt.
     @State private var askNoAnswer = false
+    /// Whether the current answer was grounded in retrieved items (drives the card's footer).
+    @State private var askGrounded = true
     /// The AI-vs-keyword segmented switch, shown only when BOTH result kinds exist. Reset to the
     /// AI list on every new query.
     @State private var showKeywordResults = false
     @State private var askTask: Task<Void, Never>?
+    /// The names the answer was grounded on, kept so the answer's citations can resolve back to
+    /// REAL rows - the hadith search's `hadithAskSourceHits`, for names.
+    @State private var askSourceNames: [NameOfAllah] = []
+
+    /// The names the streamed answer actually cited, in citation order - matched against the exact
+    /// source references the model was given (the transliteration, e.g. "Ar-Rahman"), so every row
+    /// is guaranteed to be a real name. Rendered as standard `NameRow`s, full menu and swipes included.
+    private var askCitedNames: [NameOfAllah] {
+        guard !askAnswer.isEmpty else { return [] }
+        let answer = askAnswer.lowercased()
+        var cited: [(position: Int, name: NameOfAllah)] = []
+        var seen = Set<Int>()
+        for name in askSourceNames where seen.insert(name.number).inserted {
+            guard let range = answer.range(of: name.transliteration.lowercased()) else { continue }
+            cited.append((answer.distance(from: answer.startIndex, to: range.lowerBound), name))
+        }
+        return cited.sorted { $0.position < $1.position }.prefix(10).map(\.name)
+    }
 
     /// Auto mode runs only for QUESTION-shaped queries; `manual` (the tapped "Ask AI" row) runs
     /// for anything - the user explicitly asked.
@@ -455,22 +478,22 @@ struct NamesView: View {
             guard !Task.isCancelled else { return }
 
             var sources: [OnDeviceAsk.Source] = []
+            var sourceNames: [NameOfAllah] = []
             var seen = Set<Int>()
             for name in aiHits.prefix(6) where seen.insert(name.number).inserted {
                 sources.append(.init(reference: name.transliteration, text: "\(name.meaning). \(name.desc)"))
+                sourceNames.append(name)
             }
             for name in filteredNames.prefix(6) where seen.insert(name.number).inserted {
                 sources.append(.init(reference: name.transliteration, text: "\(name.meaning). \(name.desc)"))
+                sourceNames.append(name)
             }
-            guard !sources.isEmpty else {
-                askAnswer = ""; askIsStreaming = false; askRanForQuery = ""
-                // A tapped ask MUST respond: with nothing retrieved to ground on, say so instead
-                // of silently restoring the prompt row.
-                if manual { askNoAnswer = true }
-                return
-            }
+            // Nothing retrieved is no longer a dead end: the ask still runs, in OPEN mode - a
+            // clearly labeled general-knowledge answer with no recreated quotes.
+            askGrounded = !sources.isEmpty
 
             askAnswer = ""; askIsStreaming = true; askRanForQuery = trimmed
+            askSourceNames = sourceNames
             guard #available(iOS 26.0, *) else { return }
             do {
                 for try await text in OnDeviceAsk.streamAnswer(question: trimmed, sources: sources) {
@@ -481,7 +504,7 @@ struct NamesView: View {
                 askIsStreaming = false
             } catch {
                 guard !Task.isCancelled else { return }
-                askAnswer = ""; askIsStreaming = false; askRanForQuery = ""
+                askAnswer = ""; askIsStreaming = false; askRanForQuery = ""; askSourceNames = []
                 if manual { askNoAnswer = true }
             }
         }
@@ -506,7 +529,7 @@ struct NamesView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text("AI couldn't find anything matching \u{201C}\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D}. Try different wording.")
+            Text("AI couldn't answer \u{201C}\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D} right now. Try different wording, or try again.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -528,8 +551,6 @@ struct NamesView: View {
 
                 Text("Ask AI about \u{201C}\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\u{201D}")
                     .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
 
                 Spacer()
 
@@ -550,13 +571,34 @@ struct NamesView: View {
     /// the hadith book search's exact grammar. The prompt row shows only once there are results
     /// to ground an answer on.
     @ViewBuilder
-    private func askAISection(hasResults: Bool) -> some View {
+    private func askAISection(hasResults: Bool, favoriteSet: Set<Int>, hasActiveSearch: Bool, proxy: ScrollViewProxy) -> some View {
         if OnDeviceAsk.isAvailable {
             if askNoAnswer {
                 Section(header: askAIHeader) { askNoAnswerRow }
             } else if !askRanForQuery.isEmpty {
-                Section(header: askAIHeader) { AskAnswerCard(answer: askAnswer, isStreaming: askIsStreaming) }
-            } else if hasResults {
+                Section(header: askAIHeader) {
+                    AskAnswerCard(answer: askAnswer, isStreaming: askIsStreaming, grounded: askGrounded)
+
+                    // The answer's receipts: the names it actually cited, as the STANDARD name rows -
+                    // same context menu and favorite swipes as every other name row in the app.
+                    ForEach(askCitedNames, id: \.id) { name in
+                        NameRow(
+                            name: name,
+                            firstFoundTarget: namesData.firstFoundTargetsByNameNumber[name.number],
+                            showDescription: settings.showDescription,
+                            isExpanded: expandedNameNumbers.contains(name.number),
+                            isFavorite: favoriteSet.contains(name.number),
+                            accentColor: settings.accentColor,
+                            useFontArabic: settings.useFontArabic,
+                            fontArabic: settings.nonQuranArabicFontName,
+                            searchQuery: searchText
+                        ) {
+                            handleNameTap(name: name, hasActiveSearch: hasActiveSearch, proxy: proxy)
+                        }
+                        .equatable()
+                    }
+                }
+            } else {
                 Section(header: askAIHeader) { askPromptRow }
             }
         }
@@ -649,7 +691,7 @@ struct NamesView: View {
                     favoriteNamesSection(favorites, hasActiveSearch: hasActiveSearch, proxy: proxy)
                     #if os(iOS)
                     if hasActiveSearch {
-                        askAISection(hasResults: !aiHits.isEmpty || !names.isEmpty)
+                        askAISection(hasResults: !aiHits.isEmpty || !names.isEmpty, favoriteSet: favoriteSet, hasActiveSearch: hasActiveSearch, proxy: proxy)
                         if showResultsPicker { resultsPickerSection }
                         // AI matches appear AUTOMATICALLY above the keyword results - no mode to enter.
                         if !showResultsPicker || !showKeywordResults {
@@ -681,12 +723,11 @@ struct NamesView: View {
                     .conditionalGlassEffect(interactive: false)
 
                 SearchBar(text: (AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut)))
-                    .padding([.horizontal, .top], -8)
                     .minimizedBarStyle(barsCollapsed)
             }
             .animation(.spring(response: 0.35, dampingFraction: 0.85), value: barsCollapsed)
             .padding(.horizontal, 24)
-            .padding(.bottom, 8)
+            .padding(.bottom, BottomBarCushion.standard)
             .background(Color.white.opacity(0.00001))
         }
         #endif
@@ -1043,6 +1084,10 @@ private struct NameRow: View, Equatable {
     let isExpanded: Bool
     let isFavorite: Bool
     let accentColor: AccentColor
+    /// Compared alongside `accentColor`: for the `.custom` accent, `.color` resolves through this hex,
+    /// so an edit to it must fail `==` - this row observes nothing, and comparing only the enum case
+    /// left visible rows on the old tint until they scrolled off (the `ReciterRow` fix, applied here).
+    let customAccentHex: String
     let useFontArabic: Bool
     let fontArabic: String
     let searchQuery: String
@@ -1066,6 +1111,7 @@ private struct NameRow: View, Equatable {
         self.isExpanded = isExpanded
         self.isFavorite = isFavorite
         self.accentColor = accentColor
+        self.customAccentHex = Settings.shared.customAccentColorHex
         self.useFontArabic = useFontArabic
         self.fontArabic = fontArabic
         self.searchQuery = searchQuery
@@ -1186,7 +1232,7 @@ private struct NameRow: View, Equatable {
 
                         // Always the Uthmani face: it renders the number as the circled-flower ornament.
                         Text(name.numberArabic)
-                            .font(.custom(Settings.qiraatUthmaniFontName, size: 28))
+                            .font(.custom(Settings.hafsUthmaniFontName, size: 28))
                             .arabicFontDesign(custom: true)
                             .foregroundColor(accentColor.color)
                             .lineLimit(1)
@@ -1304,6 +1350,7 @@ private struct NameRow: View, Equatable {
         lhs.isExpanded == rhs.isExpanded &&
         lhs.isFavorite == rhs.isFavorite &&
         lhs.accentColor == rhs.accentColor &&
+        lhs.customAccentHex == rhs.customAccentHex &&
         lhs.useFontArabic == rhs.useFontArabic &&
         lhs.fontArabic == rhs.fontArabic &&
         lhs.searchQuery == rhs.searchQuery
@@ -1419,12 +1466,16 @@ private struct NameGridTile: View, Equatable {
     let accentColor: AccentColor
     let useFontArabic: Bool
     let fontArabic: String
+    /// The `.custom` accent resolves `.color` through this hex, so an edit to it must fail `==` -
+    /// comparing only the enum case left tiles on the old tint (the `ReciterRow` fix, applied here).
+    var customAccentHex: String = Settings.shared.customAccentColorHex
 
     /// Every appearance input is a stored value, so equality of the values means the drawn tile is identical.
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.name == rhs.name &&
         lhs.isFavorite == rhs.isFavorite &&
         lhs.accentColor == rhs.accentColor &&
+        lhs.customAccentHex == rhs.customAccentHex &&
         lhs.useFontArabic == rhs.useFontArabic &&
         lhs.fontArabic == rhs.fontArabic
     }

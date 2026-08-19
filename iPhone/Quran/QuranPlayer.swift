@@ -50,6 +50,12 @@ final class QuranPlayer: ObservableObject {
         let suggested: Reciter
     }
     @Published var offlineReciterSwitch: OfflineReciterSwitch?
+
+    /// Reciter ids whose Minshawi ayah substitution the user has already been told about. Joined with a
+    /// unit separator because `Reciter.id` itself contains "|". Remembered across launches.
+    @AppStorage("confirmedMinshawiAyahFallbackReciterIDs") private var confirmedMinshawiAyahFallbackReciterIDsRaw = ""
+    private static let minshawiConfirmationSeparator = "\u{1F}"
+
     @Published private(set) var surahQueue: [SurahQueueItem] = []
 
     @Published private(set) var customRangeStartAyah: Int?
@@ -159,6 +165,48 @@ final class QuranPlayer: ObservableObject {
         loadHistoryFromDefaults()
         setupRemoteTransportControls()
         isReadyForUI = true
+
+        #if DEBUG && os(iOS)
+        // Headless verification: `-playSurah <n>` starts surah playback a moment after launch so the
+        // Now Playing bar can be screenshotted from `simctl` (no tap tooling on this machine). The
+        // delay lets the UI (and the network path monitor) settle first.
+        // Both args wait for QuranData's async load (playCustomRange guards on it - firing at a fixed
+        // delay silently no-oped on cold launches).
+        func debugStartWhenDataReady(_ start: @escaping () -> Void, attempts: Int = 24) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                if QuranData.shared.quran.isEmpty {
+                    guard attempts > 0 else { return }
+                    debugStartWhenDataReady(start, attempts: attempts - 1)
+                    return
+                }
+                start()
+            }
+        }
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-playSurah"),
+           ProcessInfo.processInfo.arguments.indices.contains(idx + 1),
+           let surahNumber = Int(ProcessInfo.processInfo.arguments[idx + 1]) {
+            debugStartWhenDataReady {
+                let name = QuranData.shared.quran.first(where: { $0.id == surahNumber })?.nameTransliteration ?? "Surah \(surahNumber)"
+                QuranPlayer.shared.playSurah(surahNumber: surahNumber, surahName: name)
+            }
+        }
+        // `-playCustomRange s:a:b` - ayah-by-ayah range playback, for verifying the reader's
+        // playback-driven page turns headlessly (pick a range that crosses a page boundary).
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-playCustomRange"),
+           ProcessInfo.processInfo.arguments.indices.contains(idx + 1) {
+            let parts = ProcessInfo.processInfo.arguments[idx + 1].split(separator: ":").compactMap { Int($0) }
+            if parts.count == 3 {
+                debugStartWhenDataReady {
+                    let name = QuranData.shared.quran.first(where: { $0.id == parts[0] })?.nameTransliteration ?? "Surah \(parts[0])"
+                    QuranPlayer.shared.playCustomRange(
+                        surahNumber: parts[0], surahName: name,
+                        startAyah: parts[1], endAyah: parts[2],
+                        repeatPerAyah: 1, repeatSection: 1
+                    )
+                }
+            }
+        }
+        #endif
     }
 
     func waitUntilReady() async {
@@ -175,21 +223,52 @@ final class QuranPlayer: ObservableObject {
     }
     
     #if os(watchOS)
-    /// watchOS long-form audio state. A multi-minute streamed surah needs the `.longFormAudio` routing policy
-    /// and the ASYNC `activate(options:completionHandler:)` - that call is what establishes an output route
-    /// (AirPods, or the route the user picks in the system sheet). The iOS-style synchronous `setActive(true)`
-    /// never routes long-form audio on the watch, which is why full-surah playback silently produced nothing
-    /// while short per-ayah clips scraped by - and why reciters whose per-ayah audio falls back to another
-    /// voice were "unusable" on the watch.
+    /// watchOS audio routing. There are two genuinely different paths and picking the wrong one is what
+    /// used to strand people on the "Connect to a device" sheet:
+    ///
+    /// - **Something wireless is already connected** → `.longFormAudio` plus the ASYNC
+    ///   `activate(options:completionHandler:)`. That combination is the only one that keeps a multi-minute
+    ///   surah playing with the wrist down (it rides the `audio` background mode declared in Info-Main.plist).
+    ///   The iOS-style synchronous `setActive(true)` never routes long-form audio on the watch, which is why
+    ///   full-surah playback silently produced nothing while short per-ayah clips scraped by.
+    ///
+    /// - **Nothing connected** → the DEFAULT route-sharing policy, which plays out of the watch's own
+    ///   speaker. `.longFormAudio` can NOT use the speaker: activating it with no active route makes the
+    ///   system present its route picker, so anyone who just wanted to listen on the watch got nagged to
+    ///   pair headphones (and got it again even with Bluetooth off, because the sheet is the system asking
+    ///   for a route, not the app asking for Bluetooth). Apple's guidance is explicit - to play through the
+    ///   speaker, don't set the long-form policy.
+    ///
+    /// The route is re-evaluated on every fresh activation, so connecting AirPods and playing again picks
+    /// the long-form path back up on its own.
     private var audioSessionActivated = false
     private var audioSessionActivating = false
     private var pendingSessionStarts: [() -> Void] = []
+
+    /// True when there is already an output we can hand long-form audio to. When this is false, asking for
+    /// `.longFormAudio` is what summons the route sheet.
+    private var hasWirelessAudioRoute: Bool {
+        AVAudioSession.sharedInstance().currentRoute.outputs.contains { output in
+            switch output.portType {
+            case .bluetoothA2DP, .bluetoothHFP, .bluetoothLE, .airPlay: return true
+            default:                                                    return false
+            }
+        }
+    }
     #endif
 
     private func setupAudioSession() {
         let s = AVAudioSession.sharedInstance()
         #if os(watchOS)
         guard !audioSessionActivated, !audioSessionActivating else { return }
+
+        // Nothing to send long-form audio to: go straight out of the watch speaker rather than making the
+        // system ask for a device the listener never wanted.
+        guard hasWirelessAudioRoute else {
+            activateWatchSpeakerSession()
+            return
+        }
+
         do {
             try s.setCategory(.playback, mode: .default, policy: .longFormAudio)
         } catch {
@@ -200,30 +279,18 @@ final class QuranPlayer: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.audioSessionActivating = false
-                self.audioSessionActivated = success
                 if let error { logger.debug("Audio session activation failed: \(error)") }
 
-                let starts = self.pendingSessionStarts
-                self.pendingSessionStarts = []
                 if success {
+                    self.audioSessionActivated = true
+                    let starts = self.pendingSessionStarts
+                    self.pendingSessionStarts = []
                     starts.forEach { $0() }
                 } else {
-                    // The user dismissed the route sheet (or routing failed): there is nothing to play to.
-                    // The call sites flipped isPlaying on when the item became ready - audio never started,
-                    // so roll the whole play state back rather than showing a "playing" UI over silence.
-                    self.player?.pause()
-                    self.queuePlayer?.pause()
-                    self.isLoading = false
-                    self.isPlaying = false
-                    self.isPaused = false
-                    // SAY WHY, or dismissing the route sheet reads as the app being broken ("it keeps
-                    // trying to go to Bluetooth"). This is Apple's watchOS rule, not ours: third-party
-                    // apps cannot play media through the watch speaker - long-form audio must route to
-                    // Bluetooth headphones, and that sheet is the system asking which ones.
-                    self.presentPlaybackFailure(
-                        "Apple only allows watch apps to play recitations through Bluetooth headphones, like AirPods - the watch speaker isn't available to apps. Connect headphones and try again, or listen on your iPhone.",
-                        title: "Headphones Needed"
-                    )
+                    // The headphones went away between the route check and the activation, or the listener
+                    // dismissed the sheet. Dismissing it means "not on headphones" - so play on the speaker
+                    // instead of scolding them into pairing something.
+                    self.activateWatchSpeakerSession()
                 }
             }
         }
@@ -234,6 +301,45 @@ final class QuranPlayer: ObservableObject {
         } catch { logger.debug("Audio session setup failed: \(error)") }
         #endif
     }
+
+    #if os(watchOS)
+    /// The watch-speaker path: the DEFAULT route-sharing policy (no `.longFormAudio`), activated
+    /// synchronously. This is what makes the recitation come out of the watch itself, and it is also the
+    /// fallback when a long-form activation doesn't land - either way the listener gets audio instead of
+    /// a route sheet. Trade-off worth knowing: without the long-form policy the system may stop playback
+    /// when the app leaves the foreground, so headphones remain the better experience for a whole surah.
+    private func activateWatchSpeakerSession() {
+        let s = AVAudioSession.sharedInstance()
+        do {
+            try s.setCategory(.playback, mode: .default)
+            try s.setActive(true, options: .notifyOthersOnDeactivation)
+            audioSessionActivated = true
+        } catch {
+            logger.debug("Watch speaker session failed: \(error)")
+            audioSessionActivated = false
+        }
+
+        let starts = pendingSessionStarts
+        pendingSessionStarts = []
+
+        guard audioSessionActivated else {
+            // Genuinely no way to play. The call sites flipped isPlaying on when the item became ready -
+            // audio never started, so roll the play state back rather than showing a "playing" UI over
+            // silence.
+            player?.pause()
+            queuePlayer?.pause()
+            isLoading = false
+            isPlaying = false
+            isPaused = false
+            presentPlaybackFailure(
+                "The watch couldn't start audio. Try again, or connect Bluetooth headphones like AirPods.",
+                title: "Playback Error"
+            )
+            return
+        }
+        starts.forEach { $0() }
+    }
+    #endif
 
     /// Runs a play-start now - or, on watchOS, once the async long-form activation has an output route.
     /// Starting the player before that completes is silently dropped by the system, which looked like
@@ -251,22 +357,23 @@ final class QuranPlayer: ObservableObject {
         #endif
     }
 
+    /// Only the AVAudioSession call - safe from any thread. The watch's session flags are NOT reset
+    /// here: `stop()` runs this on a global queue, and resetting `pendingSessionStarts` there raced
+    /// the main thread's activation callbacks (concurrent Array mutation). The flags reset on main,
+    /// in `stop()`, before the hop.
     private func deactivateAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setActive(false,
                                                           options: .notifyOthersOnDeactivation)
         } catch { logger.debug("Audio session deactivate failed: \(error)") }
-        #if os(watchOS)
-        audioSessionActivated = false
-        pendingSessionStarts = []
-        #endif
     }
 
     private func makeFastStartItem(url: URL, bufferDuration: TimeInterval = 2) -> AVPlayerItem {
-        let asset = AVURLAsset(
-            url: url,
-            options: [AVURLAssetPreferPreciseDurationAndTimingKey: false]
-        )
+        // islamweb-hosted riwayah feeds refuse requests without their Referer header;
+        // `assetOptions` is empty for every other host, so this is a no-op for mp3quran & co.
+        var options: [String: Any] = [AVURLAssetPreferPreciseDurationAndTimingKey: false]
+        ReciterAudioHosting.assetOptions(for: url).forEach { options[$0.key] = $0.value }
+        let asset = AVURLAsset(url: url, options: options)
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = bufferDuration
         return item
@@ -287,6 +394,79 @@ final class QuranPlayer: ObservableObject {
             self.offlineReciterSwitch = offlineSwitch
             self.showInternetAlert = true
             self.idleTimerSet(false)
+        }
+    }
+
+    /// What actually went wrong with a failed item, bucketed for the user. Every `.failed` observer used
+    /// to collapse into one "check your internet connection" line, so a server missing the file (a 404 -
+    /// the Hazza Al-Balushi report) read as an offline problem on a perfectly connected phone.
+    enum PlaybackFailureKind {
+        case offline, timeout, notFound, server, unknown
+    }
+
+    static func classifyPlaybackError(_ error: Error?) -> PlaybackFailureKind {
+        guard let nsError = error as NSError? else { return .unknown }
+        // AVFoundation wraps the transport failure; the underlying error carries the real cause.
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            let kind = classifyPlaybackError(underlying)
+            if kind != .unknown { return kind }
+        }
+        switch (nsError.domain, nsError.code) {
+        case (NSURLErrorDomain, NSURLErrorNotConnectedToInternet),
+             (NSURLErrorDomain, NSURLErrorNetworkConnectionLost),
+             (NSURLErrorDomain, NSURLErrorInternationalRoamingOff),
+             (NSURLErrorDomain, NSURLErrorDataNotAllowed),
+             // DNS failures are connectivity-shaped in practice (captive portals, dead Wi-Fi).
+             (NSURLErrorDomain, NSURLErrorCannotFindHost),
+             (NSURLErrorDomain, NSURLErrorDNSLookupFailed):
+            return .offline
+        case (NSURLErrorDomain, NSURLErrorTimedOut):
+            return .timeout
+        case (NSURLErrorDomain, NSURLErrorFileDoesNotExist),
+             (NSURLErrorDomain, NSURLErrorZeroByteResource),
+             (NSURLErrorDomain, NSURLErrorResourceUnavailable),
+             // The CoreMedia HTTP loader's "server sent 404" / "403" codes.
+             ("CoreMediaErrorDomain", -12938),
+             ("CoreMediaErrorDomain", -12660):
+            return .notFound
+        case (NSURLErrorDomain, NSURLErrorBadServerResponse),
+             (NSURLErrorDomain, NSURLErrorCannotConnectToHost):
+            return .server
+        default:
+            return .unknown
+        }
+    }
+
+    /// The specific, honest alert for a failed load: names the real problem (missing file, timeout,
+    /// server trouble, offline) instead of blaming the connection for everything. `what` reads like
+    /// "surah" / "ayah" / "custom range"; `wasLocal` marks a corrupt DOWNLOADED file, which is a
+    /// re-download problem, not a network one.
+    func playbackFailureDetails(for error: Error?, reciter: Reciter?, what: String,
+                                wasLocal: Bool = false) -> (title: String, message: String) {
+        if wasLocal {
+            return ("Downloaded File Problem",
+                    "The downloaded audio for this \(what) could not be played - the file may be damaged. Re-download this reciter in Settings → Manage Audio.")
+        }
+        switch Self.classifyPlaybackError(error) {
+        case .offline:
+            return ("No Internet Connection",
+                    "You appear to be offline. Connect to the internet and try again.")
+        case .timeout:
+            return ("Server Not Responding",
+                    "The audio server is taking too long to respond. Try again in a moment.")
+        case .notFound:
+            let name = reciter?.name ?? "this reciter"
+            return ("Recitation Not Available",
+                    "The audio for this \(what) could not be found on the server - \(name) may not have recorded it. Try another reciter.")
+        case .server:
+            return ("Server Problem",
+                    "The audio server could not serve this \(what) right now. Please try again later or pick another reciter.")
+        case .unknown:
+            var message = "Unable to load this \(what). Check your internet connection and try again."
+            if let description = (error as NSError?)?.localizedDescription, !description.isEmpty {
+                message += "\n(\(description))"
+            }
+            return ("Playback Error", message)
         }
     }
 
@@ -564,7 +744,11 @@ final class QuranPlayer: ObservableObject {
         guard target.isFinite else { return }
         // Timescale 600, not 1: a timescale of 1 quantizes the seek to whole seconds.
         p.seek(to: CMTime(seconds: target, preferredTimescale: 600)) { _ in
-            self.updateNowPlayingInfo(); self.saveLastListenedSurah(); self.saveLastListenedAyah()
+            // AVPlayer invokes seek completions on an internal queue - hop before touching
+            // published/persisted state (same as the Control Center scrub handler does).
+            DispatchQueue.main.async {
+                self.updateNowPlayingInfo(); self.saveLastListenedSurah(); self.saveLastListenedAyah()
+            }
         }
     }
     
@@ -595,6 +779,13 @@ final class QuranPlayer: ObservableObject {
         removeAllObservers()
         discardPrewarm()
 
+        // Retire the players through locals: releasing the last reference inside the stored-property
+        // write would run AVPlayer's dealloc while the exclusive access is still open (the shape of
+        // the achievement-banner exclusivity crash). With observers already removed the dealloc calls
+        // no app code today; the locals keep that true even if a future observer slips past
+        // `removeAllObservers()`. They release when this scope ends, after every access has closed.
+        let retiringPlayer = player
+        let retiringQueue = queuePlayer
         player = nil
         queuePlayer = nil
         currentSurahNumber = nil
@@ -617,11 +808,20 @@ final class QuranPlayer: ObservableObject {
 
         updateNowPlayingInfo(clear: true)
 
+        #if os(watchOS)
+        // On main, BEFORE the background hop: these are also mutated by main-thread activation
+        // callbacks, so resetting them from the global queue was a data race.
+        audioSessionActivated = false
+        pendingSessionStarts = []
+        #endif
+
         DispatchQueue.global(qos: .userInitiated).async {
             self.deactivateAudioSession()
         }
 
         self.idleTimerSet(false)
+        _ = retiringPlayer
+        _ = retiringQueue
     }
     
     private func removeAllObservers() {
@@ -734,6 +934,10 @@ final class QuranPlayer: ObservableObject {
         isLoading = true
         player?.pause(); removeAllObservers()
 
+        // Retire the outgoing player via a local (see stop()) so its dealloc runs after the
+        // `player = ...` write below closes, never inside it.
+        let retiringPlayer = player
+
         let startupBuffer: TimeInterval = localURL != nil ? localSurahStartupBuffer : remoteSurahStartupBuffer
 
         // Adopt a matching prewarmed (already-buffering) player for a gapless hand-off; otherwise build fresh.
@@ -761,6 +965,7 @@ final class QuranPlayer: ObservableObject {
             skipSurah: skipSurah,
             wasLocal: localURL != nil
         )
+        _ = retiringPlayer
     }
 
     /// Applies the "ready to play" transition for a surah item (used by the status observer and, when a
@@ -790,7 +995,10 @@ final class QuranPlayer: ObservableObject {
            last.surahNumber == surahNumber,
            last.currentDuration > 1 {
             let seekT = CMTime(seconds: last.currentDuration, preferredTimescale: 600)
-            player?.seek(to: seekT) { [weak self] _ in self?.updateNowPlayingInfo() }
+            // Seek completions arrive on AVFoundation's queue - hop before touching now-playing state.
+            player?.seek(to: seekT) { [weak self] _ in
+                DispatchQueue.main.async { self?.updateNowPlayingInfo() }
+            }
             didResume = true
         }
 
@@ -809,10 +1017,17 @@ final class QuranPlayer: ObservableObject {
                 case .readyToPlay:
                     self.onSurahItemReady(surahNumber: surahNumber, surahName: surahName, reciter: reciter, certainReciter: certainReciter, skipSurah: skipSurah)
                 case .failed:
-                    // A failed STREAM (not a corrupt local file) is the reactive offline signal - the
-                    // reachability flag can miss captive/portal states, so offer downloaded reciters here too.
-                    if wasLocal || !self.presentOfflineReciterOptions(surahNumber: surahNumber, surahName: surahName, failedReciter: reciter) {
-                        self.presentPlaybackFailure("Unable to load this recitation. Check your internet connection and try again.", title: "Playback Unavailable")
+                    // Only a CONNECTIVITY-shaped failure is the reactive offline signal (the reachability
+                    // flag can miss captive/portal states, so those still offer downloaded reciters). A
+                    // missing file (404) on a healthy connection must say so instead - the old blanket
+                    // "check your internet" is exactly how a partial-mushaf reciter read as broken.
+                    let kind = Self.classifyPlaybackError(itm.error)
+                    let offlineShaped = kind == .offline || kind == .timeout || kind == .unknown
+                    if wasLocal || !offlineShaped
+                        || !self.presentOfflineReciterOptions(surahNumber: surahNumber, surahName: surahName, failedReciter: reciter) {
+                        let details = self.playbackFailureDetails(for: itm.error, reciter: reciter,
+                                                                  what: "surah", wasLocal: wasLocal)
+                        self.presentPlaybackFailure(details.message, title: details.title)
                     }
                 default:
                     break   // .unknown / still loading - wait for the next status change
@@ -840,10 +1055,14 @@ final class QuranPlayer: ObservableObject {
                 }
 
                 self.player?.seek(to: .zero) { _ in
-                    self.player?.play()
-                    self.isPlaying = true
-                    self.isPaused = false
-                    self.updateNowPlayingInfo()
+                    // Seek completions arrive on AVFoundation's queue - the published flags must
+                    // flip on main.
+                    DispatchQueue.main.async {
+                        self.player?.play()
+                        self.isPlaying = true
+                        self.isPaused = false
+                        self.updateNowPlayingInfo()
+                    }
                 }
                 return
             }
@@ -1016,7 +1235,11 @@ final class QuranPlayer: ObservableObject {
             playPreviousSurah(); backButtonClickCount = 0
         } else {
             pause()
-            player?.seek(to: .zero) { [weak self] _ in self?.resume() }
+            // Seek completions arrive on AVFoundation's queue; resume() flips published flags and
+            // the (main-thread-only) idle timer, so hop first.
+            player?.seek(to: .zero) { [weak self] _ in
+                DispatchQueue.main.async { self?.resume() }
+            }
             updateNowPlayingInfo()
             // Reset must outlast the double-tap window above, otherwise a legitimate second tap near the
             // 1.5s edge would be counted as a fresh first tap and just restart instead of going back.
@@ -1047,7 +1270,9 @@ final class QuranPlayer: ObservableObject {
             presentPlaybackFailure("This surah could not be found. Please try again.")
             return
         }
-        guard (1...surah.numberOfAyahs).contains(ayahNumber) else {
+        // Not `(1...count).contains(...)`: constructing the range itself traps when a corrupt pack
+        // decodes a surah with 0 ayahs (QuranPackReader returns 0 past end-of-data by design).
+        guard ayahNumber >= 1, ayahNumber <= surah.numberOfAyahs else {
             presentPlaybackFailure("This ayah is outside the valid range for the selected surah.")
             return
         }
@@ -1055,7 +1280,30 @@ final class QuranPlayer: ObservableObject {
             presentPlaybackFailure("The selected reciter could not be found. Please choose another reciter in settings.")
             return
         }
-        playbackReciter = resolvedReciter
+
+        // Playback is unconditional: the Minshawi-substitution heads-up is a SELECTION-time notice
+        // (`needsMinshawiFallbackNotice(for:)`), so pressing play never opens a dialog.
+        beginAyahPlayback(
+            surahNumber: surahNumber,
+            ayahNumber: ayahNumber,
+            isBismillah: isBismillah,
+            continueRecitation: continueRecitation,
+            repeatCount: repeatCount,
+            reciter: resolvedReciter
+        )
+    }
+
+    /// The tail of `playAyah` once a reciter is settled - split out so the Minshawi confirmation can
+    /// resume the EXACT held playback (same reciter: re-resolving would re-roll "Random Reciter").
+    private func beginAyahPlayback(
+        surahNumber: Int,
+        ayahNumber: Int,
+        isBismillah: Bool,
+        continueRecitation: Bool,
+        repeatCount: Int,
+        reciter: Reciter
+    ) {
+        playbackReciter = reciter
 
         self.ayahRepeatCount      = max(1, repeatCount)
         self.ayahRepeatRemaining  = self.ayahRepeatCount
@@ -1076,6 +1324,45 @@ final class QuranPlayer: ObservableObject {
         )
     }
 
+    // MARK: - Minshawi ayah-fallback notice (selection time)
+    //
+    // Reciters with no verse-by-verse feed of their own silently borrow Al-Minshawi's Murattal for
+    // single ayahs and custom ranges. The user is told about that ONCE, at the moment they pick such a
+    // reciter - never again, and never by interrupting a play. The reciter picker owns the dialog; this
+    // player owns the memory of who has already been told.
+
+    /// True when choosing `reciter` should first surface the substitution notice. False once the user
+    /// has acknowledged it for that reciter, on this or any later launch.
+    func needsMinshawiFallbackNotice(for reciter: Reciter) -> Bool {
+        reciter.defaultToMinshawi && !isMinshawiAyahFallbackConfirmed(reciter)
+    }
+
+    /// The picker's "select anyway" tap: record that this reciter's notice has been shown, so the
+    /// dialog never appears for them again.
+    func confirmMinshawiFallbackNotice(for reciter: Reciter) {
+        rememberMinshawiAyahFallbackConfirmed(reciter)
+    }
+
+    /// The notice's body text, kept here so every presenter words the substitution identically.
+    func minshawiFallbackNoticeMessage(for reciter: Reciter?) -> String {
+        "\(reciter?.name ?? "This reciter") has no verse-by-verse recordings. Individual ayahs and custom ranges will play in \(Reciter.minshawiAyahFallbackName). This won't be asked again for this reciter."
+    }
+
+    private func isMinshawiAyahFallbackConfirmed(_ reciter: Reciter) -> Bool {
+        confirmedMinshawiAyahFallbackReciterIDsRaw
+            .components(separatedBy: Self.minshawiConfirmationSeparator)
+            .contains(reciter.id)
+    }
+
+    private func rememberMinshawiAyahFallbackConfirmed(_ reciter: Reciter) {
+        guard !isMinshawiAyahFallbackConfirmed(reciter) else { return }
+        var ids = confirmedMinshawiAyahFallbackReciterIDsRaw
+            .components(separatedBy: Self.minshawiConfirmationSeparator)
+            .filter { !$0.isEmpty }
+        ids.append(reciter.id)
+        confirmedMinshawiAyahFallbackReciterIDsRaw = ids.joined(separator: Self.minshawiConfirmationSeparator)
+    }
+
     func playCustomRange(
         surahNumber: Int,
         surahName: String,
@@ -1092,8 +1379,8 @@ final class QuranPlayer: ObservableObject {
             presentPlaybackFailure("This surah could not be found. Please try again.")
             return
         }
-        guard (1...surah.numberOfAyahs).contains(startAyah),
-              (1...surah.numberOfAyahs).contains(endAyah) else {
+        guard startAyah >= 1, startAyah <= surah.numberOfAyahs,
+              endAyah >= 1, endAyah <= surah.numberOfAyahs else {
             presentPlaybackFailure("The selected ayah range is not valid for this surah.")
             return
         }
@@ -1172,8 +1459,13 @@ final class QuranPlayer: ObservableObject {
             }
         }
 
+        // Retire the outgoing players via locals (see stop()) so their dealloc runs after the
+        // writes below close, never inside them.
+        let retiringPlayer = player
+        let retiringQueue = queuePlayer
         queuePlayer = q
         player = q
+        _ = retiringPlayer; _ = retiringQueue
 
         statusObserver = firstItem.observe(\.status) { [weak self] itm, _ in
             guard let self = self else { return }
@@ -1193,7 +1485,8 @@ final class QuranPlayer: ObservableObject {
                     self.nowPlayingReciter = self.ayahNowPlayingReciterName(for: reciter)
                     self.updateNowPlayingInfo()
                 } else if itm.status == .failed {
-                    self.presentPlaybackFailure("Unable to start this custom range. Check your internet connection and try again.", title: "Range Playback Failed")
+                    let details = self.playbackFailureDetails(for: itm.error, reciter: reciter, what: "custom range")
+                    self.presentPlaybackFailure(details.message, title: details.title)
                 }
             }
         }
@@ -1330,7 +1623,7 @@ final class QuranPlayer: ObservableObject {
 
         guard
             let surah  = quranData.quran.first(where: { $0.id == surahNumber }),
-            (1...surah.numberOfAyahs).contains(ayahNumber),
+            ayahNumber >= 1, ayahNumber <= surah.numberOfAyahs,
             let reciter = playbackReciter ?? resolvedSelectedReciter()
         else {
             presentPlaybackFailure("Could not prepare this ayah for playback. Please verify surah, ayah, and reciter settings.")
@@ -1341,6 +1634,9 @@ final class QuranPlayer: ObservableObject {
         isLoading = true
 
         if ayahRepeatCount > 1 || !continueRecitation {
+            // Retire the outgoing players via locals (see stop()).
+            let retiringPlayer = player
+            let retiringQueue = queuePlayer
             queuePlayer = nil
 
             guard let firstItem = makeItem(forSurah: surah, reciter: reciter, ayahNumber: ayahNumber, isBismillah: isBismillah) else {
@@ -1354,6 +1650,7 @@ final class QuranPlayer: ObservableObject {
             single.actionAtItemEnd = .none
             configureFastStartPlayer(single, bufferDuration: ayahStartupBuffer)
             player = single
+            _ = retiringPlayer; _ = retiringQueue
 
             statusObserver = firstItem.observe(\.status) { [weak self] itm, _ in
                 guard let self = self else { return }
@@ -1374,7 +1671,8 @@ final class QuranPlayer: ObservableObject {
                         self.updateNowPlayingInfo()
                     } else if itm.status == .failed {
                         self.isLoading = false
-                        self.presentPlaybackFailure("Unable to start ayah playback. Check your internet connection and try again.")
+                        let details = self.playbackFailureDetails(for: itm.error, reciter: reciter, what: "ayah")
+                        self.presentPlaybackFailure(details.message, title: details.title)
                     }
                 }
             }
@@ -1395,15 +1693,19 @@ final class QuranPlayer: ObservableObject {
                 if self.ayahRepeatRemaining > 1 {
                     self.ayahRepeatRemaining -= 1
                     self.player?.seek(to: .zero) { _ in
-                        self.didHandleSingleAyahEnd = false
-                        self.nowPlayingTitle =
-                            "\(surah.nameTransliteration) \(surahNumber):\(ayahNumber)" +
-                            self.repeatSuffix(total: self.ayahRepeatCount,
-                                              remaining: self.ayahRepeatRemaining)
-                        self.updateNowPlayingInfo()
-                        self.player?.play()
-                        self.isPlaying = true
-                        self.isPaused  = false
+                        // Seek completions arrive on AVFoundation's queue - the published state
+                        // must change on main.
+                        DispatchQueue.main.async {
+                            self.didHandleSingleAyahEnd = false
+                            self.nowPlayingTitle =
+                                "\(surah.nameTransliteration) \(surahNumber):\(ayahNumber)" +
+                                self.repeatSuffix(total: self.ayahRepeatCount,
+                                                  remaining: self.ayahRepeatRemaining)
+                            self.updateNowPlayingInfo()
+                            self.player?.play()
+                            self.isPlaying = true
+                            self.isPaused  = false
+                        }
                     }
                 } else {
                     self.stop()
@@ -1437,8 +1739,12 @@ final class QuranPlayer: ObservableObject {
             q.insert(ni, after: firstItem)
         }
 
+        // Retire the outgoing players via locals (see stop()).
+        let retiringPlayer = player
+        let retiringQueue = queuePlayer
         queuePlayer = q
         player = q
+        _ = retiringPlayer; _ = retiringQueue
 
         statusObserver = firstItem.observe(\.status) { [weak self] itm, _ in
             guard let self = self else { return }
@@ -1459,7 +1765,8 @@ final class QuranPlayer: ObservableObject {
                     self.updateNowPlayingInfo()
                 } else if itm.status == .failed {
                     self.isLoading = false
-                    self.presentPlaybackFailure("Unable to continue ayah playback. Check your internet connection and try again.")
+                    let details = self.playbackFailureDetails(for: itm.error, reciter: reciter, what: "ayah")
+                    self.presentPlaybackFailure(details.message, title: details.title)
                 }
             }
         }
@@ -1504,7 +1811,12 @@ final class QuranPlayer: ObservableObject {
                     if nextAyah <= sur.numberOfAyahs,
                        let upcoming = self.makeItem(forSurah: sur, reciter: rec, ayahNumber: nextAyah) {
                         upcoming.preferredForwardBufferDuration = self.ayahStartupBuffer
-                        qPlayer.insert(upcoming, after: newItem)
+                        // The queue may have advanced past (or dropped) `newItem` between the KVO
+                        // delivery and this async block - inserting after an item that left the
+                        // queue raises NSInvalidArgumentException. Anchor on the LIVE current item,
+                        // like the custom-range twin does.
+                        let anchor = qPlayer.items().contains(newItem) ? newItem : qPlayer.currentItem
+                        qPlayer.insert(upcoming, after: anchor)
                     }
                 }
             }
@@ -1589,7 +1901,11 @@ final class QuranPlayer: ObservableObject {
             self.ayahBackPendingRestart = nil
             self.ayahBackPendingRestartScheduledAt = nil
             self.pause()
-            self.player?.seek(to: .zero) { [weak self] _ in self?.resume() }
+            // Seek completions arrive on AVFoundation's queue; resume() flips published flags and
+            // the (main-thread-only) idle timer, so hop first.
+            self.player?.seek(to: .zero) { [weak self] _ in
+                DispatchQueue.main.async { self?.resume() }
+            }
             self.updateNowPlayingInfo()
         }
         ayahBackPendingRestart = work
@@ -1957,7 +2273,7 @@ final class QuranPlayer: ObservableObject {
         guard let url = URL(string: "\(reciter.surahLink)\(String(format: "%03d", surahNumber)).mp3") else { return }
 
         Task.detached(priority: .utility) {
-            let duration = (try? await AVURLAsset(url: url).load(.duration)) ?? .invalid
+            let duration = (try? await AVURLAsset(url: url, options: ReciterAudioHosting.assetOptions(for: url)).load(.duration)) ?? .invalid
             guard duration.isValid, !duration.isIndefinite else { return }
             let seconds = CMTimeGetSeconds(duration)
             guard seconds.isFinite, seconds > 0 else { return }
@@ -2015,6 +2331,9 @@ final class ReciterDownloadManager: NSObject, ObservableObject, URLSessionDownlo
         configuration.isDiscretionary = false
         configuration.sessionSendsLaunchEvents = true
         configuration.waitsForConnectivity = true
+        // A stalled transfer must eventually FAIL (and enter the per-surah retry path) rather than sit
+        // in the background-session default of 7 days while the UI shows a frozen progress bar.
+        configuration.timeoutIntervalForResource = 60 * 60
         return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }()
 
@@ -2088,6 +2407,12 @@ final class ReciterDownloadManager: NSObject, ObservableObject, URLSessionDownlo
             return
         }
 
+        // A fresh run retries everything still missing, including surahs that exhausted their retry
+        // budget last time.
+        failedSurahsByReciterID[reciterID] = nil
+        lastFailureMessageByReciterID[reciterID] = nil
+        retryAttempts = retryAttempts.filter { !$0.key.hasPrefix("\(reciterID)#") }
+
         var nextState = statesByReciterID[reciterID] ?? DownloadState()
         nextState.isDownloading = true
         nextState.errorMessage = nil
@@ -2100,6 +2425,12 @@ final class ReciterDownloadManager: NSObject, ObservableObject, URLSessionDownlo
         let reciterID = reciter.id
         activeTasks[reciterID]?.cancel()
         activeTasks[reciterID] = nil
+
+        // Drop this run's retry bookkeeping; any backoff timer still pending checks `isDownloading`
+        // before re-enqueueing and finds it false.
+        failedSurahsByReciterID[reciterID] = nil
+        lastFailureMessageByReciterID[reciterID] = nil
+        retryAttempts = retryAttempts.filter { !$0.key.hasPrefix("\(reciterID)#") }
 
         guard var state = statesByReciterID[reciterID] else { return }
         state.isDownloading = false
@@ -2150,27 +2481,16 @@ final class ReciterDownloadManager: NSObject, ObservableObject, URLSessionDownlo
         statesByReciterID.removeAll()
     }
 
-    /// Removes reciter folders that have some surahs but not the full 114-surah package (interrupted or failed download).
-    /// Skips reciters that still have an active URLSession task or `isDownloading` state.
+    /// Reconciles published state with what is actually on disk. This USED to delete any reciter folder
+    /// holding fewer than the reciter's full surah package - which defeated resume: a cancelled,
+    /// interrupted, or partially-failed "Download all" lost every finished surah the moment the reciter
+    /// list reappeared, forcing a from-scratch redownload. Each surah file is only ever installed whole
+    /// (the finished background task's temp file is moved into place atomically), so a partial set is
+    /// valid, playable, and resumable - keep it and just refresh the counts.
     func purgeIncompleteReciterDownloads() {
-        session.getAllTasks { tasks in
-            let busyReciterIDs = Set(
-                tasks.compactMap { self.taskContext(for: $0)?.reciter.id }
-            )
-            DispatchQueue.main.async {
-                for reciter in reciters {
-                    if busyReciterIDs.contains(reciter.id) { continue }
-                    if self.activeTasks[reciter.id] != nil { continue }
-                    if self.statesByReciterID[reciter.id]?.isDownloading == true { continue }
-                    let (count, _) = self.downloadedStats(for: reciter)
-                    // Against the surahs the reciter CARRIES, never a flat 114: a complete download of
-                    // a partial-mushaf reciter (Islam Sobhi carries 109) satisfied `count < 114` and
-                    // was silently deleted here on every reciter-list appearance.
-                    if count > 0 && count < reciter.carriedSurahCount {
-                        self.deleteDownloads(for: reciter)
-                    }
-                }
-            }
+        for reciter in reciters {
+            guard let state = statesByReciterID[reciter.id], !state.isDownloading else { continue }
+            refreshState(for: reciter)
         }
     }
 
@@ -2271,32 +2591,93 @@ final class ReciterDownloadManager: NSObject, ObservableObject, URLSessionDownlo
             return
         }
 
+        let failedThisRun = failedSurahsByReciterID[reciter.id] ?? []
         for surahNumber in 1...114 {
             // A partial mushaf's absent surahs aren't errors to retry - the file does not exist upstream.
             guard reciter.carriesSurah(surahNumber) else { continue }
+
+            // Exhausted its retry budget this run: move past it so one bad file can't wedge the queue.
+            // The final error summary (below) tells the user what is still missing.
+            if failedThisRun.contains(surahNumber) { continue }
 
             let targetURL = localSurahFileURL(reciter: reciter, surahNumber: surahNumber)
             if fileManager.fileExists(atPath: targetURL.path) {
                 continue
             }
 
-            // Timing-mapped reciters download the QDC encode instead of mp3quran's: the ayah timestamps were
-            // cut against QDC's files, and mp3quran's run seconds longer (different edits), so timings can
-            // only ever validate against the file they describe. One API call hands back BOTH the audio URL
-            // and the timing table; if it fails, the mp3quran path below downloads exactly as it always has
-            // (and the timing table simply never validates - nothing new breaks).
-            if reciter.qdcReciterID != nil {
-                Task { @MainActor in
-                    let qdc = await AyahTimingStore.shared.fetchDownloadSource(reciter: reciter, surahNumber: surahNumber)
-                    self.startSurahDownloadTask(reciter: reciter, surahNumber: surahNumber, overrideURL: qdc)
-                }
-            } else {
-                startSurahDownloadTask(reciter: reciter, surahNumber: surahNumber, overrideURL: nil)
-            }
+            enqueueSurahDownload(reciter: reciter, surahNumber: surahNumber)
             return
         }
 
-        finishSuccess(for: reciter)
+        if failedThisRun.isEmpty {
+            finishSuccess(for: reciter)
+        } else {
+            failedSurahsByReciterID[reciter.id] = nil
+            refreshState(for: reciter)
+            var message = failedThisRun.count == 1
+                ? "1 surah failed to download after several attempts. Tap Download to retry just the missing surahs."
+                : "\(failedThisRun.count) surahs failed to download after several attempts. Tap Download to retry just the missing surahs."
+            if let lastError = lastFailureMessageByReciterID.removeValue(forKey: reciter.id) {
+                message += " (Last error: \(lastError))"
+            }
+            finishWithError(for: reciter.id, message: message)
+        }
+    }
+
+    /// One surah's download. Timing-mapped reciters download the QDC encode instead of mp3quran's: the
+    /// ayah timestamps were cut against QDC's files, and mp3quran's run seconds longer (different edits),
+    /// so timings can only ever validate against the file they describe. One API call hands back BOTH the
+    /// audio URL and the timing table; if it fails, the mp3quran path below downloads exactly as it always
+    /// has (and the timing table simply never validates - nothing new breaks).
+    private func enqueueSurahDownload(reciter: Reciter, surahNumber: Int) {
+        if reciter.qdcReciterID != nil {
+            Task { @MainActor in
+                let qdc = await AyahTimingStore.shared.fetchDownloadSource(reciter: reciter, surahNumber: surahNumber)
+                self.startSurahDownloadTask(reciter: reciter, surahNumber: surahNumber, overrideURL: qdc)
+            }
+        } else {
+            startSurahDownloadTask(reciter: reciter, surahNumber: surahNumber, overrideURL: nil)
+        }
+    }
+
+    // MARK: Per-surah retry bookkeeping (main thread only)
+
+    /// Failed attempts per surah in the CURRENT run, keyed by `retryKey`.
+    private var retryAttempts: [String: Int] = [:]
+    /// Surahs that exhausted their retry budget this run; the queue moves past them and the run ends
+    /// with an error summary instead of stopping on the first bad file.
+    private var failedSurahsByReciterID: [String: Set<Int>] = [:]
+    /// The most recent failure's message per reciter, surfaced in the end-of-run summary.
+    private var lastFailureMessageByReciterID: [String: String] = [:]
+    private let maxAttemptsPerSurah = 3
+
+    /// "#" never appears in a reciter ID (name|qiraah|surahLink), so the key parses unambiguously.
+    private func retryKey(_ reciterID: String, _ surahNumber: Int) -> String { "\(reciterID)#\(surahNumber)" }
+
+    /// One surah's task failed: retry it with backoff (up to `maxAttemptsPerSurah` total tries), then
+    /// give up on JUST that surah and let the queue continue. Main thread only.
+    private func handleSurahFailure(reciter: Reciter, surahNumber: Int, message: String) {
+        lastFailureMessageByReciterID[reciter.id] = message
+
+        let key = retryKey(reciter.id, surahNumber)
+        let attempts = (retryAttempts[key] ?? 0) + 1
+        retryAttempts[key] = attempts
+
+        guard attempts < maxAttemptsPerSurah else {
+            retryAttempts[key] = nil
+            failedSurahsByReciterID[reciter.id, default: []].insert(surahNumber)
+            scheduleNextDownload(for: reciter)
+            return
+        }
+
+        let backoff = pow(2.0, Double(attempts)) // 2s after the first failure, 4s after the second
+        DispatchQueue.main.asyncAfter(deadline: .now() + backoff) { [weak self] in
+            guard let self else { return }
+            // The run may have been cancelled (or replaced) while the backoff timer waited.
+            guard self.statesByReciterID[reciter.id]?.isDownloading == true,
+                  self.activeTasks[reciter.id] == nil else { return }
+            self.enqueueSurahDownload(reciter: reciter, surahNumber: surahNumber)
+        }
     }
 
     /// Enqueue one surah's background download - from `overrideURL` (the QDC encode, for timing-mapped
@@ -2314,7 +2695,8 @@ final class ReciterDownloadManager: NSObject, ObservableObject, URLSessionDownlo
             remoteURL = url
         }
 
-        let task = session.downloadTask(with: remoteURL)
+        // Request (not bare URL) so islamweb-hosted feeds get their required Referer header.
+        let task = session.downloadTask(with: ReciterAudioHosting.request(for: remoteURL))
         task.taskDescription = taskDescription(for: reciter, surahNumber: surahNumber)
 
         DispatchQueue.main.async {
@@ -2337,11 +2719,16 @@ final class ReciterDownloadManager: NSObject, ObservableObject, URLSessionDownlo
     /// Intentionally avoids any shared mutable cache so it is safe to call from the background
     /// URLSession delegate queue without racing the main-thread dictionary writers.
     private func taskContext(for task: URLSessionTask) -> (reciter: Reciter, surahNumber: Int)? {
-        guard let description = task.taskDescription else { return nil }
-        let parts = description.split(separator: "|", maxSplits: 1).map(String.init)
-        guard parts.count == 2,
-              let surahNumber = Int(parts[1]),
-              let reciter = reciters.first(where: { $0.id == parts[0] }) else {
+        // `Reciter.id` ITSELF contains "|" separators (it is "name|qiraah|surahLink"), so the surah
+        // number is everything after the LAST "|". Splitting at the FIRST one - the old parsing -
+        // could never resolve a single task, which silently disabled every delegate callback: no
+        // progress, no file install, no next-surah scheduling. The visible symptom was every surah
+        // download frozen at "Downloading surah 1 of 114 (0%)" forever.
+        guard let description = task.taskDescription,
+              let separator = description.lastIndex(of: "|") else { return nil }
+        let reciterID = String(description[..<separator])
+        guard let surahNumber = Int(description[description.index(after: separator)...]),
+              let reciter = reciters.first(where: { $0.id == reciterID }) else {
             return nil
         }
         return (reciter, surahNumber)
@@ -2379,6 +2766,18 @@ final class ReciterDownloadManager: NSObject, ObservableObject, URLSessionDownlo
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         guard let context = taskContext(for: downloadTask) else { return }
+
+        // A non-2xx response is a FAILED download, whatever the transport says: a 404 error page used
+        // to be installed as "NNN.mp3", counted as downloaded, and then played as a corrupt local file.
+        if let http = downloadTask.response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            installFailedReciterIDs.insert(context.reciter.id)
+            let message = http.statusCode == 404
+                ? "The server has no audio file for surah \(context.surahNumber) from this reciter."
+                : "The server refused surah \(context.surahNumber) (HTTP \(http.statusCode))."
+            finishWithError(for: context.reciter.id, message: message)
+            return
+        }
+
         do {
             let targetURL = localSurahFileURL(reciter: context.reciter, surahNumber: context.surahNumber)
             try installDownloadedFile(from: location, to: targetURL, reciter: context.reciter)
@@ -2406,25 +2805,36 @@ final class ReciterDownloadManager: NSObject, ObservableObject, URLSessionDownlo
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let context = taskContext(for: task) else { return }
+        // Read on the delegate queue BEFORE hopping to main: didFinishDownloadingTo runs on the same
+        // serial queue and has already recorded any install failure for this task.
+        let installFailed = error == nil && installFailedReciterIDs.remove(context.reciter.id) != nil
+
         DispatchQueue.main.async {
             self.activeTasks[context.reciter.id] = nil
-        }
 
-        if let nsError = error as NSError? {
-            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
-                finishCancellation(for: context.reciter.id)
-            } else {
-                finishWithError(for: context.reciter.id, message: nsError.localizedDescription)
+            if let nsError = error as NSError? {
+                if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+                    self.finishCancellation(for: context.reciter.id)
+                } else {
+                    // Transient failures (offline, timeout, server hiccup) retry with backoff; a surah
+                    // that keeps failing is skipped so the rest of the queue still completes.
+                    self.handleSurahFailure(
+                        reciter: context.reciter,
+                        surahNumber: context.surahNumber,
+                        message: nsError.localizedDescription
+                    )
+                }
+                return
             }
-            return
+
+            // A failed install already surfaced its error; scheduling the next download would pick the
+            // still-missing surah again, forever. Stop the chain - the user retries explicitly.
+            if installFailed { return }
+
+            self.retryAttempts[self.retryKey(context.reciter.id, context.surahNumber)] = nil
+            self.refreshState(for: context.reciter)
+            self.scheduleNextDownload(for: context.reciter)
         }
-
-        // A failed install already surfaced its error; scheduling the next download would pick the
-        // still-missing surah again, forever. Stop the chain - the user retries explicitly.
-        if installFailedReciterIDs.remove(context.reciter.id) != nil { return }
-
-        refreshState(for: context.reciter)
-        scheduleNextDownload(for: context.reciter)
     }
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {

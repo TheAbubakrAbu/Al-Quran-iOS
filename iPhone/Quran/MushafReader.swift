@@ -2,6 +2,10 @@ import SwiftUI
 import UIKit
 
 #if os(iOS)
+import PDFKit
+#endif
+
+#if os(iOS)
 
 struct MushafPage: Identifiable {
     struct Segment: Identifiable {
@@ -24,6 +28,15 @@ struct MushafPage: Identifiable {
     /// surah on the page - the one the page opens with. On a page holding Al-Ikhlas, Al-Falaq and An-Nas,
     /// that is Al-Ikhlas (112), not whichever happens to have the most ayahs.
     var displayedSurah: Surah? { firstSurah }
+
+    /// Every ayah printed on this page, as (surah, ayah) refs. Used to scope the per-ayah beginner overrides
+    /// to the page they affect, so a toggle anywhere else in the mushaf can't evict this page's render or
+    /// discard its measured fit.
+    var ayahRefs: [HighlightedAyahRef] {
+        segments.flatMap { segment in
+            segment.ayahs.map { HighlightedAyahRef(surahID: segment.surah.id, ayahID: $0.id) }
+        }
+    }
 }
 
 /// The whole mushaf as swipeable pages: each page holds every ayah printed on it - across surah boundaries - 
@@ -52,7 +65,7 @@ enum MushafPagination {
             return hit.pages
         }
 
-        let pages = build(quran: quran, qiraah: qiraah)
+        let pages = build(quran: quran, qiraah: qiraah, pageTable: hafsPageTable(quran: quran, qiraah: qiraah))
         if pageCache.count >= pageCacheLimit { pageCache.removeFirst() }
         pageCache.append((key, pages))
         return pages
@@ -69,19 +82,53 @@ enum MushafPagination {
     static func buildInBackground(quran: [Surah], qiraah: String?) async {
         let key = "\(qiraah ?? "Hafs")|\(quran.count)"
         guard !pageCache.contains(where: { $0.key == key }) else { return }
+        // The ayah alignment is MainActor state, so resolve it into a plain table up front;
+        // the detached pass then only reads value types.
+        let pageTable = hafsPageTable(quran: quran, qiraah: qiraah)
         let pages = await Task.detached(priority: .userInitiated) {
-            build(quran: quran, qiraah: qiraah)
+            build(quran: quran, qiraah: qiraah, pageTable: pageTable)
         }.value
         guard !pageCache.contains(where: { $0.key == key }) else { return }
         if pageCache.count >= pageCacheLimit { pageCache.removeFirst() }
         pageCache.append((key, pages))
     }
 
+    /// Non-Hafs riwayat paginate on the SAME Madinah page boundaries as Hafs: page N holds the
+    /// riwayah text whose ayahs ALIGN with Hafs page N's ayahs (`QiraahComparison`), so page
+    /// numbers, juz starts and "one page is one page" hold across every riwayah - a page just
+    /// runs a line or two longer or shorter where the riwayah merges/splits ayahs or spells
+    /// differently, and the fitter absorbs that. Keyed riwayah-ayah-id -> Hafs page.
+    /// (Direct `ayah.page` was wrong for them: their OWN ayah numbering drifts from the Hafs
+    /// rows mid-surah, which is what broke half the pages on other qiraat.)
+    private static func hafsPageTable(quran: [Surah], qiraah: String?) -> [Int: [Int: Int]]? {
+        guard let qiraah, !qiraah.isEmpty, qiraah != "Hafs" else { return nil }
+        let tag = Settings.Riwayah.canonicalTag(qiraah)
+        guard !tag.isEmpty else { return nil }
+        var out: [Int: [Int: Int]] = [:]
+        for surah in quran {
+            guard let alignment = QiraahComparison.alignment(surahID: surah.id, tag: tag, quranData: QuranData.shared) else { continue }
+            var pageByHafsID: [Int: Int] = [:]
+            pageByHafsID.reserveCapacity(surah.ayahs.count)
+            for ayah in surah.ayahs where ayah.page != nil {
+                pageByHafsID[ayah.id] = ayah.page
+            }
+            var table: [Int: Int] = [:]
+            for (riwayahID, span) in alignment.hafsRangeForRiwayah {
+                if let page = pageByHafsID[span.lowerBound] {
+                    table[riwayahID] = page
+                }
+            }
+            if !table.isEmpty { out[surah.id] = table }
+        }
+        return out.isEmpty ? nil : out
+    }
+
     /// The pagination pass itself: pure function of the inputs, no shared state.
     /// Accumulates each segment's ayahs IN PLACE and flushes at page/surah boundaries - the old pass
     /// rebuilt the trailing segment with `ayahs + [ayah]` on every ayah, a full copy of the growing
     /// array each time (O(n²) per page, ~135k array allocations across the book).
-    nonisolated private static func build(quran: [Surah], qiraah: String?) -> [MushafPage] {
+    nonisolated private static func build(quran: [Surah], qiraah: String?,
+                                          pageTable: [Int: [Int: Int]]? = nil) -> [MushafPage] {
         var pages: [MushafPage] = []
         var currentPage: Int?
         var currentSegments: [MushafPage.Segment] = []
@@ -105,8 +152,15 @@ enum MushafPagination {
         // Surahs and their ayahs are already in mushaf order, so a page's segments accumulate in order
         // too: extend the current run while the page and surah repeat, flush at each boundary.
         for surah in quran {
-            for ayah in surah.ayahs where ayah.existsInQiraah(qiraah) {
-                guard let page = ayah.page else { continue }
+            var lastPageInSurah: Int?
+            let surahPageTable = pageTable?[surah.id]
+            for ayah in surah.ayahs where ayah.existsInQiraah(qiraah, surahID: surah.id) {
+                // Ayahs that exist only in this riwayah's counting (a split past the Hafs range,
+                // e.g. al-Ikhlas 5 in the Shami count) carry NO Hafs page - they belong on the page
+                // of the ayah before them, not on no page at all. Skipping them was the page-mode
+                // "missing last verse" bug.
+                guard let page = surahPageTable?[ayah.id] ?? ayah.page ?? lastPageInSurah else { continue }
+                lastPageInSurah = page
 
                 if page != currentPage {
                     flushPage()
@@ -169,13 +223,20 @@ enum MushafPagination {
     }
 }
 
-/// Single-slot memo for the in-page find fold (file-scope: `SurahPageReader` is generic, and generic
-/// types can't hold static stored state). One slot suffices - consecutive evaluations ask for the same
-/// (page, query); any change simply recomputes once.
+/// One find match, carrying the page it sits on: widening the find to a whole surah means stepping through
+/// matches turns pages, so the destination has to travel with the ayah.
+struct MushafFindMatch {
+    let pageIndex: Int
+    let ref: HighlightedAyahRef
+}
+
+/// Single-slot memo for the find fold (file-scope: `SurahPageReader` is generic, and generic types can't hold
+/// static stored state). One slot suffices - consecutive evaluations ask for the same (scope, page, query);
+/// any change simply recomputes once.
 @MainActor
 private enum PageFindMemo {
     static var key = ""
-    static var matches: [HighlightedAyahRef] = []
+    static var matches: [MushafFindMatch] = []
 }
 
 struct SurahPageReader<Controls: View>: View {
@@ -191,8 +252,12 @@ struct SurahPageReader<Controls: View>: View {
     /// re-seed when the picked surah EQUALS the prop (after the reader paged away from it) - the token
     /// change is what forces the jump then.
     var jumpToken: Int = 0
-    /// Fires whenever the visible page belongs to a different surah, so the navigation title can follow the
-    /// reader across surah boundaries instead of naming the surah it was opened from forever.
+    /// Whether the current `jumpToken` re-seed should TURN the page (animated, like a swipe) instead of
+    /// swapping the index. Playback-driven jumps ("go to what's playing") turn; a surah/search jump - which
+    /// is a deliberate "take me there now" - stays instant.
+    /// Fires ONLY when the visible page's top surah actually changes, so the navigation title can follow the
+    /// reader across surah boundaries instead of naming the surah it was opened from forever. Page turns
+    /// WITHIN one surah report nothing at all - see `reportSurah`.
     var onSurahChange: ((Surah) -> Void)?
     /// Fires with the first surah + ayah of the page on screen. That's the anchor the list reader opens at
     /// when the user switches back out of page mode.
@@ -205,15 +270,22 @@ struct SurahPageReader<Controls: View>: View {
     /// page colors the matched substring in accent until the reader's first touch clears it.
     var arrivalHighlight: (ref: HighlightedAyahRef, term: String)? = nil
     var onClearArrival: (() -> Void)? = nil
-    /// Multi-select (parent-owned): while on, taps toggle ayahs of `surah` instead of marking them.
+    /// Multi-select (parent-owned): while on, taps toggle ayahs instead of marking them. Keyed by
+    /// (surah, ayah) and NOT cleared on a page turn, so a selection can be built across several pages -
+    /// including across a surah boundary, which a page routinely straddles.
     var isSelecting: Bool = false
-    var selectedAyahIDs: Set<Int> = []
-    var onToggleSelection: ((Int) -> Void)? = nil
+    var selectedAyahs: Set<HighlightedAyahRef> = []
+    var onToggleSelection: ((Int, Int) -> Void)? = nil
     /// Fires on a real page turn (not the initial seed) - the parent clears its selections and snippet.
     var onPageTurned: (() -> Void)? = nil
     /// Opens the reciter picker (the parent owns the sheet). Page mode had no way to change reciter
     /// without leaving to list mode; the footer play menu offers it through this hook.
     var onChooseReciter: (() -> Void)? = nil
+    /// Opens the custom-range sheet, and starts a random reciter, for the surah the footer is showing. Both
+    /// are owned by the parent (the sheet, and the reciter list), and both exist so the page reader's play
+    /// menu can be the list reader's play menu exactly, rather than a reduced version of it.
+    var onPlayCustomRange: (() -> Void)? = nil
+    var onPlayRandomReciter: ((Surah) -> Void)? = nil
     /// The optional tajweed/qiraah controls and the mini player. The reader owns the ordering: these sit
     /// ABOVE the page-navigation footer, which is applied last so it stays pinned at the very bottom.
     @ViewBuilder var bottomControls: () -> Controls
@@ -225,6 +297,13 @@ struct SurahPageReader<Controls: View>: View {
 
     @State private var pageIndex = 0
     @State private var didSetInitialPage = false
+    /// The surah named by the pinned header at the top of the reader, and the ONLY thing that decides when
+    /// the header (and the parent's toolbar title) re-renders. It is written by `reportSurah` and only when
+    /// the top surah's id actually changes, so paging within one surah leaves it - and the header - alone.
+    @State private var headerSurah: Surah?
+    /// The header's own surah-info sheet. Reader-level, not page-level: the header no longer lives inside a
+    /// page, so a page turn can't tear its sheet down.
+    @State private var headerInfoSurah: Surah?
     /// The first (surah, ayah) of the page on screen - the reading position a repagination re-seeds to.
     @State private var currentAnchor: (surahID: Int, ayahID: Int)?
     /// Set when `pageIndex` is about to be moved PROGRAMMATICALLY (initial seed, in-place surah swap),
@@ -236,6 +315,17 @@ struct SurahPageReader<Controls: View>: View {
     @State private var activePicker: PickerTarget?
     @State private var pagePickerSelection = 0
     @State private var juzPickerSelection = 1
+    /// Bottom chrome folded away for a taller page (task: "collapse the bottom and bring it back").
+    /// It folds the pinned surah header too - collapsed means the PAGE, nothing else.
+    /// Session-scoped on purpose: reopening the reader always starts with its controls visible.
+    /// (DEBUG launch arg `-mushafCollapseBars` seeds it for headless screenshot verification.)
+    @State private var bottomBarsCollapsed = {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains("-mushafCollapseBars")
+        #else
+        false
+        #endif
+    }()
     /// The typed-number fast path: an alert with a number pad, for jumping without scrolling the wheel.
     /// An alert (not an inline field) because the whole reader ignores the keyboard inset by design - the
     /// page must never resize - so an inline field at the bottom would be covered by the keyboard it raises.
@@ -246,41 +336,85 @@ struct SurahPageReader<Controls: View>: View {
     /// moment the picker closes and the jump lands; fits at the picker-shrunken height would all near-miss.
     @State private var pickerBaseGeometry: (width: CGFloat, height: CGFloat)?
 
-    // In-page find: the query, and which of the current page's matches is active.
+    // In-page find: the query, and which of the current matches is active.
     @State private var pageSearchText = ""
     @State private var currentMatchIndex = 0
     @FocusState private var pageSearchFocused: Bool
+    /// Non-nil when the find has been widened from THIS PAGE to a whole surah - it holds which surah, captured
+    /// when the reader asked for it. Captured rather than re-read from the visible page, because widening then
+    /// stepping through the matches turns pages, which would otherwise keep moving the target underfoot.
+    @State private var findSurahID: Int?
 
-    /// The ayahs on the currently-visible page whose text matches the find query, in reading order. Matching
-    /// is diacritic-insensitive over Arabic + transliteration + both English translations, so it finds the
-    /// ayah whatever the page is showing.
-    /// Memoized by (page, folded query, qiraah): the body evaluates this on EVERY re-render while the find
-    /// bar is open (including each recitation tick - the reader observes the player), and `syncMatch` /
-    /// `goToMatch` ask again per event. The fold now runs once per page+query; every repeat is a hit.
-    private func matchesOnPage(_ pages: [MushafPage]) -> [HighlightedAyahRef] {
+    /// The ayahs matching the find query, in reading order - on the visible page, or across the whole surah
+    /// once the reader has widened the find (`findSurahID`). Matching is diacritic-insensitive over Arabic +
+    /// transliteration + both English translations, so it finds the ayah whatever the page is showing.
+    /// Memoized by (scope, page, folded query, qiraah): the body evaluates this on EVERY re-render while the
+    /// find bar is open (including each recitation tick - the reader observes the player), and `syncMatch` /
+    /// `goToMatch` ask again per event. The fold runs once per scope+page+query; every repeat is a hit.
+    private func matchesOnPage(_ pages: [MushafPage]) -> [MushafFindMatch] {
         let query = settings.cleanSearch(pageSearchText.removingAyahSearchOperators, whitespace: true)
             .removingArabicDiacriticsAndSigns
         guard !query.isEmpty, pages.indices.contains(pageIndex) else { return [] }
+        // Vocative-joined twin ("يا نساء" → "يانساء") tried alongside the typed form - the mushaf glues
+        // يا onto the word it calls, so the spaced typing alone can never substring-match.
+        let joinedQuery: String? = {
+            let joined = query.joiningVocativeYaForSearch
+            return joined == query ? nil : joined
+        }()
+        // A typed hamza means it: without this, نساء and نسى fold alike and يانساء found يَنسَىٰ.
+        let hamzaFilter = Settings.HamzaPrecisionFilter(query: pageSearchText)
 
-        let memoKey = "\(pageIndex)|\(settings.displayQiraahForArabic ?? "")|\(query)"
+        // The hamza-preserving fold goes in the key too: `query` has the hamza folded AWAY, so ينساء and
+        // ينسا produce the same `query` while now yielding different results - one key, two answers.
+        // The page index is part of the key ONLY for a page-scoped find. A surah-wide result doesn't depend
+        // on which page is showing - and stepping through its matches TURNS pages, so keying on the page
+        // there re-folded the entire surah (48 pages for al-Baqarah) on every single step.
+        let scopeKey = findSurahID.map { "surah\($0)" } ?? "page\(pageIndex)"
+        let memoKey = "\(scopeKey)|\(settings.displayQiraahForArabic ?? "")|\(query)|"
+            + (hamzaFilter != nil ? settings.cleanSearchKeepingHamza(pageSearchText, whitespace: true) : "")
         if PageFindMemo.key == memoKey { return PageFindMemo.matches }
 
-        var result: [HighlightedAyahRef] = []
-        for segment in pages[pageIndex].segments {
+        // Widened to a surah: every page that carries any of that surah, in page order. Otherwise just the
+        // page on screen - the find bar's default, and what the reader gets before asking for more.
+        let scanned: [Int] = {
+            guard let findSurahID else { return [pageIndex] }
+            return pages.indices.filter { i in
+                pages[i].segments.contains { $0.surah.id == findSurahID }
+            }
+        }()
+
+        var result: [MushafFindMatch] = []
+        for index in scanned {
+          for segment in pages[index].segments where findSurahID == nil || segment.surah.id == findSurahID {
             for ayah in segment.ayahs {
+                // RAW Arabic first: the global index folds the raw text too, so the dagger-alif lanes
+                // ("يانسا" via dagger→ا, plus the dagger-dropped "ينسا"/"ابرهيم") match here exactly like
+                // they do in the whole-Quran search. The clean text alone had the dagger pre-stripped,
+                // which is why pasted Uthmani ("ٱسۡتَوَىٰ") and alif spellings used to miss on-page.
+                let rawArabic = ayah.displayArabicText(surahId: segment.surah.id, clean: false, qiraahOverride: settings.displayQiraahForArabic)
                 let sources = [
+                    rawArabic,
+                    rawArabic.removingDaggerAlifForSearch,
                     ayah.displayArabicText(surahId: segment.surah.id, clean: true, qiraahOverride: settings.displayQiraahForArabic),
                     ayah.textTransliteration,
                     ayah.textEnglishSaheeh,
                     ayah.textEnglishMustafa
                 ]
                 let matched = sources.contains { source in
-                    settings.cleanSearch(source, whitespace: true).removingArabicDiacriticsAndSigns.contains(query)
+                    let folded = settings.cleanSearch(source, whitespace: true).removingArabicDiacriticsAndSigns
+                    if folded.contains(query) { return true }
+                    if let joinedQuery, folded.contains(joinedQuery) { return true }
+                    return false
                 }
-                if matched {
-                    result.append(HighlightedAyahRef(surahID: segment.surah.id, ayahID: ayah.id))
-                }
+                guard matched else { continue }
+                // A hamza the reader actually typed has to be present in the ayah, not folded away.
+                if let hamzaFilter, !hamzaFilter.matches(anyOf: [rawArabic]) { continue }
+                result.append(MushafFindMatch(
+                    pageIndex: index,
+                    ref: HighlightedAyahRef(surahID: segment.surah.id, ayahID: ayah.id)
+                ))
             }
+          }
         }
         PageFindMemo.key = memoKey
         PageFindMemo.matches = result
@@ -302,11 +436,14 @@ struct SurahPageReader<Controls: View>: View {
         // The live find state, computed ONCE per evaluation and shared by the find bar and the pages:
         // every matching ayah on the page gets its matched substrings in accent, and the whole page drops
         // its tajweed colors while the query is live (see `MushafPageTextView.searchHighlight`).
+        let findMatches: [MushafFindMatch] = searchActive ? matchesOnPage(pages) : []
         let liveSearch: (matches: [HighlightedAyahRef], term: String)? = {
             guard searchActive else { return nil }
             let term = pageSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !term.isEmpty else { return nil }
-            return (matchesOnPage(pages), term)
+            // Every match, whichever page it is on: a page only ever paints the refs it actually contains,
+            // so a surah-wide match set lights each page's own hits and nothing else.
+            return (findMatches.map(\.ref), term)
         }()
 
         Group {
@@ -330,17 +467,27 @@ struct SurahPageReader<Controls: View>: View {
                     // keeps this body from materializing a fresh 604-tuple array on every swipe (and on every
                     // player tick while audio runs) just so the diff can walk it.
                     ForEach(pages.indices.reversed(), id: \.self) { index in
-                        MushafPageContent(
-                            page: pages[index],
-                            highlightedAyah: $highlightedAyah,
-                            arrivalHighlight: arrivalHighlight,
-                            onClearArrival: onClearArrival,
-                            searchHighlight: liveSearch,
-                            isSelecting: isSelecting,
-                            selectionSurahID: surah.id,
-                            selectedAyahIDs: selectedAyahIDs,
-                            onToggleSelection: onToggleSelection
-                        )
+                        Group {
+                            // The facsimile swaps only the page BODY. Everything the reader wraps around it -
+                            // the pinned surah header, the page/juz pickers and meters in the footer, search,
+                            // the play control - is shared, so the printed mushaf behaves like the composed
+                            // one everywhere except the ink.
+                            if let facsimile = facsimileDocument {
+                                MushafPDFPageBody(document: facsimile, mushafPage: pages[index].page)
+                            } else {
+                                MushafPageContent(
+                                    page: pages[index],
+                                    highlightedAyah: $highlightedAyah,
+                                    arrivalHighlight: arrivalHighlight,
+                                    onClearArrival: onClearArrival,
+                                    searchHighlight: liveSearch,
+                                    isSelecting: isSelecting,
+                                    selectedAyahs: selectedAyahs,
+                                    onToggleSelection: onToggleSelection,
+                                    bottomBarsCollapsed: bottomBarsCollapsed
+                                )
+                            }
+                        }
                             // Each page's own contents keep the app's reading direction; only the *paging* is
                             // flipped below.
                             .environment(\.layoutDirection, layoutDirection)
@@ -350,14 +497,43 @@ struct SurahPageReader<Controls: View>: View {
                 .tabViewStyle(.page(indexDisplayMode: .never))
             }
         }
-        // Order matters: the first inset applied sits closest to the content (higher), the last sits lowest.
-        // So the tajweed/qiraah controls + mini player go ABOVE, and the page-navigation footer is pinned to
-        // the very bottom.
-        .safeAreaInset(edge: .bottom, spacing: 0) { bottomControls() }
-        .safeAreaInset(edge: .bottom, spacing: 0) { pageFooter(pages: pages) }
+        // The surah header, PINNED AT THE TOP again (user rule, final position) - but tiny: caption2
+        // text (`micro`), clamped dynamic type, and almost no air above or below, so the page loses as
+        // little height as possible. One header for the whole pager (it only re-renders when
+        // `headerSurah` names a different surah), and it folds with the collapse.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            topSurahHeader
+                .frame(height: bottomBarsCollapsed ? 0 : nil)
+                .clipped()
+                .opacity(bottomBarsCollapsed ? 0 : 1)
+                .allowsHitTesting(!bottomBarsCollapsed)
+        }
+        // Collapse folds the bars via height+opacity with the views still MOUNTED - an `if` removal
+        // snapshots the glass background as a hard black box on the way out (the artifact SurahView's
+        // list bars hit), because Liquid Glass can't participate in a removal transition. The page then
+        // re-fits to the taller band it gains (debounced, in `MushafPageContent`).
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            bottomControls()
+                .frame(height: bottomBarsCollapsed ? 0 : nil)
+                .clipped()
+                .opacity(bottomBarsCollapsed ? 0 : 1)
+                .allowsHitTesting(!bottomBarsCollapsed)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            pageFooter(pages: pages)
+                .frame(height: bottomBarsCollapsed ? 0 : nil)
+                .clipped()
+                .opacity(bottomBarsCollapsed ? 0 : 1)
+                .allowsHitTesting(!bottomBarsCollapsed)
+        }
+        // The collapse/restore strip: ordinary layout, not a floating overlay - applied LAST so it sits
+        // BELOW everything else at the screen's bottom edge. It is ALWAYS mounted and always visible (user
+        // rule: "put collapse at the bottom rather than at the right, the same as it is when collapsed"),
+        // so the control never moves - only its chevron flips direction.
+        .safeAreaInset(edge: .bottom, spacing: 0) { bottomBarsToggleStrip }
         .safeAreaInset(edge: .top, spacing: 0) {
             if searchActive {
-                pageFindBar(pages: pages, matches: liveSearch?.matches ?? [])
+                pageFindBar(pages: pages, matches: findMatches)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -370,7 +546,22 @@ struct SurahPageReader<Controls: View>: View {
         // Safe because the only text field in page mode is in the find bar, which is a TOP inset - it stays
         // above the keyboard on its own. The bottom controls being covered while typing is the intent.
         .ignoresSafeArea(.keyboard, edges: .bottom)
+        .sheet(item: $headerInfoSurah) { surah in
+            SurahInfoSheet(surahName: surah.nameTransliteration, surahNumber: surah.id)
+                .environmentObject(settings)
+                .environmentObject(quranData)
+        }
         .onAppear {
+            #if DEBUG
+            // Headless verification: `-mushafFindBar <query>` opens the in-page find pre-filled, the
+            // only way to drive it from `simctl launch` (no tap injection in that harness).
+            if let flag = ProcessInfo.processInfo.arguments.firstIndex(of: "-mushafFindBar"),
+               ProcessInfo.processInfo.arguments.indices.contains(flag + 1),
+               !searchActive {
+                searchActive = true
+                pageSearchText = ProcessInfo.processInfo.arguments[flag + 1]
+            }
+            #endif
             // Seed the index once. Re-deriving it on every render (font change, qiraah switch) would yank the
             // reader back to the page it was opened at.
             guard !didSetInitialPage else { return }
@@ -411,11 +602,16 @@ struct SurahPageReader<Controls: View>: View {
             if suppressNextPageTurnClear {
                 suppressNextPageTurnClear = false
             } else if didSetInitialPage {
-                highlightedAyah = nil
+                // Only write when there is something to clear: `highlightedAyah` is the parent's state, so
+                // assigning nil over nil re-runs SurahView (and re-installs its toolbar title) on every
+                // single swipe.
+                if highlightedAyah != nil { highlightedAyah = nil }
                 onPageTurned?()
             }
-            // Matches are per-page: turning the page re-runs the find against the new page.
-            if searchActive { syncMatch(pages: pages, resetIndex: true) }
+            // Page-scoped matches are per-page, so turning the page re-runs the find against the new one. A
+            // surah-wide find already holds every match and turning pages is how you STEP through it -
+            // resyncing there would throw the position back to the first match on every step.
+            if searchActive, findSurahID == nil { syncMatch(pages: pages, resetIndex: true) }
             guard pages.indices.contains(index),
                   let surah = pages[index].firstSurah,
                   let ayah = pages[index].firstAyah else { return }
@@ -429,7 +625,11 @@ struct SurahPageReader<Controls: View>: View {
             guard didSetInitialPage,
                   let ayahID,
                   let surahID = quranPlayer.currentSurahNumber,
-                  pages.indices.contains(pageIndex) else { return }
+                  pages.indices.contains(pageIndex),
+                  // Hold the page while any per-ayah sheet is up: a follow page-turn tears down the
+                  // page that is PRESENTING the sheet, dismissing it mid-read. Following resumes on
+                  // the first ayah advance after the sheet closes. See `AyahSheetPresence`.
+                  !AyahSheetPresence.shared.anySheetOpen else { return }
             func contains(_ page: MushafPage) -> Bool {
                 page.segments.contains { segment in
                     segment.surah.id == surahID && segment.ayahs.contains { $0.id == ayahID }
@@ -442,9 +642,8 @@ struct SurahPageReader<Controls: View>: View {
             // player must not yank the reader across the book.
             let showsPlayingSurah = pages[pageIndex].segments.contains { $0.surah.id == surahID }
             guard abs(target - pageIndex) == 1 || showsPlayingSurah else { return }
-            // A follow is not a user page turn - it must not wipe the mark/selections.
-            suppressNextPageTurnClear = true
-            withAnimation { pageIndex = target }
+            // Recitation crossing a page boundary TURNS the page, it doesn't cut to it.
+            turnPage(to: target, in: pages)
         }
         // A qiraah switch re-paginates the book. Keyed on the QIRAAH, not `pages.count`: dropping ayahs
         // absent from a qiraah never changes the page COUNT (page numbers are per-ayah metadata), so a
@@ -466,8 +665,18 @@ struct SurahPageReader<Controls: View>: View {
             } else {
                 pageSearchText = ""
                 pageSearchFocused = false
+                // The find always REOPENS scoped to the page you are on - widening to the surah is a
+                // deliberate per-search choice, not a mode that quietly persists into the next one.
+                findSurahID = nil
             }
         }
+        // Folding (or restoring) the bottom bars changes every page's height budget. No handling here:
+        // the fold animates the visible page's geometry, and `lastGeometry`'s debounced settle sweep
+        // re-warms the ring at the height the pages come to rest at - the same path that covers the
+        // mini player mounting and every other bottom-inset change. (A fixed post-toggle delay lived
+        // here before, and it raced the fold: transient-height fits started mid-animation overwrote
+        // the neighbours' fallback renders, which is exactly the "page shows up uncollapsed for a
+        // beat" flash it was meant to fix.)
         // Warm the wheel's CANDIDATE while the user is still scrolling it: by the time they tap the
         // checkmark, the page they settled on is usually already composed and the jump lands instantly.
         // Radius 1 keeps each detent to the candidate and its neighbours, and the generation bump inside
@@ -494,15 +703,45 @@ struct SurahPageReader<Controls: View>: View {
         }
     }
 
+    /// Move the pager to `target` the way a SWIPE does: an animated page turn, not an index teleport.
+    ///
+    /// The `withAnimation` is the whole mechanism, and it is not decorative. A paged `TabView` slides
+    /// between pages only when the selection change carries an animation in its transaction; the identical
+    /// assignment made outside one swaps the page within a single frame. (Verified frame-by-frame on an
+    /// iOS 26 simulator recording: animated = ~10 intermediate frames at 30fps, bare = zero.)
+    ///
+    /// Used for every PLAYBACK-driven page change - following the recitation across a boundary, and
+    /// starting playback on an ayah that lives on another page - so the reader turns the page and reading
+    /// carries on, instead of the page being swapped out from under the reciter.
+    private func turnPage(to target: Int, in pages: [MushafPage], suppressClear: Bool = true) {
+        guard pages.indices.contains(target), target != pageIndex else { return }
+        // Compose the destination BEFORE the turn starts, so what slides in is the page rather than its
+        // loading spinner. (`.onChange(of: pageIndex)` prewarms too, but that runs as the turn begins.)
+        MushafPageRenderCache.prewarm(pages: pages, around: target, radius: 1, includeCenter: true)
+        // A follow/seed is not a user page turn - it must not wipe the mark or the selections. A
+        // DELIBERATE jump (the page/juz pickers) passes false: there a new page is a fresh start,
+        // exactly as if it had been swiped to.
+        if suppressClear { suppressNextPageTurnClear = true }
+        // Deferred one runloop tick, deliberately: this is called from `.onChange` handlers running
+        // INSIDE the player publish's own update pass, and a selection write made there reached the
+        // UIPageViewController without the animated transaction - the page SNAPPED instead of sliding
+        // (verified frame-by-frame: one giant scene step, zero intermediates). Hopping to the next
+        // tick puts the write in a fresh transaction whose animation the pager honors.
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.35)) { pageIndex = target }
+        }
+    }
+
     /// Jump the live pager to this `surah`'s starting page (shared by the `surah.id` and `jumpToken`
-    /// onChange handlers - an in-place surah swap from the picker, next-surah, or a search hit).
+    /// onChange handlers - an in-place surah swap from the picker, next-surah, a search hit, or "go to
+    /// what's playing"). EVERY jump turns the page like a real swipe now, in whichever direction the
+    /// target lies (user rule: "as if I was actually swiping, whether it goes back or forward") - the
+    /// old instant landing for deliberate navigation is gone. `turnPage` keeps the arrival highlight a
+    /// search hit or picker set (its suppressed page-turn clear).
     private func reseedToStartingPage(in pages: [MushafPage]) {
         let target = startingPageIndex(in: pages)
         if target != pageIndex {
-            // A swap that arrives WITH a target ayah (search hit, picker) sets its own highlight in
-            // SurahView - the re-seed must not count as a page turn and wipe it.
-            suppressNextPageTurnClear = true
-            pageIndex = target
+            turnPage(to: target, in: pages)
             // `.onChange(of: pageIndex)` reports + prewarms + saves.
         } else {
             reportSurah(on: target, in: pages)
@@ -535,34 +774,141 @@ struct SurahPageReader<Controls: View>: View {
     private func syncMatch(pages: [MushafPage], resetIndex: Bool) {
         let matches = matchesOnPage(pages)
         if resetIndex { currentMatchIndex = 0 }
-        guard !matches.isEmpty else { return }
+        guard !matches.isEmpty else {
+            // A LIVE query with zero matches clears the selection outright - keeping the previous
+            // keystroke's ayah lit read as "this still matches" when nothing does. An EMPTY query
+            // (bar just opened, text cleared, bar closing) leaves the selection alone, so closing
+            // the find bar still keeps whatever the search had landed on.
+            if !pageSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, highlightedAyah != nil {
+                withAnimation(.easeInOut(duration: 0.15)) { highlightedAyah = nil }
+            }
+            return
+        }
         currentMatchIndex = min(currentMatchIndex, matches.count - 1)
-        highlightedAyah = matches[currentMatchIndex]
+        let match = matches[currentMatchIndex]
+        highlightedAyah = match.ref
+        // A surah-wide find can land its first match on a page other than the one on screen - take the
+        // reader there, the way tapping through the matches does.
+        if findSurahID != nil, match.pageIndex != pageIndex, pages.indices.contains(match.pageIndex) {
+            suppressNextPageTurnClear = true
+            withAnimation(.easeInOut(duration: 0.35)) { pageIndex = match.pageIndex }
+        }
     }
 
-    /// Step to the previous/next match on this page, wrapping around, and light it up.
+    /// Step to the previous/next match, wrapping around, and light it up. In a surah-wide find the match may
+    /// be on another page, so this turns to it - and suppresses the page-turn clear, which would otherwise
+    /// wipe the very selection the step just made.
     private func goToMatch(_ delta: Int, pages: [MushafPage]) {
         let matches = matchesOnPage(pages)
         guard !matches.isEmpty else { return }
         settings.hapticFeedback()
         currentMatchIndex = (currentMatchIndex + delta + matches.count) % matches.count
+        let match = matches[currentMatchIndex]
         withAnimation(.easeInOut(duration: 0.15)) {
-            highlightedAyah = matches[currentMatchIndex]
+            highlightedAyah = match.ref
+        }
+        if match.pageIndex != pageIndex, pages.indices.contains(match.pageIndex) {
+            suppressNextPageTurnClear = true
+            withAnimation(.easeInOut(duration: 0.35)) { pageIndex = match.pageIndex }
         }
     }
 
-    /// The in-page find bar: a text field, a match counter with up/down, a close button, and - always - an
-    /// escape to the whole-Quran search (offered whether or not this page has a match).
-    /// `matches` comes from the body's shared `liveSearch` computation, so the fold runs once per keystroke.
-    private func pageFindBar(pages: [MushafPage], matches: [HighlightedAyahRef]) -> some View {
-        let hasQuery = !pageSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    /// The typed query understood as a REFERENCE rather than text - the list search's `getSurahAndAyah`
+    /// lanes, brought to page mode: "2:255", "Baqarah:255", "Baqarah 255", Arabic numerals, and every
+    /// English surah spelling `resolveSurahIdentifier` knows. A bare surah name resolves to the surah
+    /// alone (ayah nil = its first page); a bare NUMBER offers the ayah in the surah on screen first
+    /// ("255" while reading al-Baqarah) and the surah with that number second - both rows when both
+    /// parse, so "2" can mean 2:2 here or Surah al-Baqarah without the reader losing either. Additive:
+    /// the text matches below keep working - this only decides which "Go to" rows are offered above them.
+    private func referenceJumpTargets(scope: Surah?) -> [(surah: Surah, ayahID: Int?)] {
+        let raw = pageSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return [] }
 
-        return VStack(spacing: 8) {
+        // Western AND Arabic-Indic/Eastern digits - `applyingTransform(.toLatin)` does not touch
+        // digits, so the mapping is explicit (the same lane the list's `arabicToEnglishNumber` covers).
+        func number(_ token: String) -> Int? {
+            if let n = Int(token) { return n }
+            let digitMap: [Character: Character] = [
+                "٠": "0", "١": "1", "٢": "2", "٣": "3", "٤": "4",
+                "٥": "5", "٦": "6", "٧": "7", "٨": "8", "٩": "9",
+                "۰": "0", "۱": "1", "۲": "2", "۳": "3", "۴": "4",
+                "۵": "5", "۶": "6", "۷": "7", "۸": "8", "۹": "9"
+            ]
+            guard token.contains(where: { digitMap[$0] != nil }) else { return nil }
+            return Int(String(token.map { digitMap[$0] ?? $0 }))
+        }
+
+        // "S:A" - surah by name or number before the colon, ayah number after it.
+        let colonParts = raw.split(separator: ":").map { String($0).trimmingCharacters(in: .whitespaces) }
+        if colonParts.count == 2 {
+            guard let surah = quranData.resolveSurahIdentifier(colonParts[0]),
+                  let ayah = number(colonParts[1]),
+                  quranData.ayah(surah: surah.id, ayah: ayah) != nil else { return [] }
+            return [(surah, ayah)]
+        }
+        guard colonParts.count == 1 else { return [] }
+
+        // A bare number: this surah's ayah first, the surah with that number second.
+        if let n = number(raw) {
+            var targets: [(surah: Surah, ayahID: Int?)] = []
+            if let scope, quranData.ayah(surah: scope.id, ayah: n) != nil {
+                targets.append((scope, n))
+            }
+            if (1...114).contains(n), let surah = quranData.surah(n) {
+                targets.append((surah, nil))
+            }
+            return targets
+        }
+
+        // "Baqarah 255" - the colon form with a space, since that's how it gets typed half the time.
+        let words = raw.split(separator: " ").map(String.init)
+        if words.count >= 2, let ayah = number(words[words.count - 1]),
+           let surah = quranData.resolveSurahIdentifier(words.dropLast().joined(separator: " ")),
+           quranData.ayah(surah: surah.id, ayah: ayah) != nil {
+            return [(surah, ayah)]
+        }
+
+        // A bare surah name: offer the surah itself. Requiring a resolvable name keeps ordinary
+        // word searches from sprouting a bogus jump row.
+        if let surah = quranData.resolveSurahIdentifier(raw) { return [(surah, nil)] }
+        return []
+    }
+
+    /// Take the reader to a typed reference: the same move a search hit makes - turn to the page,
+    /// light the ayah (kept after the bar closes, exactly like a find selection), close the find.
+    private func jumpToReference(_ target: (surah: Surah, ayahID: Int?), pages: [MushafPage]) {
+        guard let index = MushafPagination.pageIndex(surahID: target.surah.id, ayahID: target.ayahID, in: pages) else { return }
+        settings.hapticFeedback()
+        withAnimation(.easeInOut) {
+            if let ayahID = target.ayahID {
+                highlightedAyah = HighlightedAyahRef(surahID: target.surah.id, ayahID: ayahID)
+            }
+            if index != pageIndex {
+                suppressNextPageTurnClear = true
+                pageIndex = index
+            }
+            searchActive = false
+        }
+    }
+
+    /// The in-page find bar: a text field, a match counter with up/down, a close button, and - always - the
+    /// two ways OUT of this page: widen the find to the whole surah (in place, stepping through it turns
+    /// pages), or hand the query to the whole-Quran search. Both are offered whether or not this page has a
+    /// match, which is the point: a page with nothing on it should never be a dead end.
+    /// `matches` comes from the body's shared fold, so it runs once per keystroke.
+    private func pageFindBar(pages: [MushafPage], matches: [MushafFindMatch]) -> some View {
+        let hasQuery = !pageSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // The surah to widen INTO: the one the page on screen is showing.
+        let scopeSurah = pages.indices.contains(pageIndex) ? pages[pageIndex].displayedSurah : nil
+        let refTargets = hasQuery ? referenceJumpTargets(scope: scopeSurah) : []
+        let searchingSurah = findSurahID != nil
+
+        return VStack(spacing: 5) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
 
-                TextField("Search this page", text: $pageSearchText)
+                TextField(searchingSurah ? "Search this surah" : "Search this page", text: $pageSearchText)
                     .textFieldStyle(.plain)
                     .autocorrectionDisabled()
                     .focused($pageSearchFocused)
@@ -595,35 +941,176 @@ struct SurahPageReader<Controls: View>: View {
             }
             .foregroundStyle(settings.accentColor.color)
             .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.vertical, 8)
             .conditionalGlassEffect(rectangle: true)
 
-            // Always offer the whole-Quran search - the whole point is that a page with no match (or even one
-            // with a match) can escape to searching everywhere, without bouncing back to the surah list first.
-            Button {
-                settings.hapticFeedback()
-                let query = pageSearchText
-                withAnimation(.easeInOut) { searchActive = false }
-                QuranSearchHandoff.shared.request(query)
-            } label: {
-                Label(matches.isEmpty && hasQuery ? "No matches on this page. Search the whole Quran"
-                                                  : "Search the whole Quran",
-                      systemImage: "text.magnifyingglass")
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(settings.accentColor.color)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .conditionalGlassEffect(rectangle: true)
+            // The typed-reference row: "2:255" / "Baqarah 255" / a bare surah name offers a direct jump,
+            // the way the list search's SURAH / AYAH result sections answer the same queries. Above the
+            // scope row because when it appears it is almost always what was meant.
+            ForEach(Array(refTargets.enumerated()), id: \.offset) { _, target in
+                Button {
+                    jumpToReference(target, pages: pages)
+                } label: {
+                    scopeButtonLabel(
+                        target.ayahID.map { "Go to \(target.surah.nameTransliteration) \(target.surah.id):\($0)" }
+                            ?? "Go to Surah \(target.surah.nameTransliteration)",
+                        systemImage: "arrow.turn.down.right",
+                        color: settings.accentColor.color
+                    )
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+
+            // The scope row. The first button is a TOGGLE that always names where it will take you - "Search
+            // this Surah" while the find is on this page, "Search this Page" once it has been widened - so
+            // the label is the action, never a status line you can't act on. The whole-Quran button beside
+            // it still hands the query off to the global search.
+            HStack(spacing: 6) {
+                if scopeSurah != nil {
+                    Button {
+                        settings.hapticFeedback()
+                        withAnimation(.easeInOut) {
+                            findSurahID = searchingSurah ? nil : scopeSurah?.id
+                        }
+                        syncMatch(pages: pages, resetIndex: true)
+                    } label: {
+                        scopeButtonLabel(
+                            searchingSurah ? "Search this Page" : "Search this Surah",
+                            systemImage: searchingSurah ? "doc.text.magnifyingglass" : "book.closed",
+                            color: settings.accentColor.accent1
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Button {
+                    settings.hapticFeedback()
+                    let query = pageSearchText
+                    withAnimation(.easeInOut) { searchActive = false }
+                    QuranSearchHandoff.shared.request(query)
+                } label: {
+                    scopeButtonLabel("Search the whole Quran",
+                                     systemImage: "text.magnifyingglass",
+                                     color: settings.accentColor.color)
+                }
+                .buttonStyle(.plain)
+            }
+
+            // The dead-end note, once the reader has actually come up empty on whatever they scoped to.
+            // Not when a reference jump is on offer - "Go to 2:255" plus "no matches" reads as a shrug.
+            if hasQuery, matches.isEmpty, refTargets.isEmpty {
+                Text(searchingSurah ? "No matches in this surah." : "No matches on this page.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, settings.defaultView ? 20 : 16)
-        .padding(.top, 4)
+        // SYMMETRIC air (user rule, after a round each way: 2pt read as glued to the title, 10pt
+        // as "too much at the top" with none below): the same cushion above the pill and below the
+        // block, so the find bar floats evenly between the title and the surah strip.
+        .padding(.top, 5)
+        .padding(.bottom, 5)
     }
 
+    /// The two scope buttons share a label so they read as one pair rather than two differently-sized pills.
+    private func scopeButtonLabel(_ title: String, systemImage: String, color: Color) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption)
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .foregroundColor(color)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .conditionalGlassEffect(rectangle: true)
+    }
+
+    /// The single gate on "which surah am I in". Every page turn calls this, but only a turn that lands on a
+    /// page whose TOP surah is a different surah gets past the id check - so an intra-surah turn writes
+    /// nothing, re-renders nothing, and notifies nobody. Doing the comparison HERE (rather than in the
+    /// parent's callback) is the point: the parent's guard could only ever fire after the reader had already
+    /// pushed a value at it on every single swipe.
     private func reportSurah(on index: Int, in pages: [MushafPage]) {
         guard pages.indices.contains(index), let surah = pages[index].displayedSurah else { return }
+        guard headerSurah?.id != surah.id else { return }
+        headerSurah = surah
         onSurahChange?(surah)
+    }
+
+    /// The reader's pinned surah header, in its smallest form: revelation symbol, ayah/page summary at
+    /// caption2, favourite star - hugging the navigation bar with a hair of padding. Tap for the surah
+    /// info sheet; the star keeps its own tap.
+    @ViewBuilder
+    private var topSurahHeader: some View {
+        if let surah = headerSurah {
+            SurahSectionHeader(surah: surah, compact: true, micro: true)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 1)
+                // Keep the tapped header lit while its info sheet is open; the accent tint marks the
+                // surah loaded in the player.
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(headerInfoSurah?.id == surah.id
+                              ? Color.secondary.opacity(0.18)
+                              : quranPlayer.currentSurahNumber == surah.id
+                                ? settings.accentColor.color.opacity(0.18)
+                                : .clear)
+                )
+                .conditionalGlassEffect(rectangle: true)
+                // SYMMETRIC air, and always positive: the collapse wrapper clips this inset, and
+                // pre-iOS-26 the safe area starts flush at the navigation bar's bottom edge - so a
+                // negative pull (or the emoji's ink overshooting its line box) was SHEARED there
+                // ("top is cut off"), and 1pt read as the strip being glued to the bar. 3pt above =
+                // 3pt below (user rule: "spacing between the top and bottom even"); the strip stays
+                // small through its micro fonts, not by starving its margins.
+                .padding(.top, 3)
+                .padding(.bottom, 3)
+                .padding(.horizontal, settings.defaultView ? 20 : 16)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    settings.hapticFeedback()
+                    headerInfoSurah = surah
+                }
+                .animation(.easeInOut(duration: 0.15), value: headerInfoSurah?.id == surah.id)
+                .dynamicTypeSize(.small)
+        }
+    }
+
+    /// The collapse/restore strip: a full-width chevron row at the very bottom of the screen, below
+    /// everything - ordinary layout, nothing floating over the page. One control for both directions, so
+    /// collapsing and restoring happen in the same place (the chevron just turns over).
+    private var bottomBarsToggleStrip: some View {
+        // Collapsed, the tap target grows UPWARD toward the Arabic - without moving the chevron or any
+        // spacing: the extra height is added INSIDE the label and cancelled by the outer negative
+        // padding, so the button's frame (and its full-width contentShape) reaches ~18pt into the
+        // page's bottom air while everything draws exactly where it did (user rule: keep the chevron
+        // small, make the clickable height bigger). Expanded keeps the plain target - reaching up
+        // there would steal taps from the footer pill's lower edge.
+        let hitExtension: CGFloat = bottomBarsCollapsed ? 18 : 0
+
+        return Button {
+            settings.hapticFeedback()
+            withAnimation(.easeInOut(duration: 0.25)) { bottomBarsCollapsed.toggle() }
+        } label: {
+            Image(systemName: bottomBarsCollapsed ? "chevron.up" : "chevron.down")
+                .font(.caption.weight(.bold))
+                .foregroundColor(settings.accentColor.color)
+                // Asymmetric on purpose: the tap target keeps its height, but almost all of it hangs BELOW
+                // the glyph, so the chevron sits tight under the bar above it instead of floating in a band
+                // of its own (user: "the chevron has too much spacing above it").
+                .padding(.top, 1 + hitExtension)
+                // Collapsed, the strip is the screen's last band - a tighter cushion gives the page the
+                // difference (user: "still some more space at the bottom" when collapsed).
+                .padding(.bottom, bottomBarsCollapsed ? 3 : 7)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // Pulls the strip up into the padding the footer above it already leaves - but only while the footer
+        // is there. Collapsed, the base -2 keeps the drawn strip where it was and the extra `hitExtension`
+        // cancels the invisible tap-target growth above.
+        .padding(.top, (bottomBarsCollapsed ? -2 : -8) - hitExtension)
+        .accessibilityLabel(bottomBarsCollapsed ? "Show the reader controls and surah header"
+                                                : "Hide the reader controls and surah header")
     }
 
     private func reportAnchor(on index: Int, in pages: [MushafPage]) {
@@ -642,6 +1129,15 @@ struct SurahPageReader<Controls: View>: View {
     }
 
     // MARK: - Bottom page-navigation footer (pinned below the tajweed/qiraah controls and the mini player)
+
+    /// The bundled printed mushaf to draw instead of composing the page, or nil to compose as usual.
+    ///
+    /// nil unless the reader asked for the facsimile AND this riwayah has one bundled - so a riwayah without
+    /// a PDF silently keeps the composed text rather than showing blank pages.
+    private var facsimileDocument: PDFDocument? {
+        guard settings.resolvedMushafPageLanguage.isPDF else { return nil }
+        return MushafPDFLibrary.document(for: settings.displayQiraahForArabic ?? Settings.Riwayah.hafsTag)
+    }
 
     @ViewBuilder
     private func pageFooter(pages: [MushafPage]) -> some View {
@@ -664,6 +1160,8 @@ struct SurahPageReader<Controls: View>: View {
                     inlinePicker(target: target, pages: pages)
                 }
 
+                // The collapse control moved OUT of this row to the strip at the screen's bottom edge,
+                // so the pill and the play control sit at their plain 8pt apart again.
                 HStack(spacing: 8) {
                     pageInfoPill(page: page, surah: footerSurah, pages: pages,
                                  surahPosition: surahPosition, surahTotal: surahTotal,
@@ -675,7 +1173,7 @@ struct SurahPageReader<Controls: View>: View {
                 }
             }
             .padding(.horizontal, 24)
-            .padding(.bottom, 8)
+            .padding(.bottom, BottomBarCushion.standard)
         }
     }
 
@@ -692,8 +1190,8 @@ struct SurahPageReader<Controls: View>: View {
         VStack(spacing: 6) {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
-                    // The ayah count and revelation place live in the pinned header now - the footer is purely
-                    // where you are and where you can jump to.
+                    // Plain "Surah", deliberately (user rule: names run too long here) - the row
+                    // above names it.
                     meter(label: "Surah", position: surahPosition, total: surahTotal,
                           color: settings.accentColor.accent1)
 
@@ -750,26 +1248,32 @@ struct SurahPageReader<Controls: View>: View {
     }
 
     /// "Surah 12/48" with its own little bar - the two positions the reader actually cares about.
+    ///
+    /// Mirrored for the mushaf: the bar sits to the LEFT of its label and fills right-to-left, so the fill
+    /// starts at the edge nearest the label and grows away from it - the exact mirror of the list-mode
+    /// meter, and the same direction the page text and the page turns run in.
     private func meter(label: String, position: Int, total: Int, color: Color) -> some View {
         HStack(spacing: 6) {
-            Text("\(label) \(position)/\(total)")
-                .font(.system(size: 10, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
             trackedBar(
                 fraction: total > 0 ? CGFloat(position) / CGFloat(total) : 0,
                 height: 3,
                 color: color
             )
             .frame(width: 44)
+
+            Text("\(label) \(position)/\(total)")
+                .font(.system(size: 10, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
     }
 
     /// A fill over a visible track, so a low value still reads as "a little way in" rather than as nothing.
+    /// Always right-to-left here: a mushaf is read - and paged - from right to left, so a fill that grew
+    /// leftward-to-rightward was progress running backwards against everything else on the screen.
     private func trackedBar(fraction: CGFloat, height: CGFloat, color: Color) -> some View {
-        TrackedBar(fraction: fraction, height: height, color: color)
+        TrackedBar(fraction: fraction, height: height, color: color, rightToLeft: true)
     }
 
     /// The page / juz readouts double as the buttons that open their picker. `seed` sets the wheel to where you
@@ -849,12 +1353,17 @@ struct SurahPageReader<Controls: View>: View {
                     switch target {
                     case .page:
                         // Clamped: the selection was seeded against the pagination it was OPENED with, and a
-                        // qiraah switch mid-pick can shrink it - an out-of-range TabView selection blanks the pager.
-                        pageIndex = min(max(pagePickerSelection, 0), max(pages.count - 1, 0))
+                        // qiraah switch mid-pick can shrink it - an out-of-range TabView selection blanks the
+                        // pager. Turned, not teleported (user rule: every jump slides like a swipe); the
+                        // picker jump is a fresh start, so the page-turn clear runs as usual.
+                        turnPage(to: min(max(pagePickerSelection, 0), max(pages.count - 1, 0)), in: pages,
+                                 suppressClear: false)
                     case .juz:
-                        // A juz is picked by number, but the reader navigates by page - jump to the page the
+                        // A juz is picked by number, but the reader navigates by page - turn to the page the
                         // juz opens on.
-                        if let start = ranges[juzPickerSelection]?.start { pageIndex = start }
+                        if let start = ranges[juzPickerSelection]?.start {
+                            turnPage(to: start, in: pages, suppressClear: false)
+                        }
                     }
                     withAnimation(.easeInOut) { activePicker = nil }
                 } label: {
@@ -923,10 +1432,14 @@ struct SurahPageReader<Controls: View>: View {
         withAnimation(.easeInOut) { activePicker = nil }
     }
 
-    /// The same playback menu the list reader offers - play the surah, play it ayah by ayah, repeat it, pick a
-    /// reciter - rather than a lone play/stop button that could only do one of those.
+    /// The list reader's play menu, verbatim (user rule: "take the SurahView play menu exactly and put it in
+    /// the mushaf one") - reciter picker on top, then Other Options (custom range, random ayah, random
+    /// reciter, repeat), ayah-by-ayah, last listened, and Play Surah nearest the thumb. It acts on the surah
+    /// the FOOTER is showing, which in page mode is wherever the reader has paged to.
     private func pageFooterPlayButton(surah: Surah) -> some View {
         let idle = !quranPlayer.isLoading && !quranPlayer.isPlaying && !quranPlayer.isPaused
+        let canResumeLast = settings.lastListenedSurah?.surahNumber == surah.id
+        let repeatCounts = [20, 15, 10, 5, 3, 2]
 
         return Group {
             if idle {
@@ -947,11 +1460,68 @@ struct SurahPageReader<Controls: View>: View {
                     Text("Surah Playback")
                         .foregroundStyle(.secondary)
 
-                    Button {
-                        settings.hapticFeedback()
-                        quranPlayer.playSurah(surahNumber: surah.id, surahName: surah.nameTransliteration)
+                    // Play Surah sits at the visual BOTTOM of every play menu (user-picked order) - the
+                    // primary action lands nearest the thumb, with Play Last Listened just above it.
+                    // Declared order is visual order (`fixedMenuOrder`).
+                    Menu {
+                        Text("More Playback")
+                            .foregroundStyle(.secondary)
+
+                        if let onPlayCustomRange {
+                            Button {
+                                settings.hapticFeedback()
+                                onPlayCustomRange()
+                            } label: {
+                                Label("Play Custom Range", systemImage: "slider.horizontal.3")
+                            }
+                        }
+
+                        Button {
+                            settings.hapticFeedback()
+                            let ayahsForQiraah = surah.ayahs.filter {
+                                $0.existsInQiraah(settings.displayQiraahForArabic, surahID: surah.id)
+                            }
+                            if let randomAyah = ayahsForQiraah.randomElement() {
+                                quranPlayer.playAyah(
+                                    surahNumber: surah.id,
+                                    ayahNumber: randomAyah.id,
+                                    continueRecitation: true
+                                )
+                            }
+                        } label: {
+                            Label("Play Random Ayah", systemImage: "shuffle.circle")
+                        }
+
+                        if let onPlayRandomReciter {
+                            Button {
+                                settings.hapticFeedback()
+                                onPlayRandomReciter(surah)
+                            } label: {
+                                Label("Play Random Reciter", systemImage: "person.wave.2")
+                            }
+                        }
+
+                        Menu {
+                            Text("Repeat Count")
+                                .foregroundStyle(.secondary)
+
+                            ForEach(repeatCounts, id: \.self) { n in
+                                Button {
+                                    settings.hapticFeedback()
+                                    quranPlayer.playSurah(
+                                        surahNumber: surah.id,
+                                        surahName: surah.nameTransliteration,
+                                        repeatCount: n
+                                    )
+                                } label: {
+                                    Label("Repeat \(n)×", systemImage: "\(n).circle")
+                                }
+                            }
+                        } label: {
+                            Label("Repeat Surah", systemImage: "repeat")
+                        }
                     } label: {
-                        Label("Play Surah", systemImage: "memories")
+                        Label("Other Options", systemImage: "ellipsis.circle")
                     }
 
                     Button {
@@ -961,24 +1531,24 @@ struct SurahPageReader<Controls: View>: View {
                         Label("Play Ayah by Ayah", systemImage: "list.number")
                     }
 
-                    Menu {
-                        Text("Repeat Count")
-                            .foregroundStyle(.secondary)
-
-                        ForEach([20, 15, 10, 5, 3, 2], id: \.self) { n in
-                            Button {
-                                settings.hapticFeedback()
-                                quranPlayer.playSurah(
-                                    surahNumber: surah.id,
-                                    surahName: surah.nameTransliteration,
-                                    repeatCount: n
-                                )
-                            } label: {
-                                Label("Repeat \(n)×", systemImage: "\(n).circle")
-                            }
+                    if canResumeLast, let last = settings.lastListenedSurah {
+                        Button {
+                            settings.hapticFeedback()
+                            quranPlayer.playSurah(
+                                surahNumber: last.surahNumber,
+                                surahName: last.surahName,
+                                certainReciter: true
+                            )
+                        } label: {
+                            Label("Play Last Listened", systemImage: "play.fill")
                         }
+                    }
+
+                    Button {
+                        settings.hapticFeedback()
+                        quranPlayer.playSurah(surahNumber: surah.id, surahName: surah.nameTransliteration)
                     } label: {
-                        Label("Repeat Surah", systemImage: "repeat")
+                        Label(canResumeLast ? "Play from Beginning" : "Play Surah", systemImage: "memories")
                     }
                 } label: {
                     playControlLabel
@@ -1028,6 +1598,9 @@ private struct MushafPageContent: View {
     // environment object. Observing it made every mounted page re-render on every QuranData publish.
     private let quranData = QuranData.shared
     @ObservedObject private var quranPlayer = QuranPlayer.shared
+    /// Observed so toggling an ayah's beginner spacing re-evaluates this page: the composed text changes, and
+    /// the render cache key (which folds in this page's overrides) has to be recomputed to pick it up.
+    @ObservedObject private var beginnerOverrides = AyahBeginnerOverrides.shared
 
     let page: MushafPage
 
@@ -1043,12 +1616,15 @@ private struct MushafPageContent: View {
     /// The in-page find, while its query is live: every matching ayah's matched substrings in accent,
     /// tajweed flattened for the whole page (see `MushafPageTextView.searchHighlight`).
     var searchHighlight: (matches: [HighlightedAyahRef], term: String)? = nil
-    /// Multi-select: while on, taps toggle ayahs of `selectionSurahID` (the surah the bulk actions
-    /// operate on) instead of marking; selected ayahs carry the accent tint.
+    /// Multi-select: while on, taps toggle whichever ayah was touched - of EITHER surah the page carries -
+    /// instead of marking it; selected ayahs take the accent tint.
     var isSelecting: Bool = false
-    var selectionSurahID: Int = 0
-    var selectedAyahIDs: Set<Int> = []
-    var onToggleSelection: ((Int) -> Void)? = nil
+    var selectedAyahs: Set<HighlightedAyahRef> = []
+    var onToggleSelection: ((Int, Int) -> Void)? = nil
+    /// Whether the reader's chrome is folded away - the fitted page's centering nudge applies only
+    /// then (collapsed, the visible band's top edge hides navigation-bar dead space; uncollapsed,
+    /// both edges are real chrome and plain centering is already visually even).
+    var bottomBarsCollapsed: Bool = false
 
     /// Padding around the ayah block; the composer measures fit against the same text width and height.
     /// No slack constants beyond these: the fit verifies against the real TextKit layout, so the text gets
@@ -1073,7 +1649,8 @@ private struct MushafPageContent: View {
     /// A sheet the actions sheet asked for, presented from here once the actions sheet has closed.
     @State private var secondarySheet: SecondarySheetRequest?
 
-    /// A tapped surah heading (the in-page name/basmala, or the pinned header) - drives the surah info sheet.
+    /// A tapped surah heading in the page TEXT (the name/basmala where a surah begins mid-page) - drives
+    /// the surah info sheet. The reader's pinned header has its own, at reader level.
     @State private var infoSurah: Surah?
 
     private struct SecondarySheetRequest: Identifiable {
@@ -1143,11 +1720,20 @@ private struct MushafPageContent: View {
     var body: some View {
         GeometryReader { geo in
             let width = max(geo.size.width - Self.textPadding * 2, 1)
-            // The height the page can actually SHOW, not the height of its frame. Anything the pager hands down
-            // as a safe-area inset rather than as a smaller frame - the tajweed/qiraah bar most of all, which
-            // only exists in comparison mode - is covered by chrome: text fitted into it is text hidden behind
-            // the bar. Budgeting against the frame is what cost a comparison-mode page its last line.
-            let visibleHeight = max(geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom, 1)
+            // The page's FRAME is the region it can show - every piece of reader chrome is already subtracted
+            // from it. Measured on an iPhone 16 Pro (points, screen 874 tall) with the reader open:
+            //
+            //   plain page mode   frame 144...697   safeAreaInsets top 44, bottom 0
+            //   comparison mode   frame 144...664   safeAreaInsets top 44, bottom 0
+            //
+            // The pinned surah header sits ABOVE 144 and the controls/footer/tab bar BELOW the frame's bottom
+            // (which moves up by exactly the riwayah bar's height when comparison mode adds it). So the bars
+            // reduce the frame; they are NOT handed down as insets. The 44 is the navigation bar, which is
+            // nowhere near this view - subtracting it took 44pt off every page's budget for chrome that
+            // covers nothing, and because a ScrollView TOP-pins content shorter than its viewport, all 44
+            // landed as dead space BELOW the page. That was the "page sits too high" bug: the block was
+            // centered correctly, but inside a band 44pt shorter than the one it was drawn in.
+            let visibleHeight = max(geo.size.height, 1)
             // The height the TEXT actually gets: the visible region minus its own vertical padding, nothing
             // else. The fit verifies against the real TextKit layout, so no slack is reserved on top.
             let textHeight = max(visibleHeight - Self.verticalPadding * 2, 1)
@@ -1165,6 +1751,17 @@ private struct MushafPageContent: View {
                 // for the beat the refit takes.
                 renderedPageBody(rendered: stale, width: width, visibleHeight: visibleHeight)
                     .task(id: "\(width)|\(textHeight)") {
+                        // Debounced: during a chrome transition (a picker collapsing after a jump, the
+                        // mini player mounting) the height SWEEPS through intermediate values frame by
+                        // frame, and composing for each transient fitted the page to heights it never
+                        // rests at - the first one to land showed the page briefly fitted SHORT before
+                        // the settled fit grew it back (the shrink-then-grow flash on every picker
+                        // jump), while churning the fit queues with throwaway work. The task id cancels
+                        // this on every geometry change, so the sleep lets only a geometry that has
+                        // held still for a beat reach the fit queue; the last good render of this page
+                        // stays up meanwhile.
+                        try? await Task.sleep(nanoseconds: 150_000_000)
+                        guard !Task.isCancelled else { return }
                         MushafPageRenderCache.renderAsync(page: page, width: width, height: textHeight) {
                             renderTick &+= 1
                         }
@@ -1179,6 +1776,15 @@ private struct MushafPageContent: View {
                     // this whenever the geometry the page needs actually changes; renderAsync dedupes by
                     // key, so repeats are free.
                     .task(id: "\(width)|\(textHeight)") {
+                        // The same debounce as the stale branch above, for the same reason: a cold
+                        // picker-jump lands mid-transition, and fitting every transient height not only
+                        // queued the settled fit behind throwaway work - the first transient to finish
+                        // became this page's "nearest" render and flashed the page fitted short. Only a
+                        // geometry that holds still reaches the fit queue. (The reader's own prewarm
+                        // already requested the landing page at the settled geometry in parallel, so
+                        // this request is usually just the backstop.)
+                        try? await Task.sleep(nanoseconds: 150_000_000)
+                        guard !Task.isCancelled else { return }
                         MushafPageRenderCache.renderAsync(page: page, width: width, height: textHeight) {
                             renderTick &+= 1
                         }
@@ -1186,9 +1792,9 @@ private struct MushafPageContent: View {
             }
         }
         .overlay(alignment: spineIsLeading ? .leading : .trailing) { spineRule }
-        // The same pinned surah header the list reader uses, so the two reading modes are titled identically:
-        // revelation symbol, ayah/page summary, favourite star. It names the page's TOP surah.
-        .safeAreaInset(edge: .top, spacing: 0) { topHeader }
+        // No pinned surah header here: it belongs to the READER (`SurahPageReader.pinnedSurahHeader`), one
+        // for the whole pager. A header per page rode INSIDE the pager, so every turn - including one
+        // between two pages of the SAME surah - slid it out and slid an identical copy in.
         // A mushaf page is fixed-size: the Arabic uses absolute point sizes, and the chrome must not grow with
         // Dynamic Type either, or it would eat the space the text was fitted into.
         .dynamicTypeSize(.large)
@@ -1208,17 +1814,76 @@ private struct MushafPageContent: View {
                 .environmentObject(settings)
                 .environmentObject(quranData)
         }
+        // Report this page's sheet state to the shared tracker so the pager's follow-the-recitation
+        // page turn holds still while a sheet presented from this page is up - turning the page tears
+        // this page view down, which dismissed its open sheet (see `AyahSheetPresence`).
+        .onChange(of: anyPageSheetOpen) { open in
+            if open {
+                AyahSheetPresence.shared.sheetOpened()
+            } else {
+                AyahSheetPresence.shared.sheetClosed()
+            }
+        }
+        .onDisappear {
+            if anyPageSheetOpen {
+                AyahSheetPresence.shared.sheetClosed()
+            }
+        }
     }
 
-    /// Tap a surah's name/basmala (in the page text or the pinned header) to read about the surah.
+    /// Whether any sheet presented from THIS page (actions, secondary, surah info) is up.
+    private var anyPageSheetOpen: Bool {
+        sheetAyah != nil || secondarySheet != nil || infoSurah != nil
+    }
+
+    /// Tap a surah's name/basmala in the page text to read about the surah.
     private func showSurahInfo(surahID: Int) {
         guard let surah = quranData.surah(surahID) else { return }
         settings.hapticFeedback()
         infoSurah = surah
     }
 
+    /// The bookmarked ayahs among the ones this page shows - each gets a bookmark glyph over its number
+    /// ornament.
+    ///
+    /// ONE walk of the bookmark list, not one per ayah: `settings.isBookmarked` is a linear scan, and this is
+    /// evaluated on every body pass - which during recitation means every player tick, on all three mounted
+    /// pages. Asking it per ayah made that ~45 full scans a tick.
+    private var bookmarkedAyahsOnPage: [(surahID: Int, ayahID: Int, highlight: AyahHighlightColor?)] {
+        let onPage = Set(page.ayahRefs)
+        guard !onPage.isEmpty else { return [] }
+        // The highlight rides along on the same walk - it lives on the bookmark record, so carrying it
+        // costs nothing here and saves the page a second scan for the washes.
+        return settings.bookmarkedAyahs.compactMap { bookmark in
+            let ref = HighlightedAyahRef(surahID: bookmark.surah, ayahID: bookmark.ayah)
+            guard onPage.contains(ref) else { return nil }
+            return (surahID: ref.surahID, ayahID: ref.ayahID, highlight: bookmark.highlight)
+        }
+    }
+
+    /// Fit-to-page typesets the WHOLE page into the band the reader can see, so there is nothing below the
+    /// fold to scroll to - and a live scroll view there only lets the page be dragged off its own margins and
+    /// rubber-banded back (user report: "if fit to page don't allow me to scroll up or down"). So once the
+    /// page genuinely fits, the scroll container is dropped entirely. A page that still overflows keeps it:
+    /// the composer refuses to shrink English pages, the system font and the opening spread (see
+    /// `MushafPageComposer.fittedFontSize`), and those must remain reachable.
+    @ViewBuilder
     private func renderedPageBody(rendered: MushafRenderedPage, width: CGFloat, visibleHeight: CGFloat) -> some View {
+        // The 1pt tolerance absorbs layout-height ceil rounding: a page fitted flush to its budget
+        // must never fall into the scroll branch over a fraction of a point (user rule: fit-to-page
+        // must never scroll or rubber-band).
+        if settings.mushafFitPage, rendered.height + Self.verticalPadding * 2 <= visibleHeight + 1 {
+            // The fitted page zooms like the facsimile: pinch in and it stays, the fit is the floor.
+            pageTextBody(rendered: rendered, width: width, visibleHeight: visibleHeight, zoomable: true)
+        } else {
             ScrollView {
+                pageTextBody(rendered: rendered, width: width, visibleHeight: visibleHeight, zoomable: false)
+            }
+        }
+    }
+
+    private func pageTextBody(rendered: MushafRenderedPage, width: CGFloat, visibleHeight: CGFloat,
+                              zoomable: Bool) -> some View {
                 MushafPageTextView(
                     attributed: rendered.text,
                     ranges: rendered.ranges,
@@ -1231,18 +1896,18 @@ private struct MushafPageContent: View {
                     searchHighlight: searchHighlight.map { highlight in
                         (matches: highlight.matches.map { (surahID: $0.surahID, ayahID: $0.ayahID) }, term: highlight.term)
                     },
-                    selected: isSelecting ? selectedAyahIDs.map { (surahID: selectionSurahID, ayahID: $0) } : [],
+                    selected: isSelecting ? selectedAyahs.map { (surahID: $0.surahID, ayahID: $0.ayahID) } : [],
+                    bookmarked: bookmarkedAyahsOnPage,
                     baselineOffset: rendered.baselineOffset,
-                    baselineBand: rendered.baselineBand
+                    baselineBand: rendered.baselineBand,
+                    zoomsLikePDF: zoomable
                 ) { surahID, ayahID in
                     guard ayahRef(surahID: surahID, ayahID: ayahID) != nil else { return }
-                    // Select mode: taps build the selection (this surah only - the bulk actions
-                    // operate on it) and never touch the reading mark.
+                    // Select mode: taps build the selection - ANY ayah on the page, whichever of the (up to
+                    // two) surahs it belongs to - and never touch the reading mark.
                     if isSelecting {
-                        if surahID == selectionSurahID {
-                            settings.hapticFeedback()
-                            onToggleSelection?(ayahID)
-                        }
+                        settings.hapticFeedback()
+                        onToggleSelection?(surahID, ayahID)
                         return
                     }
                     // A search arrival clears in ONE tap: touching the arrived ayah removes the accent
@@ -1262,6 +1927,17 @@ private struct MushafPageContent: View {
                 } onLongPressAyah: { surahID, ayahID in
                     guard let ref = ayahRef(surahID: surahID, ayahID: ayahID) else { return }
                     settings.hapticFeedback()
+                    // A long press on a DIFFERENT ayah while one is selected moves the selection
+                    // there. The tint precedence is `markedAyah ?? sheetAyahTint`, so without this
+                    // the old mark stayed lit behind the new ayah's actions sheet - the "long-press
+                    // doesn't move the selection" bug. No selection, or the same ayah pressed again:
+                    // nothing to move, current behavior kept.
+                    let pressed = HighlightedAyahRef(surahID: surahID, ayahID: ayahID)
+                    if highlightedAyah != nil, highlightedAyah != pressed {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            highlightedAyah = pressed
+                        }
+                    }
                     sheetAyah = TappedAyahRef(surah: ref.0, ayah: ref.1)
                 } onTapHeading: { surahID in
                     showSurahInfo(surahID: surahID)
@@ -1272,7 +1948,18 @@ private struct MushafPageContent: View {
                 // Fill the visible region so a page that fits sits centered in what the reader can SEE (balanced
                 // top/bottom spacing); a page that overflows stays its natural height and scrolls.
                 .frame(maxWidth: .infinity, minHeight: visibleHeight, alignment: .center)
-        }
+                // Evens the fitted page's visual air, PER CHROME STATE (user rule both times: make the
+                // gaps above the first line and below the last look the same; fit-only - a scrolling
+                // page has no centering to bias).
+                // COLLAPSED -4: the band's bottom edge is real chrome (the chevron strip) but its top
+                // edge hides ~7-8pt of navigation-bar dead space below the title pill, so the page rides
+                // up by half that difference (measured 19pt above vs 12pt below before the nudge).
+                // UNCOLLAPSED +2: both edges are real chrome (surah header strip above, legend/search
+                // below), but the Uthmani line boxes leave more ink-free air below the last baseline
+                // than above the first line's stacked marks - measured 12pt above vs 16pt below with
+                // plain centering (and the collapsed -4 applied here read outright top-tight, the
+                // "same height from top and below when not collapsed" report). +2 lands 14/14.
+                .offset(y: zoomable ? (bottomBarsCollapsed ? -4 : 2) : 0)
     }
 
     /// Close the actions sheet, THEN open the one it asked for. UIKit can't present a second sheet while the
@@ -1335,38 +2022,14 @@ private struct MushafPageContent: View {
 
             case .share:
                 ShareAyahSheet(surahNumber: surah.id, ayahNumber: ayah.id)
+
+            case .selectText:
+                // The page's own text view is non-selectable by design (its gestures ARE the ayah
+                // gestures), so page mode hands selection off to the list rows' select-and-copy sheet.
+                SelectAyahTextSheet(surah: surah, ayah: ayah)
             }
         }
         .smallMediumSheetPresentation()
-    }
-
-    @ViewBuilder
-    private var topHeader: some View {
-        if let surah = page.firstSurah {
-            SurahSectionHeader(surah: surah)
-                .padding(.horizontal)
-                .padding(.vertical, 4)
-                // Keep the tapped header lit while its info sheet is open (task: highlight the selection until
-                // the sheet is gone). While this surah is loaded in the player, the header carries the accent
-                // tint instead - the page-top twin of the in-page name highlight.
-                .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(infoSurah?.id == surah.id
-                              ? Color.secondary.opacity(0.18)
-                              : quranPlayer.currentSurahNumber == surah.id
-                                ? settings.accentColor.color.opacity(0.18)
-                                : .clear)
-                )
-                .shadow(color: .black.opacity(0.15), radius: 2, x: 0, y: 0)
-                .conditionalGlassEffect(rectangle: true)
-                .padding(.top, 4)
-                .padding(.horizontal, settings.defaultView ? 20 : 16)
-                // Tap the header to read about the surah. The star/emoji keep their own tap gestures -
-                // a child gesture wins over this one, so favoriting still works.
-                .contentShape(Rectangle())
-                .onTapGesture { showSurahInfo(surahID: surah.id) }
-                .animation(.easeInOut(duration: 0.15), value: infoSurah?.id == surah.id)
-        }
     }
 
     /// The spine: a hairline that fades out at both ends, drawn down the inner edge of the leaf.
@@ -1422,8 +2085,23 @@ struct MushafComposeConfig {
     let displayQiraah: String?
     let cleanArabicText: Bool
     let beginnerMode: Bool
+    /// Individual ayahs the reader set letter-by-letter (the per-ayah toggle, or the multi-select "Beginner"
+    /// bulk action), on top of the global `beginnerMode`. Captured here with the rest of the snapshot so the
+    /// off-main fit passes never reach back to the main actor for it.
+    let beginnerAyahs: Set<HighlightedAyahRef>
     /// Already folded: tajweed toggles AND the page being Arabic. English pages never paint tajweed.
     let showTajweed: Bool
+    /// Non-nil = paint this non-Hafs riwayah's print-derived colors (tajweed on, pack bundled).
+    let riwayahTajweedTag: String?
+    /// Non-nil = this non-Hafs riwayah's pack is bundled, so khilaf-NUMBERED ayahs (its counting
+    /// merges/splits vs Hafs) tint their number medallion magenta the way the print rings them.
+    /// Independent of the tajweed toggle: numbering khilaf is a fact of the riwayah, not a color rule.
+    let khilafMarkerTag: String?
+    /// Rule keys the reader has hidden in the riwayah legend.
+    let riwayahHiddenRules: Set<String>
+    /// "Highlight Allah" - the composed page paints the divine name red, exactly like the list rows
+    /// (English pages included: the list highlights "Allah" in translations too).
+    let highlightAllahNames: Bool
     let fontSize: CGFloat
     let fitPage: Bool
     let accent: UIColor
@@ -1432,6 +2110,9 @@ struct MushafComposeConfig {
     static func current() -> MushafComposeConfig {
         let s = Settings.shared
         let language = s.resolvedMushafPageLanguage
+        let riwayahTajweedTag: String? =
+            (s.showTajweedColors && s.showArabicText && language == .arabic)
+            ? s.riwayahTajweedPackTag : nil
         return MushafComposeConfig(
             pageLanguage: language,
             removeArabicDots: s.removeArabicDots,
@@ -1440,7 +2121,12 @@ struct MushafComposeConfig {
             displayQiraah: s.displayQiraahForArabic,
             cleanArabicText: s.cleanArabicText,
             beginnerMode: s.beginnerMode,
+            beginnerAyahs: AyahBeginnerOverrides.shared.ayahs,
             showTajweed: s.showTajweedColors && s.showArabicText && s.isHafsDisplay && language == .arabic,
+            riwayahTajweedTag: riwayahTajweedTag,
+            khilafMarkerTag: s.riwayahTajweedPackTag,
+            riwayahHiddenRules: s.riwayahTajweedHiddenRuleSet,
+            highlightAllahNames: s.highlightAllahNames,
             fontSize: CGFloat(s.fontArabicSize),
             fitPage: s.mushafFitPage,
             accent: UIColor(s.accentColor.color)
@@ -1462,10 +2148,10 @@ struct MushafPageComposer {
 
     private var isEnglish: Bool { config.pageLanguage.isEnglish }
 
-    /// Dots-removed text is built from substitution glyphs (ٮ ٯ ڡ) that the Quranic faces do not carry, so it
-    /// has to fall back to the system face - the same rule `AyahRow` and `SurahHeaders` already apply. Page mode
-    /// was the one reader that ignored it, which is why "Hide Arabic Dots" appeared to do nothing here.
-    private var usesSystemFont: Bool { isEnglish || config.removeArabicDots || config.quranUsesSystemArabicFont }
+    /// Dots-removed text renders in the chosen Quranic face: the bundled ttfs carry real dotless
+    /// skeleton glyphs (ٮ ٯ ڡ ں with full joining forms - added by `Scripts/patch_dotless_glyphs.py`),
+    /// so the old forced system-face fallback is gone everywhere (`AyahRow`/`SurahHeaders` match).
+    private var usesSystemFont: Bool { isEnglish || config.quranUsesSystemArabicFont }
     private var arabicFontName: String { config.arabicFontName }
     private var shouldShowTajweed: Bool { config.showTajweed }
 
@@ -1477,23 +2163,29 @@ struct MushafPageComposer {
     /// Always the Uthmani face, even when the reader picked "Basic": that font is what draws the ayah number as the
     /// circled-flower ornament, so the system fallback would print bare digits mid-page.
     private func markerFont(_ size: CGFloat) -> UIFont {
-        UIFont(name: Settings.qiraatUthmaniFontName, size: size) ?? .roundedSystemFont(ofSize: size)
+        UIFont(name: Settings.hafsUthmaniFontName, size: size) ?? .roundedSystemFont(ofSize: size)
     }
 
-    /// Mushaf pages 1 and 2 (al-Fatihah, and the opening of al-Baqarah) are set centered in a printed mushaf - 
-    /// they're short, framed pages, not columns of running text. Every other page is a full block.
+    /// Mushaf pages 1 and 2 (al-Fatihah, and the opening of al-Baqarah). They used to be set fully centered
+    /// (short framed pages); now their body justifies like every other page - each line flush to both
+    /// margins EXCEPT the paragraph's last (user rule) - and only the English/system-font renders (which
+    /// can't justify, see `paragraph`) keep the centered setting.
     private var isOpeningSpread: Bool { page.page <= 2 }
 
-    /// Justified everywhere except the opening spread, so every line reaches BOTH margins - that's what makes a
-    /// trailing-aligned page look set rather than ragged.
+    /// Whether this page's body can be space-justified at all: only the Arabic set in a real Quranic face.
+    private var isJustifiable: Bool { !isEnglish && !usesSystemFont }
+
+    /// Justified everywhere (the opening spread exempts only its LAST line - see `spaceJustified`), so every
+    /// line reaches BOTH margins - that's what makes a trailing-aligned page look set rather than ragged.
     ///
     /// NOT justified when the text is in the system face. Justifying Arabic works by elongating the glyphs
     /// (kashida), and only the Quranic faces carry the elongation forms; with the system face the layout engine
     /// has nothing to stretch, so it dumps ALL the slack into the word gaps instead - which is the "weird spaces
     /// between words" in Basic/no-dots mode. Trailing-aligned with natural spacing is the honest rendering there.
+    /// Those renders also keep the opening spread centered, its old framed look.
     private func paragraph(_ size: CGFloat, extraLineSpacing: CGFloat = 0, centered: Bool? = nil) -> NSParagraphStyle {
         let p = NSMutableParagraphStyle()
-        if centered ?? isOpeningSpread {
+        if centered ?? (isOpeningSpread && !isJustifiable) {
             p.alignment = .center
         } else {
             // English pages are set natural (left-aligned): justified Latin text without hyphenation
@@ -1525,7 +2217,9 @@ struct MushafPageComposer {
         case .transliteration: return ayah.textTransliteration
         case .clearQuran:      return ayah.textEnglishMustafa
         case .saheeh:          return ayah.textEnglishSaheeh
-        case .arabic:          return ""
+        // Neither composes English body text: Arabic draws the mushaf itself, and the PDF is a page image
+        // that never reaches this composer at all (`SurahView` swaps in the facsimile reader instead).
+        case .arabic, .pdf:    return ""
         }
     }
 
@@ -1535,7 +2229,7 @@ struct MushafPageComposer {
 
         if isEnglish {
             // No tajweed, no beginner letter-spacing - both are Arabic-script concepts.
-            return NSAttributedString(
+            let ns = NSMutableAttributedString(
                 string: englishText(for: ayah),
                 attributes: [
                     .font: UIFont.roundedSystemFont(ofSize: size),
@@ -1543,13 +2237,18 @@ struct MushafPageComposer {
                     .paragraphStyle: para,
                 ]
             )
+            if colored { paintAllahNames(in: ns) }
+            return ns
         }
 
         let clean = config.cleanArabicText
+        // The global setting OR this one ayah's own override - so the per-ayah toggle and the multi-select
+        // "Beginner" bulk action space out exactly the ayahs they were applied to, on the page as in the list.
         let beginner = config.beginnerMode
+            || config.beginnerAyahs.contains(HighlightedAyahRef(surahID: surah.id, ayahID: ayah.id))
         let qiraahOverride = config.displayQiraah ?? "Hafs"
         let base = ayah.displayArabicText(surahId: surah.id, clean: clean, qiraahOverride: qiraahOverride)
-        let display = beginner ? base.map { String($0) }.joined(separator: " ") : base
+        let display = beginner ? base.beginnerSpaced : base
         let font = arabicFont(size)
 
         if colored, shouldShowTajweed,
@@ -1564,13 +2263,54 @@ struct MushafPageComposer {
             // The tajweed colours are already UIColor; overlay the font/paragraph without touching them.
             let ns = NSMutableAttributedString(attributedString: NSAttributedString(styled))
             ns.addAttributes([.font: font, .paragraphStyle: para], range: NSRange(location: 0, length: ns.length))
+            paintAllahNames(in: ns)
             return ns
         }
 
-        return NSAttributedString(
+        // Non-Hafs riwayat: the print-derived word colors of THAT mushaf. Beginner spacing keeps
+        // its colors: the store re-tokenizes the spaced text by the 2+ space original word gaps.
+        if colored, let tag = config.riwayahTajweedTag,
+           let styled = QiraahTajweedStore.shared.attributedText(
+               tag: tag, surah: surah.id, ayah: ayah.id, displayText: display,
+               beginnerSpacing: beginner,
+               hiddenRules: config.riwayahHiddenRules
+           ) {
+            let ns = NSMutableAttributedString(attributedString: NSAttributedString(styled))
+            ns.addAttributes([.font: font, .paragraphStyle: para], range: NSRange(location: 0, length: ns.length))
+            paintAllahNames(in: ns)
+            return ns
+        }
+
+        let ns = NSMutableAttributedString(
             string: display,
             attributes: [.font: font, .foregroundColor: UIColor.label, .paragraphStyle: para]
         )
+        if colored { paintAllahNames(in: ns) }
+        return ns
+    }
+
+    /// "Highlight Allah" on the composed page - the list rows' red divine name, page-mode edition.
+    /// Painted AFTER the tajweed/riwayah colors so the red wins on overlap, exactly like the list
+    /// (`HighlightedSnippet` applies it over the pre-styled tajweed text). Arabic goes through the
+    /// SAME shared scanner the list and word-by-word renderers use - one detector, and it already
+    /// stops the red before a trailing stop-sign ornament; English matches "Allah" case-insensitively.
+    /// A foreground color never moves a glyph, so the fitted layout is untouched.
+    private func paintAllahNames(in ns: NSMutableAttributedString) {
+        guard config.highlightAllahNames else { return }
+        let text = ns.string
+        if isEnglish {
+            var searchStart = text.startIndex
+            while searchStart < text.endIndex,
+                  let match = text.range(of: "Allah", options: [.caseInsensitive, .diacriticInsensitive],
+                                         range: searchStart..<text.endIndex) {
+                ns.addAttribute(.foregroundColor, value: UIColor.systemRed, range: NSRange(match, in: text))
+                searchStart = match.upperBound
+            }
+            return
+        }
+        for range in HighlightedSnippet.arabicAllahRanges(in: text) {
+            ns.addAttribute(.foregroundColor, value: UIColor.systemRed, range: NSRange(range, in: text))
+        }
     }
 
     /// The header a surah gets where it BEGINS, mid-page: a rule, then ONE line carrying the bracketed name
@@ -1579,7 +2319,7 @@ struct MushafPageComposer {
     ///
     /// The name and the bismillah shared a line's worth of height each before, which is a lot of a page to give
     /// up on a mushaf that already fits its text exactly. Al-Fatihah counts its basmala as ayah 1 and at-Tawbah
-    /// has none, so neither gets the ornament.
+    /// has none, so both show the isti'adhah in the ornament's place instead (see `firstAyahIsBasmala`).
     /// How many box-drawing glyphs it takes to span `width` at `ruleSize`. The rule used to be a hardcoded 10
     /// glyphs, so it was a short dash floating in the middle of the column no matter how wide the page was.
     private func ruleString(width: CGFloat, ruleSize: CGFloat) -> String {
@@ -1592,7 +2332,8 @@ struct MushafPageComposer {
     }
 
     private func surahOpeningHeading(_ surah: Surah, size: CGFloat, width: CGFloat,
-                                     extraLineSpacing: CGFloat, leadingBreak: Bool) -> (text: NSAttributedString, nameRange: NSRange) {
+                                     extraLineSpacing: CGFloat, leadingBreak: Bool,
+                                     firstAyahIsBasmala: Bool = false) -> (text: NSAttributedString, nameRange: NSRange) {
         let accent = config.accent
         let heading = NSMutableAttributedString()
 
@@ -1659,24 +2400,53 @@ struct MushafPageComposer {
                 .paragraphStyle: tight,
             ]))
 
-            heading.append(NSAttributedString(string: " \(surah.nameArabic) \u{FD3E}", attributes: arabicAttributes))
+            // The gap between the numeral and the name has to be a FIXED-width space, for the same reason as
+            // the bismillah gap below: an ordinary space between two Arabic runs collapses to almost nothing,
+            // leaving "١٤إبراهيم" reading as one word. A full em quad (\u{2001}) overshot the other way, so
+            // this is an en quad - half an em - widened by kerning to land between the two. Tune `nameGap`,
+            // not the character. The brackets keep their plain spaces; those already sit clear.
+            let nameGap = -nameSize * 0.125        // en quad (0.5 em) + this = 0.375 em of separation
+            var gapAttributes = arabicAttributes
+            gapAttributes[.kern] = nameGap
+            heading.append(NSAttributedString(string: "\u{2000}", attributes: gapAttributes))
+
+            heading.append(NSAttributedString(string: "\(surah.nameArabic) \u{FD3E}", attributes: arabicAttributes))
         }
 
         let nameRange = NSRange(location: nameStart, length: heading.length - nameStart)
 
-        if surah.id != 1, surah.id != 9 {
-            // On the SAME line as the name. Em quads (not spaces): a run of ordinary spaces between two Arabic
-            // runs collapses to almost nothing, which is why the ornament was sitting right up against the name.
+        // What follows the name on its line. An ordinary surah gets the basmala ornament. Al-Fatihah whose
+        // first NUMBERED ayah IS the basmala (Hafs and most countings - the basmala prints right below as
+        // ayah 1), and at-Tawbah (no basmala at all), get the isti'adhah instead - the same headers the
+        // list reader shows. A Fatiha text whose first numbered ayah is alhamdu (its basmala unnumbered)
+        // gets the basmala, again matching the list rule.
+        //
+        // On the SAME line as the name. Em quads (not spaces): a run of ordinary spaces between two Arabic
+        // runs collapses to almost nothing, which is why the ornament was sitting right up against the name.
+        heading.append(NSAttributedString(string: "\u{2001}\u{2001}\u{2001}", attributes: [
+            .font: arabicFont(nameSize),
+            .foregroundColor: accent,
+            .paragraphStyle: tight,
+        ]))
+        let showsTaawwudh = surah.id == 9 || (surah.id == 1 && firstAyahIsBasmala)
+        let ornament: (text: String, font: UIFont)
+        if showsTaawwudh {
+            // The phrase in the reader's own Arabic face (user rule: "just say audhubillahi mina... in
+            // the arabic font"). Its spaces are NO-BREAK, so it can never split mid-phrase: when the
+            // name's line can't hold it, it drops WHOLE onto the next centered line (the break happens
+            // at the breakable em quads above) instead of leaving ٱلرَّجِيمِ orphaned below.
+            ornament = (Self.taawwudhText.replacingOccurrences(of: " ", with: "\u{00A0}"),
+                        arabicFont(nameSize * 0.85))
+        } else {
             let bismillahFont = UIFont(name: QuranGlyphFont.commonName, size: nameSize)
-            heading.append(NSAttributedString(
-                string: "\u{2001}\u{2001}\u{2001}" + (bismillahFont != nil ? QuranGlyphFont.bismillahOrnament : Self.basmalaText),
-                attributes: [
-                    .font: bismillahFont ?? arabicFont(nameSize * 0.85),
-                    .foregroundColor: accent,
-                    .paragraphStyle: tight,
-                ]
-            ))
+            ornament = (bismillahFont != nil ? QuranGlyphFont.bismillahOrnament : Self.basmalaText,
+                        bismillahFont ?? arabicFont(nameSize * 0.85))
         }
+        heading.append(NSAttributedString(string: ornament.text, attributes: [
+            .font: ornament.font,
+            .foregroundColor: accent,
+            .paragraphStyle: tight,
+        ]))
 
         // The closing rule under the heading line.
         heading.append(NSAttributedString(string: "\n" + rule + "\n", attributes: ruleAttributes))
@@ -1686,22 +2456,23 @@ struct MushafPageComposer {
     /// Fallback only - used if `QuranCommon` isn't installed and the ornament can't be drawn.
     private static let basmalaText = "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ"
 
+    /// The isti'adhah, shown in place of the basmala for al-Fatihah and at-Tawbah (the same text the list
+    /// reader's header row shows).
+    private static let taawwudhText = "أَعُوذُ بِٱللَّهِ مِنَ ٱلشَّيۡطَانِ ٱلرَّجِيمِ"
+
     /// The composed page text plus each ayah's character range for hit-testing.
     /// `width` is the column width, needed only so a surah heading's rule can span the full page. It is
     /// optional because the measurement passes don't have a meaningful one yet and don't care.
     func attributed(size: CGFloat, colored: Bool = true, extraLineSpacing: CGFloat = 0,
-                    width: CGFloat = 0, spaceTracking: CGFloat = 0) -> (text: NSAttributedString, ranges: [MushafAyahRange]) {
+                    width: CGFloat = 0, spaceTracking: CGFloat = 0,
+                    justified: Bool = true) -> (text: NSAttributedString, ranges: [MushafAyahRange]) {
         let result = NSMutableAttributedString()
         var ranges: [MushafAyahRange] = []
         let accent = config.accent
         let para = paragraph(size, extraLineSpacing: extraLineSpacing)
-        // Character positions just past each segment's final ayah marker - a surah completing
-        // mid-page and the page's own last line alike. `fillSurahClosingLines` first tries to FILL
-        // a sparse closing line by loosening its segment's gaps so words cascade down into it;
-        // `spaceJustified`'s sparseness cap then lets whatever stays sparse sit naturally at the
-        // right margin instead of being flung across the full measure.
-        var closingLineEnds: Set<Int> = []
-        // The same segments' full ayah-text ranges (headings excluded), for the fill pass.
+        // Each segment's full ayah-text range (headings excluded), for the balance pass: it re-breaks
+        // the segment so every line - the closing one included - holds its fair share of words before
+        // `spaceJustified` stretches them all to the margins.
         var fillableSegments: [NSRange] = []
 
         for (i, segment) in page.segments.enumerated() {
@@ -1710,8 +2481,18 @@ struct MushafPageComposer {
             // and the page's own opening surah is titled by the pinned header, so it gets nothing.
             if segment.ayahs.first?.id == 1 {
                 let headingStart = result.length
+                // Fatiha only: whether its first NUMBERED ayah is the basmala (Hafs) or alhamdu (countings
+                // that leave the basmala unnumbered) decides isti'adhah vs basmala in the heading - the
+                // same check the list reader makes. Raw text + sign-strip rather than `textCleanArabic`,
+                // which folds dots away under "Hide Arabic Dots" and would break the بسم prefix match.
+                let firstAyahIsBasmala = segment.surah.id == 1 && (segment.ayahs.first?
+                    .textArabic(for: config.displayQiraah, surahID: segment.surah.id)
+                    .removingArabicDiacriticsAndSigns
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .hasPrefix("بسم") ?? false)
                 let heading = surahOpeningHeading(segment.surah, size: size, width: width,
-                                                  extraLineSpacing: extraLineSpacing, leadingBreak: i > 0)
+                                                  extraLineSpacing: extraLineSpacing, leadingBreak: i > 0,
+                                                  firstAyahIsBasmala: firstAyahIsBasmala)
                 result.append(heading.text)
                 // The heading (rule + name + basmala) is tappable: `ayahID: 0` marks it as a heading range so a
                 // tap opens the surah info sheet instead of trying to mark an ayah.
@@ -1760,9 +2541,22 @@ struct MushafPageComposer {
                 result.append(ayahText(ayah, surah: segment.surah, size: size, colored: colored,
                                        extraLineSpacing: extraLineSpacing))
                 let markerStart = result.length
+                // The prints ring an ayah's number medallion in magenta when its NUMBERING differs
+                // from Hafs (a merge/split point of this riwayah's counting) - mirror that on the
+                // composed page. Number khilaf is a fact of the riwayah's text, not a tajweed color,
+                // so it shows whenever a non-Hafs riwayah with a pack is displayed (same philosophy
+                // as the always-on word diff tint), independent of the tajweed toggle. Colors never
+                // move a glyph, so the plain and colored composes still lay out identically.
+                let markerColor: UIColor
+                if let tag = config.khilafMarkerTag,
+                   QiraahTajweedStore.shared.isKhilafNumbered(tag: tag, surah: segment.surah.id, ayah: ayah.id) {
+                    markerColor = QiraahTajweedStore.khilafNumberColor
+                } else {
+                    markerColor = accent
+                }
                 result.append(NSAttributedString(string: " \(ayah.idArabic) ", attributes: [
                     .font: markerFont(size),
-                    .foregroundColor: accent,
+                    .foregroundColor: markerColor,
                     .paragraphStyle: para
                 ]))
                 ranges.append(MushafAyahRange(
@@ -1780,27 +2574,111 @@ struct MushafPageComposer {
                 ))
             }
 
-            // EVERY segment closes a paragraph whose last line deserves the treatment: a followed
-            // segment has necessarily completed its surah (surahs are contiguous in mushaf order),
-            // and the page's last segment - surah completed or continuing overleaf - still ends in
-            // the page's own last line, which reads just as broken when it's sparse and stretched.
-            closingLineEnds.insert(result.length)
             fillableSegments.append(NSRange(location: segmentTextStart,
                                             length: result.length - segmentTextStart))
         }
 
-        // Justify the final compose: first the page-wide loosening (`spaceTracking`, which DOES move line
-        // breaks - it was fitted against the same budget, see `balancedSpaceTracking`), then the per-line
-        // top-up to the exact margins, which only ever consumes slack inside a line and moves nothing.
-        // Tracking attributes don't shift character indices, so the ayah hit-test ranges stay valid.
-        if width > 0, !isEnglish, !usesSystemFont, !isOpeningSpread {
+        // The opening spread's LAST page line is set CENTERED - the classic framed look of the mushaf's
+        // first two pages (user rule: "first two pages make the last line centered always"). Done in BOTH
+        // compose paths (the justified plain compose and the `justified: false` colored one) with a swap
+        // that never changes the character count, so the transplant below and the ayah hit-test ranges
+        // stay index-aligned by construction.
+        var centeredClosingLine = false
+        if isOpeningSpread, isJustifiable, width > 0 {
+            centeredClosingLine = Self.centerLastLine(of: result, width: width, size: size,
+                                                      extraLineSpacing: extraLineSpacing,
+                                                      baseSize: config.fontSize)
+        }
+
+        // Justify the final compose in three passes: the page-wide loosening (`spaceTracking`, which DOES
+        // move line breaks - it was fitted against the same budget, see `balancedSpaceTracking`), then the
+        // balance pass that re-breaks each segment so EVERY line can be filled with even gaps, then the
+        // per-line top-up to the exact margins, which only ever consumes slack inside a line and moves
+        // nothing. Tracking attributes don't shift character indices, so the ayah hit-test ranges stay valid.
+        // `justified: false` skips all of it - the render pipeline computes the justification OFF the main
+        // thread on the plain compose and transplants it (see `justification(size:...)`), so the colored
+        // main-thread compose must not pay for it again.
+        if justified, width > 0, isJustifiable {
             let balanced = NSMutableAttributedString(attributedString: result)
             if spaceTracking > 0 { Self.addSpaceTracking(spaceTracking, to: balanced) }
-            Self.fillSurahClosingLines(balanced, width: width, segments: fillableSegments, bodySize: size)
-            return (Self.spaceJustified(balanced, width: width, closingLineEnds: closingLineEnds, bodySize: size), ranges)
+            // The opening spread justifies too (user rule: its lines fill the measure like any page) but
+            // classically - greedy breaks - so the balance pass, which exists to make a STRETCHED closing
+            // line sane, stands down there.
+            if !isOpeningSpread {
+                Self.balanceLineBreaks(balanced, width: width, segments: fillableSegments, bodySize: size)
+            }
+            // Once the last line is its own centered paragraph, every remaining right-aligned line - the
+            // body's new closing line included - fills to both margins like any other page; the centered
+            // tail is skipped by alignment. Only if the swap didn't land does the old exemption hold.
+            return (Self.spaceJustified(balanced, width: width,
+                                        exemptClosingLines: isOpeningSpread && !centeredClosingLine), ranges)
         }
 
         return (result, ranges)
+    }
+
+    /// Opening spread only: turns the page's final soft wrap into a hard break and centers the tail.
+    ///
+    /// The break SPACE is REPLACED, in place, by a newline - same character count, so every ayah
+    /// hit-test range and the off-main justification transplant's indices survive untouched. The new
+    /// tail paragraph keeps the pinned line box and carries `paragraphSpacingBefore` equal to the line
+    /// spacing the paragraph split removed (TextKit applies `lineSpacing` only WITHIN a paragraph), so
+    /// the last line sits exactly where it did and the page's height doesn't move.
+    /// Returns whether the swap landed - a single-line paragraph, or a last line that opens a paragraph
+    /// of its own already, has no break space to absorb and keeps its natural setting.
+    @discardableResult
+    private static func centerLastLine(of text: NSMutableAttributedString, width: CGFloat,
+                                       size: CGFloat, extraLineSpacing: CGFloat,
+                                       baseSize: CGFloat) -> Bool {
+        // Bound as a whole: NSLayoutManager does not retain its NSTextStorage.
+        let stack = layoutStack(for: text, width: width)
+        let manager = stack.manager
+        guard manager.numberOfGlyphs > 0 else { return false }
+
+        var lastLineRange = NSRange()
+        var glyph = 0
+        while glyph < manager.numberOfGlyphs {
+            var lineGlyphRange = NSRange()
+            manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &lineGlyphRange)
+            lastLineRange = manager.characterRange(forGlyphRange: lineGlyphRange, actualGlyphRange: nil)
+            glyph = NSMaxRange(lineGlyphRange)
+        }
+
+        let string = text.string as NSString
+        let lineStart = lastLineRange.location
+        // Only a RUNNING-TEXT last line (right-aligned body) that wrapped off a space is centered.
+        guard lineStart > 0, lineStart < string.length,
+              string.character(at: lineStart - 1) == 0x20,
+              let style = text.attribute(.paragraphStyle, at: lineStart, effectiveRange: nil) as? NSParagraphStyle,
+              style.alignment == .right,
+              let centered = style.mutableCopy() as? NSMutableParagraphStyle else { return false }
+
+        text.replaceCharacters(in: NSRange(location: lineStart - 1, length: 1), with: "\n")
+
+        centered.alignment = .center
+        centered.paragraphSpacingBefore = MushafPageFitter.lineSpacing(for: size, baseSize: baseSize)
+            + extraLineSpacing
+        text.addAttribute(.paragraphStyle, value: centered,
+                          range: NSRange(location: lineStart, length: text.length - lineStart))
+        return true
+    }
+
+    /// The page-wide justification - loosening, balanced re-breaks, margin top-up - computed on the PLAIN
+    /// compose so it can run off the main thread, packaged as the final `.tracking` runs plus the exact
+    /// laid-out height. `finalize` transplants the runs onto the tajweed-colored compose instead of
+    /// re-running the pipeline on the main thread (segment layouts, break probes and verification made
+    /// that a per-page main-thread stall during every prewarm ring). Valid because color attributes never
+    /// move a glyph: the same invariant the whole fit pipeline already rests on - pages are FITTED plain
+    /// and DRAWN colored - and tracking is keyed by character index, which the two composes share.
+    func justification(size: CGFloat, extraLineSpacing: CGFloat, width: CGFloat,
+                       spaceTracking: CGFloat) -> (tracking: [(range: NSRange, value: CGFloat)], height: CGFloat) {
+        let text = attributed(size: size, colored: false, extraLineSpacing: extraLineSpacing,
+                              width: width, spaceTracking: spaceTracking).text
+        var runs: [(range: NSRange, value: CGFloat)] = []
+        text.enumerateAttribute(.tracking, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            if let value = value as? CGFloat { runs.append((range, value)) }
+        }
+        return (runs, Self.layoutHeight(of: text, width: width))
     }
 
     /// The TextKit-1 stack `MushafPageTextView` renders with (`lineFragmentPadding = 0`, unbounded height),
@@ -1823,222 +2701,527 @@ struct MushafPageComposer {
     /// Justifies right-aligned Arabic by distributing each line's leftover width across the word gaps (as
     /// tracking on the spaces). This is what `.justified` would do MINUS kashida glyph elongation, which
     /// TextKit is free to place inside a line's final letter - detaching that letter's tashkeel onto the
-    /// stretched tail, the mushaf reader's "floating haraka at the margin" artifact. Every line takes the
-    /// full measure, including a paragraph's last; headings keep their own centering, and a segment's
-    /// still-sparse closing line (see `closingLineEnds`) is centered on the measure instead of
-    /// stretched or left trailing - the printed mushaf's treatment of a surah's short last line.
+    /// stretched tail, the mushaf reader's "floating haraka at the margin" artifact. EVERY line takes the
+    /// full measure - each paragraph's closing line (a surah ending mid-page, the page's own last line)
+    /// included, deliberately: `balanceLineBreaks` has already re-broken each segment so the closing line
+    /// holds its fair share of words, and whatever sparseness remains is stretched anyway - a mushaf page
+    /// wants every line flush to both margins, never centered, never left short. Headings keep their own
+    /// centering; the only line left untouched is one with no gaps at all (a single word, nothing to
+    /// stretch - it sits at the right margin, where reading starts).
+    /// `exemptClosingLines` (the opening spread): each right-aligned paragraph's LAST line keeps its natural
+    /// setting instead of being stretched - classic justification, where only full lines reach the margin.
     private static func spaceJustified(_ source: NSAttributedString, width: CGFloat,
-                                       closingLineEnds: Set<Int> = [], bodySize: CGFloat = 0) -> NSAttributedString {
-        let justified = NSMutableAttributedString(attributedString: source)
+                                       exemptClosingLines: Bool = false) -> NSAttributedString {
         // The whole stack stays bound: NSLayoutManager does NOT retain its NSTextStorage, so discarding the
         // storage would tear the layout down under the queries below.
         let stack = layoutStack(for: source, width: width)
         let manager = stack.manager
-
         let string = source.string as NSString
-        // Paragraphs whose closing line was too sparse to justify - re-aligned centered after the
-        // walk, the way a printed mushaf centers a surah's short last line.
-        var centeredParagraphs: [NSRange] = []
-        var glyphIndex = 0
-        while glyphIndex < manager.numberOfGlyphs {
-            var lineGlyphRange = NSRange()
-            let usedRect = manager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: &lineGlyphRange)
-            glyphIndex = NSMaxRange(lineGlyphRange)
 
-            let charRange = manager.characterRange(forGlyphRange: lineGlyphRange, actualGlyphRange: nil)
-            guard charRange.length > 0 else { continue }
-
-            // Only the running right-aligned Arabic participates; headings and rules are centered on purpose.
-            let style = source.attribute(.paragraphStyle, at: charRange.location, effectiveRange: nil) as? NSParagraphStyle
-            guard style?.alignment == .right else { continue }
-
-            // Paragraph-final lines are stretched too - deliberately not what `.justified` would do. This is
-            // a mushaf page: a short closing line ending flush against only one margin reads as a typesetting
-            // mistake, so every line takes the full measure. The exception is a closing line the fill pass
-            // could not fill (checked below): that one is CENTERED, never stretched or left trailing.
-            let lineEnd = NSMaxRange(charRange)
-
-            // Stretch every space in the line except the trailing whitespace at the break - TextKit hangs
-            // that outside the margin, and widening it would move the break itself.
-            var contentEnd = lineEnd
-            while contentEnd > charRange.location,
-                  let scalar = Unicode.Scalar(string.character(at: contentEnd - 1)),
-                  CharacterSet.whitespacesAndNewlines.contains(scalar) {
-                contentEnd -= 1
-            }
-            var spaceLocations: [Int] = []
-            for i in charRange.location..<contentEnd where string.character(at: i) == 0x20 {
-                spaceLocations.append(i)
-            }
-
-            let slack = width - usedRect.width
-
-            // A segment's closing line - a surah ending mid-page, or the page's own last line - gets a
-            // sparseness cap. The fill pass has already pulled down whatever words COULD come down; if
-            // justifying what remains would still widen each gap by more than half the body size (or the
-            // line is a single gapless word), a handful of words flung across the full measure reads as
-            // broken setting - so the line is centered on the measure instead, the printed mushaf's
-            // treatment of a surah's short last line. (A mid-line break inside a segment can never be
-            // sparse enough to trip this: TextKit broke it against the full measure.)
-            if slack > 1.5, closingLineEnds.contains(where: { $0 > charRange.location && $0 <= lineEnd }) {
-                // The compose's own body size, not the font at the line start - a closing line can
-                // begin mid-marker-run, and the marker face's size would skew the cap.
-                let cap = (bodySize > 0
-                    ? bodySize
-                    : (source.attribute(.font, at: charRange.location, effectiveRange: nil) as? UIFont)?.pointSize ?? 20)
-                let perSpaceIfJustified = spaceLocations.isEmpty
-                    ? CGFloat.greatestFiniteMagnitude
-                    : (slack - 1.0) / CGFloat(spaceLocations.count)
-                if perSpaceIfJustified > cap * 0.5 {
-                    centeredParagraphs.append(string.paragraphRange(for: charRange))
-                    continue
-                }
-            }
-
-            guard !spaceLocations.isEmpty else { continue }
-            guard slack > 1.5 else { continue }
-            // Fill to a fixed 1pt short of the margin, not a percentage: a proportional factor leaves a
-            // margin that shrinks with the slack (2% of a 1pt slack is nothing), and a line that lands even
-            // a rounding error past the container re-breaks - which would shift every break below it and put
-            // all the following lines' widened gaps on the wrong spaces. An absolute point of headroom is
-            // bigger than any advance-rounding difference TextKit produces at these sizes.
-            let perSpace = (slack - 1.0) / CGFloat(spaceLocations.count)
-
-            // `.tracking`, deliberately NOT `.kern`: kern participates in glyph shaping, and an attribute
-            // boundary it introduces at a space could perturb how the neighbouring cluster's marks attach -
-            // the "tashkeel drifts off the letter" artifact, worst on an ayah's final letter where the marker
-            // run already changes fonts. Tracking is applied after shaping, so it widens the space's advance
-            // and can touch nothing else.
-            for location in spaceLocations {
-                let existing = (justified.attribute(.tracking, at: location, effectiveRange: nil) as? CGFloat) ?? 0
-                justified.addAttribute(.tracking, value: existing + perSpace, range: NSRange(location: location, length: 1))
-            }
+        var spaceAdvances: [UIFont: CGFloat] = [:]
+        func spaceAdvance(of font: UIFont) -> CGFloat {
+            if let cached = spaceAdvances[font] { return cached }
+            let advance = (" " as NSString).size(withAttributes: [.font: font]).width
+            spaceAdvances[font] = advance
+            return advance
         }
 
-        // Re-align the too-sparse closing lines' paragraphs centered. Alignment is a paragraph-wide
-        // attribute, but only the sparse line visibly moves: every other line of the paragraph was
-        // topped up to the full measure above, so centering shifts it by at most the 1pt of headroom.
-        // Applied after the walk so the alignment guard above kept reading the original styles.
-        for paragraph in centeredParagraphs {
-            guard let style = source.attribute(.paragraphStyle, at: paragraph.location, effectiveRange: nil) as? NSParagraphStyle,
-                  let centered = style.mutableCopy() as? NSMutableParagraphStyle else { continue }
-            centered.alignment = .center
-            justified.addAttribute(.paragraphStyle, value: centered, range: paragraph)
-        }
-        return justified
-    }
+        /// One full justification build. `reclaimTrailing` zeroes each line's break-space and gives its
+        /// width to the content - see the note inside - and also reports the source layout's line count
+        /// so the caller can verify the reclaim never moved a break.
+        func justify(reclaimTrailing: Bool) -> (text: NSMutableAttributedString, sourceLines: Int) {
+            let justified = NSMutableAttributedString(attributedString: source)
+            var sourceLines = 0
+            var glyphIndex = 0
+            while glyphIndex < manager.numberOfGlyphs {
+                var lineGlyphRange = NSRange()
+                let usedRect = manager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: &lineGlyphRange)
+                glyphIndex = NSMaxRange(lineGlyphRange)
+                sourceLines += 1
 
-    /// Fills a segment's sparse closing line - a surah ending mid-page, or the page's own last line -
-    /// by loosening THAT segment's word gaps until words cascade down into it - brought down from the
-    /// lines above, instead of two words flung across the measure or a short line trailing at the
-    /// right margin. The same idea as the page-wide `balancedSpaceTracking`, scoped to one segment:
-    /// the loosest setting that adds NO line is used, so the fitted page height is untouched (the
-    /// line boxes are pinned, so same lines = same height).
-    /// `spaceJustified` then tops the now-fuller lines up to the exact margins, and its sparseness cap
-    /// remains the backstop for a closing line nothing could fill.
-    ///
-    /// Cost: runs once per cached render (`finalize` is the only width-passing compose), and each
-    /// segment is probed against ONE live TextKit stack with its gap list precomputed - a probe is a
-    /// handful of absolute attribute writes plus an incremental relayout of that segment alone, not a
-    /// fresh stack and a full string rescan.
-    private static func fillSurahClosingLines(_ text: NSMutableAttributedString, width: CGFloat,
-                                              segments: [NSRange], bodySize: CGFloat) {
-        guard width > 0, bodySize > 0 else { return }
+                let charRange = manager.characterRange(forGlyphRange: lineGlyphRange, actualGlyphRange: nil)
+                guard charRange.length > 0 else { continue }
 
-        for segment in segments where segment.length > 0 {
-            // The segment lays out alone: line breaking never crosses a paragraph boundary, so the
-            // substring's breaks are exactly the page's, and probing it is far cheaper.
-            let sub = text.attributedSubstring(from: segment)
-            let subString = sub.string as NSString
-
-            // Preprocessed once: every stretchable gap and the tracking it already carries (the
-            // page-wide loosening), so probes can SET absolute values idempotently.
-            var spaceLocations: [Int] = []
-            var baseTracking: [CGFloat] = []
-            for i in 0..<subString.length where subString.character(at: i) == 0x20 {
-                let style = sub.attribute(.paragraphStyle, at: i, effectiveRange: nil) as? NSParagraphStyle
+                // Only the running right-aligned Arabic participates; headings and rules are centered on purpose.
+                let style = source.attribute(.paragraphStyle, at: charRange.location, effectiveRange: nil) as? NSParagraphStyle
                 guard style?.alignment == .right else { continue }
-                spaceLocations.append(i)
-                baseTracking.append((sub.attribute(.tracking, at: i, effectiveRange: nil) as? CGFloat) ?? 0)
-            }
-            guard !spaceLocations.isEmpty else { continue }
 
-            // The whole stack stays bound: NSLayoutManager does not retain its NSTextStorage.
-            let stack = layoutStack(for: sub, width: width)
-
-            func apply(_ tracking: CGFloat) {
-                stack.storage.beginEditing()
-                for (i, location) in spaceLocations.enumerated() {
-                    stack.storage.addAttribute(.tracking, value: baseTracking[i] + tracking,
-                                               range: NSRange(location: location, length: 1))
-                }
-                stack.storage.endEditing()
-                stack.manager.ensureLayout(for: stack.container)
-            }
-
-            func measure() -> (lines: Int, lastContentLength: Int, lastUsedWidth: CGFloat, lastSpaces: Int) {
-                let manager = stack.manager
-                var lines = 0
-                var lastUsedRect = CGRect.zero
-                var lastCharRange = NSRange()
-                var glyph = 0
-                while glyph < manager.numberOfGlyphs {
-                    var lineRange = NSRange()
-                    lastUsedRect = manager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: &lineRange)
-                    lastCharRange = manager.characterRange(forGlyphRange: lineRange, actualGlyphRange: nil)
-                    glyph = NSMaxRange(lineRange)
-                    lines += 1
+                // Opening spread: the paragraph's closing line keeps its natural setting.
+                if exemptClosingLines {
+                    let para = string.paragraphRange(for: NSRange(location: charRange.location, length: 0))
+                    var paraContentEnd = NSMaxRange(para)
+                    while paraContentEnd > para.location,
+                          let scalar = Unicode.Scalar(string.character(at: paraContentEnd - 1)),
+                          CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                        paraContentEnd -= 1
+                    }
+                    if NSMaxRange(charRange) >= paraContentEnd { continue }
                 }
 
-                var contentEnd = NSMaxRange(lastCharRange)
-                while contentEnd > lastCharRange.location,
-                      let scalar = Unicode.Scalar(subString.character(at: contentEnd - 1)),
+                let lineEnd = NSMaxRange(charRange)
+
+                // Stretch every space in the line except the trailing whitespace at the break - widening
+                // that would move the break itself.
+                var contentEnd = lineEnd
+                while contentEnd > charRange.location,
+                      let scalar = Unicode.Scalar(string.character(at: contentEnd - 1)),
                       CharacterSet.whitespacesAndNewlines.contains(scalar) {
                     contentEnd -= 1
                 }
-                let spaces = spaceLocations.reduce(into: 0) { count, i in
-                    if i >= lastCharRange.location && i < contentEnd { count += 1 }
+                var spaceLocations: [Int] = []
+                for i in charRange.location..<contentEnd where string.character(at: i) == 0x20 {
+                    spaceLocations.append(i)
                 }
-                return (lines, contentEnd - lastCharRange.location, lastUsedRect.width, spaces)
+
+                // The line's used rect INCLUDES its trailing break-space, so slack measured from the used
+                // width alone leaves every line short of the left margin by exactly one tracked space -
+                // a phantom spacer at each line's end. Add the trailing space's advance back (its font's
+                // space plus its tracking, known exactly), and let the stretched content push the invisible
+                // space out past the margin instead. Only for lines the used rect reports honestly: a rect
+                // sitting at the container width has been CLAMPED - the trailing space already overflowed -
+                // and reclaiming there would overfill the line and cascade re-breaks; a jammed line is
+                // already flush anyway.
+                // In this configuration the break-space is NOT hung outside the measure: TextKit sets it
+                // INSIDE the line, between the content and the left margin - a literal phantom spacer at
+                // the end of every line, which is why lines used to stop one tracked space short of the
+                // edge. Its width is reclaimed below: the space's advance is zeroed outright (tracking
+                // adds to the advance, so minus the space's own width is exactly zero) and the content is
+                // topped up into the freed room. Both edits land together, so the line still fills the
+                // measure exactly and no break can move. The slack itself needs no width arithmetic: in
+                // container coordinates the left margin is x = 0 and the content's left edge is its
+                // leftmost glyph's origin, so that origin's x IS the slack - exact whether or not the
+                // used rect was clamped. The scan covers the line's whole last word (not just its final
+                // glyph) because a multi-digit ayah marker is a left-to-right run inside the
+                // right-to-left line, where the logically last glyph can sit a digit's width right of
+                // the block's true edge.
+                var slack = width - usedRect.width
+                if reclaimTrailing {
+                    var lastWordStart = contentEnd - 1
+                    while lastWordStart > charRange.location,
+                          string.character(at: lastWordStart - 1) != 0x20 {
+                        lastWordStart -= 1
+                    }
+                    var leftEdge = CGFloat.greatestFiniteMagnitude
+                    for c in lastWordStart..<contentEnd {
+                        let glyph = manager.glyphIndexForCharacter(at: c)
+                        leftEdge = min(leftEdge, manager.location(forGlyphAt: glyph).x)
+                    }
+                    if leftEdge < .greatestFiniteMagnitude { slack = leftEdge }
+                }
+
+                guard !spaceLocations.isEmpty else { continue }
+                guard slack > 1.5 else { continue }
+
+                // Zero the break-space only on a line that is being topped up: the two edits are what
+                // keep each other break-stable. A zeroed space on an un-stretched line would instead
+                // free room the next word could jump back up into.
+                if reclaimTrailing {
+                    for i in contentEnd..<lineEnd where string.character(at: i) == 0x20 {
+                        let font = (source.attribute(.font, at: i, effectiveRange: nil) as? UIFont)
+                            ?? UIFont.systemFont(ofSize: UIFont.systemFontSize)
+                        justified.addAttribute(.tracking, value: -spaceAdvance(of: font),
+                                               range: NSRange(location: i, length: 1))
+                    }
+                }
+                // Fill to a fixed 1pt short of the margin, not a percentage: a proportional factor leaves a
+                // margin that shrinks with the slack (2% of a 1pt slack is nothing), and a line that lands even
+                // a rounding error past the container re-breaks - which would shift every break below it and put
+                // all the following lines' widened gaps on the wrong spaces. An absolute point of headroom is
+                // bigger than any advance-rounding difference TextKit produces at these sizes.
+                let perSpace = (slack - 1.0) / CGFloat(spaceLocations.count)
+
+                // `.tracking`, deliberately NOT `.kern`: kern participates in glyph shaping, and an attribute
+                // boundary it introduces at a space could perturb how the neighbouring cluster's marks attach -
+                // the "tashkeel drifts off the letter" artifact, worst on an ayah's final letter where the marker
+                // run already changes fonts. Tracking is applied after shaping, so it widens the space's advance
+                // and can touch nothing else.
+                for location in spaceLocations {
+                    let existing = (justified.attribute(.tracking, at: location, effectiveRange: nil) as? CGFloat) ?? 0
+                    justified.addAttribute(.tracking, value: existing + perSpace, range: NSRange(location: location, length: 1))
+                }
             }
+            return (justified, sourceLines)
+        }
 
-            let base = measure()
-            // One line has nothing above to pull from; and a closing line that would justify within
-            // the sparseness cap anyway is left alone - only the lines the cap would otherwise leave
-            // trailing are worth rebalancing. The threshold is the cap's own formula, so the two
-            // passes can never disagree about which lines are sparse.
-            guard base.lines > 1 else { continue }
-            let slack = width - base.lastUsedWidth
-            let sparse = base.lastSpaces == 0 || (slack - 1.0) / CGFloat(base.lastSpaces) > bodySize * 0.5
-            guard sparse, slack > bodySize else { continue }
+        // The reclaim can push a line's content to the exact margin, where a mis-read edge would mean
+        // an overfilled line and cascading re-breaks - so verify with one layout: same line count out
+        // as in, or fall back to the conservative used-width measure (which can only ever run short).
+        let (corrected, sourceLines) = justify(reclaimTrailing: true)
+        let verify = layoutStack(for: corrected, width: width)
+        var correctedLines = 0
+        var glyph = 0
+        while glyph < verify.manager.numberOfGlyphs {
+            var lineRange = NSRange()
+            verify.manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &lineRange)
+            glyph = NSMaxRange(lineRange)
+            correctedLines += 1
+        }
+        return correctedLines == sourceLines ? corrected : justify(reclaimTrailing: false).text
+    }
 
-            // Bisect the loosest tracking that keeps the segment's line count - the page-wide
-            // balancer's search, against a line-count budget instead of a height budget.
-            var lo: CGFloat = 0
-            var hi = bodySize * 0.9
-            apply(hi)
-            if measure().lines <= base.lines {
-                lo = hi
+    /// Re-breaks every right-aligned paragraph of each segment so that EVERY line - the closing one
+    /// included - can take the full measure with moderate, even gaps once `spaceJustified` tops it up.
+    ///
+    /// The problem this solves: TextKit breaks lines greedily, so a paragraph's closing line gets whatever
+    /// is left over - three words, say, where the lines above hold twelve. Justifying that flings a handful
+    /// of words across the whole measure, and centring it instead leaves one line neither full nor trailing.
+    /// The typesetter's fix is to borrow: pull a word down from the line above, which may leave THAT line
+    /// short, so the borrowing cascades upward line by line until the deficit lands where it costs nothing.
+    /// The old pass ran that cascade literally - one word per step, each step an escalating ladder of probe
+    /// relayouts, up to ~a hundred incremental layouts per segment - and only ever started from the closing
+    /// line, so it stopped at "not ugly" rather than at "even".
+    ///
+    /// This pass solves the whole cascade at once. One layout measures every word's advance width (shaping
+    /// never crosses a space, so a line's width is additive in its words and gaps); a dynamic program then
+    /// picks, among ALL ways of breaking the same words into the SAME number of lines (the page was fitted
+    /// at that count and the line boxes are pinned - a different count is a different page height), the
+    /// breaks that minimize the summed squared per-gap widening. That is every line borrowing from every
+    /// line above it simultaneously, with the evenest result the words allow. The chosen breaks are then
+    /// FORCED: each line's gaps are widened until the line reaches just short of the measure, so TextKit's
+    /// greedy pass has no choice but to break where the program chose. `spaceJustified` afterwards tops
+    /// every line up to the exact margin - full and trailing, on every line.
+    ///
+    /// There is NO sparseness cap and no centered fallback: however few words a segment ends with, the
+    /// evenest breaks win and `spaceJustified` stretches every line - the closing one included - to the
+    /// full measure. The squared objective is what keeps that sane: it hates one wide-gapped line far more
+    /// than many slightly-loose ones, so the sparseness a short tail forces is always spread across the
+    /// whole segment rather than dumped on the last line.
+    ///
+    /// EFFICIENCY. A paragraph whose closing line is already nearly full skips everything after one
+    /// measurement. Otherwise: one word-width sweep feeds the model (gap advances come from a per-font
+    /// cache, no typesetting), the dynamic program runs in microseconds over prefix sums, and ONE
+    /// relayout normally verifies the forced breaks. A line that comes back broken a word early is truly
+    /// wider in-context than it measures alone (ayah markers, bidi digit runs) - it earns a doubling
+    /// width surcharge and the probe repeats, converging in a couple of rounds; a paragraph that never
+    /// converges reverts to its greedy breaks. Runs once per cached render, off the main thread.
+    private static func balanceLineBreaks(_ text: NSMutableAttributedString, width: CGFloat,
+                                          segments: [NSRange], bodySize: CGFloat) {
+        guard width > 0, bodySize > 0 else { return }
+
+        // Space advance per font, measured once per pass and shared by every gap on the page.
+        var spaceAdvances: [UIFont: CGFloat] = [:]
+        func spaceAdvance(of font: UIFont) -> CGFloat {
+            if let cached = spaceAdvances[font] { return cached }
+            let advance = (" " as NSString).size(withAttributes: [.font: font]).width
+            spaceAdvances[font] = advance
+            return advance
+        }
+
+        for segment in segments where segment.length > 0 {
+            // The segment lays out alone: line breaking never crosses a paragraph boundary, so the
+            // substring's breaks are exactly the page's, and measuring it is far cheaper.
+            let sub = text.attributedSubstring(from: segment)
+            let subString = sub.string as NSString
+            // The whole stack stays bound: NSLayoutManager does not retain its NSTextStorage.
+            let stack = layoutStack(for: sub, width: width)
+
+            // Each right-aligned paragraph balances independently (in practice a segment is one; the
+            // headings and basmala are centered paragraphs and skip).
+            var cursor = 0
+            while cursor < subString.length {
+                let paragraph = subString.paragraphRange(for: NSRange(location: cursor, length: 0))
+                cursor = max(NSMaxRange(paragraph), cursor + 1)
+                guard paragraph.length > 0,
+                      let style = sub.attribute(.paragraphStyle, at: paragraph.location, effectiveRange: nil) as? NSParagraphStyle,
+                      style.alignment == .right else { continue }
+                balanceParagraph(paragraph, segment: segment, sub: sub, subString: subString,
+                                 stack: stack, pageText: text, width: width, bodySize: bodySize,
+                                 spaceAdvance: spaceAdvance)
+            }
+        }
+    }
+
+    /// One paragraph of `balanceLineBreaks`: model the words, solve for the balanced breaks, force them,
+    /// verify against a real relayout, and commit the winning tracking to the page text.
+    private static func balanceParagraph(_ paragraph: NSRange, segment: NSRange,
+                                         sub: NSAttributedString, subString: NSString,
+                                         stack: (storage: NSTextStorage, manager: NSLayoutManager, container: NSTextContainer),
+                                         pageText: NSMutableAttributedString, width: CGFloat,
+                                         bodySize: CGFloat,
+                                         spaceAdvance: (UIFont) -> CGFloat) {
+        let manager = stack.manager
+
+        // The paragraph terminator and any trailing whitespace hang outside the last line.
+        var contentEnd = NSMaxRange(paragraph)
+        while contentEnd > paragraph.location,
+              let scalar = Unicode.Scalar(subString.character(at: contentEnd - 1)),
+              CharacterSet.whitespacesAndNewlines.contains(scalar) {
+            contentEnd -= 1
+        }
+        guard contentEnd > paragraph.location else { return }
+
+        // Words (maximal space-free runs - the ayah ornaments count, lines may break around them) and
+        // the gap runs between them.
+        var words: [NSRange] = []
+        var gaps: [NSRange] = []
+        var scan = paragraph.location
+        while scan < contentEnd {
+            let isSpace = subString.character(at: scan) == 0x20
+            var runEnd = scan + 1
+            while runEnd < contentEnd, (subString.character(at: runEnd) == 0x20) == isSpace { runEnd += 1 }
+            if isSpace {
+                gaps.append(NSRange(location: scan, length: runEnd - scan))
             } else {
-                for _ in 0..<8 {
-                    let mid = (lo + hi) / 2
-                    apply(mid)
-                    if measure().lines <= base.lines { lo = mid } else { hi = mid }
+                words.append(NSRange(location: scan, length: runEnd - scan))
+            }
+            scan = runEnd
+        }
+        // Strictly interior gaps: a paragraph opening with a space (never composed, but cheap to refuse)
+        // would break the word/gap pairing the model rests on.
+        guard words.count >= 3, gaps.count == words.count - 1 else { return }
+
+        /// The word index opening each laid-out line of the paragraph, or nil on a layout the model
+        /// can't represent (a line starting mid-word).
+        func lineStartWords() -> [Int]? {
+            let content = NSRange(location: paragraph.location, length: contentEnd - paragraph.location)
+            let paragraphGlyphs = manager.glyphRange(forCharacterRange: content, actualCharacterRange: nil)
+            var starts: [Int] = []
+            var wordCursor = 0
+            var glyph = paragraphGlyphs.location
+            while glyph < NSMaxRange(paragraphGlyphs) {
+                var lineGlyphRange = NSRange()
+                manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &lineGlyphRange)
+                let charRange = manager.characterRange(forGlyphRange: lineGlyphRange, actualGlyphRange: nil)
+                glyph = NSMaxRange(lineGlyphRange)
+                while wordCursor < words.count, words[wordCursor].location < charRange.location { wordCursor += 1 }
+                guard wordCursor < words.count else { break }
+                if starts.last == wordCursor { return nil }
+                starts.append(wordCursor)
+            }
+            return starts.first == 0 ? starts : nil
+        }
+
+        guard let greedyStarts = lineStartWords(), greedyStarts.count > 1,
+              words.count > greedyStarts.count else { return }
+        let lineCount = greedyStarts.count
+
+
+        // Already-even fast path, before any modeling: greedy fills every line but the last, so when
+        // stretching the LAST line to the margin needs no more than a hair per gap, the paragraph is
+        // already as even as its words allow - skip the model, the program and the probes outright.
+        // One measurement decides it. (Marker-heavy lines read a little narrow standalone, which only
+        // OVERSTATES the slack and falls through to the full pass - the safe direction.)
+        let lastStart = greedyStarts[lineCount - 1]
+        let lastContent = NSRange(location: words[lastStart].location,
+                                  length: contentEnd - words[lastStart].location)
+        let lastSlack = width - 1 - sub.attributedSubstring(from: lastContent).size().width
+        if lastSlack / CGFloat(max(words.count - 1 - lastStart, 1)) <= 2.5 { return }
+
+        // Measured advance width of every word: each word measured STANDALONE from its attributed
+        // substring. Valid because a space breaks Arabic joining, so a word shapes identically alone
+        // and in the line, and `size()` is typographic (advance-based) - the widths are additive.
+        // (Measuring through the layout manager's boundingRect is NOT valid here: glyphs sit in visual
+        // order inside an RTL line, so a logical word's glyph range spans most of the line's extent.)
+        var wordWidths: [CGFloat] = []
+        wordWidths.reserveCapacity(words.count)
+        for word in words {
+            let w = sub.attributedSubstring(from: word).size().width
+            // A word as wide as the measure wraps mid-word - no gap model can place that; leave the
+            // paragraph on its greedy breaks.
+            guard w < width - 1 else { return }
+            wordWidths.append(w)
+        }
+        // A gap's advance is its font's space plus the tracking already sitting on it (the page-wide
+        // loosening) - a cache lookup and an attribute read, no typesetting. Measuring every gap in
+        // context (word-gap-word pairs) came out identical to this sum on the shipped faces, so the
+        // cheap model IS the accurate one; whatever in-context drift remains is the probe loop's job.
+        var gapWidths: [CGFloat] = []
+        gapWidths.reserveCapacity(gaps.count)
+        for gap in gaps {
+            var advance: CGFloat = 0
+            for c in gap.location..<NSMaxRange(gap) {
+                let font = (sub.attribute(.font, at: c, effectiveRange: nil) as? UIFont)
+                    ?? UIFont.systemFont(ofSize: UIFont.systemFontSize)
+                let tracking = (sub.attribute(.tracking, at: c, effectiveRange: nil) as? CGFloat) ?? 0
+                advance += spaceAdvance(font) + tracking
+            }
+            gapWidths.append(advance)
+        }
+
+        // Prefix sums, so any candidate line's natural width is O(1).
+        var prefixWord = [CGFloat](repeating: 0, count: words.count + 1)
+        for k in 0..<words.count { prefixWord[k + 1] = prefixWord[k] + wordWidths[k] }
+        var prefixGap = [CGFloat](repeating: 0, count: words.count)
+        for k in 1..<words.count { prefixGap[k] = prefixGap[k - 1] + gapWidths[k - 1] }
+        /// Natural (unwidened) width of a line holding words `a...b`.
+        func natural(_ a: Int, _ b: Int) -> CGFloat {
+            prefixWord[b + 1] - prefixWord[a] + (prefixGap[b] - prefixGap[a])
+        }
+
+        let n = words.count
+
+        // A two-line paragraph (a surah's short tail on the page) reads best print-style, not evened
+        // out: evening spreads BOTH lines' gaps wide - the same segment could read tight in one
+        // riwayah and "exploded" in another whose slightly different word widths flipped the model's
+        // optimum. Keep the first line as full as it fits, moving down only what the closing line
+        // needs to hold something worth stretching (about a quarter measure of natural content -
+        // greedy alone could strand a lone ayah marker at the margin). Longer paragraphs keep the
+        // balancing model; across many lines the even spread is what makes the page look uniform.
+        var overrideStarts: [Int]?
+        if lineCount == 2 {
+            // Fullest first line whose closing line still holds at least TWO tokens - one word plus
+            // the ayah marker at minimum. That is the greedy (print-style) break in almost every
+            // case; it only shifts a word down when greedy would strand the marker alone.
+            var k = n - 1
+            while k >= 2 {
+                if natural(0, k - 1) <= width, n - k >= 2 {
+                    overrideStarts = [0, k]
+                    break
+                }
+                k -= 1
+            }
+            guard let printStyle = overrideStarts else { return }
+            // Print-style only while the closing line still reads as a SET line. A short surah tail
+            // (al-Kawthar's lone closing word plus its marker) left the closing line one word and its
+            // marker, and the top-up then stretched that pair across the whole measure - a single
+            // enormous gap, the exact unevenness this pass exists to remove. The limit is FONT-relative
+            // (like the page-wide tracking ceiling), not measure-relative: whether a gap reads as a set
+            // line depends on its size against the type, and a measure-relative cut both re-admitted
+            // huge gaps on wide (iPad) measures and flipped fine print-style paragraphs to the balanced
+            // model at large type on narrow ones. Roughly: more than ~1.25em of top-up per gap reads
+            // as a hole, not a gap - hand the paragraph to the DP and both lines spread evenly.
+            let tail = printStyle[1]
+            let tailGaps = CGFloat(max(n - 1 - tail, 1))
+            if max(width - 1 - natural(tail, n - 1), 0) / tailGaps > bodySize * 1.25 {
+                overrideStarts = nil
+            }
+        }
+
+        // The dynamic program: minimal summed squared per-gap widening over every way to set the first
+        // `j` words in `k` lines. A line is admissible when it FITS (natural width within the same 1pt
+        // guard the top-up keeps) - no upper cap on the widening: every line gets stretched to the
+        // margin regardless, so the objective's whole job is to spread the sparseness as evenly as the
+        // words allow instead of leaving it piled on the closing line.
+        let balancedStarts: [Int]
+        if let forced = overrideStarts {
+            balancedStarts = forced
+        } else {
+        let columns = n + 1
+        let unreachable = CGFloat.greatestFiniteMagnitude
+        var cost = [CGFloat](repeating: unreachable, count: (lineCount + 1) * columns)
+        var parent = [Int](repeating: 0, count: (lineCount + 1) * columns)
+        cost[0] = 0
+        for k in 1...lineCount {
+            // Leave at least one word for every line still to come, and one for every line before.
+            for j in k...(n - (lineCount - k)) {
+                var a = j - 1
+                while a >= k - 1 {
+                    let lineNatural = natural(a, j - 1)
+                    // Admit lines up to the FULL measure, not the top-up's 1pt guard: greedy lines sit
+                    // flush against it, and refusing them over a sub-point model disagreement declared
+                    // perfectly settable paragraphs unsolvable. The verification relayout is the
+                    // arbiter of whether a chosen break truly holds.
+                    if lineNatural > width { break }   // growing the line only overfills it further
+                    // A line holding a single token has no gap to stretch - it can never reach
+                    // the full measure, so it is not admissible (step #1: every line fills the
+                    // whole space, no more, no less).
+                    if j - a < 2 { a -= 1; continue }
+                    if cost[(k - 1) * columns + a] < unreachable {
+                        let gapCount = j - 1 - a
+                        // What the top-up will widen each gap by once the line is stretched to the margin.
+                        let widen = max(width - 1 - lineNatural, 0) / CGFloat(max(gapCount, 1))
+                        let candidate = cost[(k - 1) * columns + a] + widen * widen
+                        if candidate < cost[k * columns + j] {
+                            cost[k * columns + j] = candidate
+                            parent[k * columns + j] = a
+                        }
+                    }
+                    a -= 1
                 }
             }
-            let tracking = (lo * 20).rounded(.down) / 20
-            guard tracking > 0 else { continue }
+        }
+        // Unsolvable only when a single word can't fit a line (mid-word wraps) - keep the greedy
+        // breaks; `spaceJustified` still stretches whatever lines have gaps.
+        guard cost[lineCount * columns + n] < unreachable else { return }
 
-            // Apply only if words actually came down: tracking that moves nothing would just widen
-            // the sparse line's own gaps - the exact look this pass exists to avoid.
-            apply(tracking)
-            guard measure().lastContentLength > base.lastContentLength else { continue }
+        var starts = [Int](repeating: 0, count: lineCount)
+        var wordEnd = n
+        var lineIndex = lineCount
+        while lineIndex > 0 {
+            let a = parent[lineIndex * columns + wordEnd]
+            starts[lineIndex - 1] = a
+            wordEnd = a
+            lineIndex -= 1
+        }
+        balancedStarts = starts
+        }
+        // Greedy already optimal: nothing to force, the top-up alone finishes the page.
+        guard balancedStarts != greedyStarts else { return }
 
-            // Commit to the page text with the same absolute values the winning probe used.
-            for (i, location) in spaceLocations.enumerated() {
-                text.addAttribute(.tracking, value: baseTracking[i] + tracking,
-                                  range: NSRange(location: segment.location + location, length: 1))
+        // Force the chosen breaks: fill each line (except the last - that one is the top-up's) to just
+        // short of the measure, so no following word can still fit on it. The headroom absorbs any
+        // advance-rounding disagreement with TextKit while staying far narrower than any word; the
+        // probe loop's surcharge below absorbs everything bigger.
+        let baseTracking: [CGFloat] = gaps.map {
+            (sub.attribute(.tracking, at: $0.location, effectiveRange: nil) as? CGFloat) ?? 0
+        }
+        func forcedWrites(headroom: CGFloat, surcharge: [CGFloat]) -> [(gap: Int, extra: CGFloat)] {
+            var writes: [(gap: Int, extra: CGFloat)] = []
+            for line in 0..<(lineCount - 1) {
+                let a = balancedStarts[line]
+                let b = balancedStarts[line + 1] - 1
+                guard b > a else { continue }
+                let extra = (width - headroom - natural(a, b) - surcharge[line]) / CGFloat(b - a)
+                guard extra > 0 else { continue }   // already jammed against the measure - the break holds itself
+                for g in a..<b { writes.append((gap: g, extra: extra)) }
             }
+            return writes
+        }
+        // Absolute values (base + extra), so successive attempts overwrite instead of accumulating;
+        // the extra goes on the gap run's FIRST character only - one advance bump per gap, exactly
+        // what the model counted.
+        func writeToStorage(_ writes: [(gap: Int, extra: CGFloat)]) {
+            stack.storage.beginEditing()
+            for g in gaps.indices {
+                stack.storage.addAttribute(.tracking, value: baseTracking[g],
+                                           range: NSRange(location: gaps[g].location, length: 1))
+            }
+            for write in writes {
+                stack.storage.addAttribute(.tracking, value: baseTracking[write.gap] + write.extra,
+                                           range: NSRange(location: gaps[write.gap].location, length: 1))
+            }
+            stack.storage.endEditing()
+            manager.ensureLayout(for: stack.container)
+        }
+
+        // Probe with feedback. A line that comes back broken one word EARLY is truly wider in-context
+        // than any standalone measurement of it (ayah markers and bidi digit runs lay out wider inside
+        // a line than they measure alone), so that line earns a width surcharge - its fill backs off -
+        // and the probe repeats. Backing off never costs fullness: the `spaceJustified` top-up works
+        // from the line's real laid-out slack, so a backed-off line still ends flush at the margin.
+        var winning: [(gap: Int, extra: CGFloat)]?
+        var surcharge = [CGFloat](repeating: 0, count: max(lineCount - 1, 1))
+        for _ in 0..<8 {
+            let writes = forcedWrites(headroom: 2.0, surcharge: surcharge)
+            writeToStorage(writes)
+            guard let got = lineStartWords() else { break }
+            if got == balancedStarts { winning = writes; break }
+            // The first line START that diverges names the line above it as the mis-filled one.
+            guard let i = (1..<min(got.count, lineCount)).first(where: { got[$0] != balancedStarts[$0] }) else { break }
+            if got[i] < balancedStarts[i] {
+                // Broke early: the line is wider than measured. Double the surcharge each round so a
+                // large in-context divergence converges in a few probes.
+                surcharge[i - 1] += max(surcharge[i - 1], 8)
+            } else {
+                // The next word came back UP: the line lays out NARROWER in context than its words
+                // measure standalone, so its fill has to reach PAST the nominal measure - let the
+                // surcharge go negative rather than give up. (Giving up here reverted the whole
+                // paragraph to greedy breaks - the stranded two-word closing line stretched across
+                // the full measure, the exact unevenness this pass exists to remove - and it hit
+                // precisely the riwayat whose glyph metrics drift most from Hafs's.) The relayout
+                // check above stays the arbiter, and the 8-round cap bounds any oscillation.
+                surcharge[i - 1] -= 4
+            }
+        }
+        guard let winning else {
+            writeToStorage([])   // back to the greedy layout for any later paragraph in this segment
+            return
+        }
+
+        // Commit to the page text with the same absolute values the verified layout used.
+        for write in winning {
+            pageText.addAttribute(.tracking, value: baseTracking[write.gap] + write.extra,
+                                  range: NSRange(location: segment.location + gaps[write.gap].location, length: 1))
         }
     }
 
@@ -2087,9 +3270,13 @@ struct MushafPageComposer {
         return lines
     }
 
-    /// The largest size a mushaf page can be set at without overflowing. Hard ceiling so a short page (a few
-    /// ayahs of a late surah) doesn't blow up to absurd glyphs just because it has the room.
-    private var fitCeiling: CGFloat { min(config.fontSize * 2.5, 64) }
+    /// The largest size a mushaf page can be set at without overflowing.
+    ///
+    /// Practically UNCAPPED (user rule, restated hard: "MAXIMIZE the Arabic font, even for a 0.01pt
+    /// difference - number one priority"). The old `min(fontSize * 2.5, 64)` ceiling existed so a short
+    /// page wouldn't blow up; the height budget itself bounds every real page, so the only cap kept is
+    /// an absurdity guard far above anything a phone page can actually fit.
+    private var fitCeiling: CGFloat { 120 }
 
     /// The font size the page renders at. With "Fit Page to Screen" on, the page takes up as much of the height
     /// as it can WITHOUT overflowing - it grows into empty space as readily as it shrinks out of an overflow.
@@ -2137,10 +3324,23 @@ struct MushafPageComposer {
             return Self.layoutHeight(of: text, width: width)
         }
 
-        // Loosening beyond this would read as broken setting, not justification; the height constraint
-        // usually binds far earlier.
+        // A page missing less than a line and a half of fill reads best left tight: the line-spacing
+        // settle and the centered band absorb the sliver. Cascading the whole page's word gaps to
+        // chase a single line makes that page's setting visibly looser than its neighbours' (a hair
+        // of per-riwayah text-width difference was enough to flip a page across this boundary).
+        let natural = heightWithTracking(0)
+        let lineBox = (usesSystemFont ? UIFont.roundedSystemFont(ofSize: size) : arabicFont(size)).lineHeight
+        guard budget - natural >= lineBox * 1.5 else { return 0 }
+
+        // Loosening beyond this reads as broken setting, not justification. The old ceiling of 0.9x
+        // the font size mattered on exactly the pages that hit it: non-Hafs riwayat hold the reader's
+        // own size (`fitCeiling`), so any page their text leaves short by a few lines blew straight
+        // past every reasonable value and landed at the ceiling - nearly a full em of extra advance
+        // on EVERY word gap, the "huge word spacing" pages. At ~0.4x the gaps top out around two and
+        // a half natural spaces - visibly loosened, still a set line; whatever height that can't
+        // absorb stays as the quiet bottom band the centered layout and the line-spacing settle share.
         var lo: CGFloat = 0
-        var hi = size * 0.9
+        var hi = size * 0.4
 
         guard heightWithTracking(hi) > budget else { return hi }
         for _ in 0..<8 {
@@ -2192,8 +3392,9 @@ struct MushafPageComposer {
             // The floor is a legibility limit - a page that can't fit even at 9pt keeps 9pt and scrolls.
             var low: CGFloat = 9
             var high = ceiling
-            // 9 iterations resolve a ~30pt range to under 0.06pt - finer than the 0.01pt rounding below.
-            for _ in 0..<9 {
+            // 14 iterations resolve the full 9…120 range to under 0.01pt - the user rule is that even a
+            // hundredth of a point of font is worth taking.
+            for _ in 0..<14 {
                 let mid = (low + high) / 2
                 if measuredHeight(size: mid, width: availableWidth) <= budget {
                     low = mid
@@ -2216,11 +3417,12 @@ struct MushafPageComposer {
         // Then take back every fraction the coarse measurement gave away. `boundingRect` tends to
         // OVER-estimate against pinned line heights, so the search above settles small and the page wastes
         // its bottom - and stepping down can only ever shrink. Binary-search the REAL layout upward toward
-        // the ceiling: the page ends at the biggest size that truly fits, down to the hundredth of a point.
+        // the ceiling: the page ends at the biggest size that truly fits, down to the hundredth of a point
+        // (14 iterations cover the full 9…120 range at that resolution - the maximize-font user rule).
         var lo = candidate
         var hi = ceiling
         if lo < hi {
-            for _ in 0..<10 {
+            for _ in 0..<14 {
                 let mid = (lo + hi) / 2
                 if Self.layoutHeight(of: attributed(size: mid, colored: false).text, width: availableWidth) <= budget {
                     lo = mid
@@ -2278,6 +3480,12 @@ enum MushafPageRenderCache {
         let s = Settings.shared
         return [
             s.fontArabic,
+            // Was missing: `fontArabic` is only the reader's PICK (Uthmani/IndoPak/Basic) - which of the two
+            // Uthmani faces actually draws the page is decided by the script style on top of it. Without this
+            // the key never moved when Automatic -> Maghribi did, so every composed page kept its old face and
+            // the setting looked dead. It appeared to work only when the riwayah changed too, because THAT
+            // moved `displayQiraahForArabic` below and busted the key as a side effect.
+            s.arabicScriptStyle.rawValue,
             // Full precision, matching the CGFloat the composer actually fits with (and the list-mode
             // signature). Truncating to Int would collide two fractional sizes onto one cache key.
             "\(s.fontArabicSize)",
@@ -2286,6 +3494,9 @@ enum MushafPageRenderCache {
             // Per-category tajweed visibility. The master switch alone meant toggling a single legend
             // category kept serving already-composed pages with the old colors until cache eviction.
             s.tajweedCategoryVisibilitySignature,
+            s.riwayahTajweedHiddenRules,
+            // Toggling "Highlight Allah" repaints the composed page (red divine names), so it keys the cache.
+            s.highlightAllahNames ? "h" : "-",
             s.showArabicText ? "a" : "-",
             s.cleanArabicText ? "c" : "-",
             // Was missing: toggling "Hide Arabic Dots" did not change the key, so every already-composed page
@@ -2308,20 +3519,31 @@ enum MushafPageRenderCache {
         didSet {
             guard let g = lastGeometry, g != (oldValue ?? (0, 0)) else { return }
             UserDefaults.standard.set([Double(g.width), Double(g.height)], forKey: geometryDefaultsKey)
-            // Rotation / iPad split-resize: every page in the prewarm ring was fitted for the OLD
-            // geometry, so the first swipe in each direction landed on a cold spinner. Re-warm the ring
-            // for the new geometry (async - this setter runs during view-body evaluation). Intermediate
-            // live-resize values just bump the generation; stale unstarted fits skip themselves cheaply.
+            // Rotation / iPad split-resize / the bottom bars folding: every page in the prewarm ring
+            // was fitted for the OLD geometry, so the first swipe in each direction landed on a cold
+            // spinner (or the stale fallback). Re-warm the ring - but DEBOUNCED to the value that holds
+            // still. An animated chrome fold sweeps the height through transient values frame by frame,
+            // and sweeping the ring per transient didn't just churn the generation counter: a transient
+            // fit that had already STARTED ran to completion and overwrote `latestByPage` with a render
+            // fitted to a height the page never rests at, and THAT is what `nearestRendered` served on
+            // the next swipe - the "bars are collapsed but the incoming page shows up sized for
+            // uncollapsed, then grows" flash. Only a geometry that has held still for a beat may sweep.
             if oldValue != nil {
-                DispatchQueue.main.async {
+                geometrySettleWork?.cancel()
+                let work = DispatchWorkItem {
                     guard let context = lastPrewarmContext else { return }
                     // Center included: a geometry change makes the VISIBLE page cold too, and its refit
                     // must lead the ring, not trail it.
                     prewarm(pages: context.pages, around: context.index, includeCenter: true)
                 }
+                geometrySettleWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
             }
         }
     }
+
+    /// The pending settled-geometry ring sweep; every geometry change supersedes the last.
+    private static var geometrySettleWork: DispatchWorkItem?
 
     /// What the most recent prewarm sweep covered, so a geometry change can re-run it unprompted.
     private static var lastPrewarmContext: (pages: [MushafPage], index: Int)?
@@ -2379,10 +3601,41 @@ enum MushafPageRenderCache {
             .appendingPathComponent("mushaf-fit-metrics.plist")
     }
 
+    /// Bumped whenever the fit ALGORITHM itself changes (ceilings, tracking caps, balance rules):
+    /// the persisted numbers are pure over (page, geometry, settings) only for a FIXED fitter, and
+    /// the build number alone can't see a code change on a dev install that reuses its version.
+    /// v3: uncapped fit ceiling (maximize-font user rule), 0.01pt search resolution, uncapped
+    /// line-spacing spread (full vertical fill).
+    // 6: Uthmani.ttf keeps ONLY the حۡمَٰنِ (Rahmaani) ligature removed - the other five dagger-alif
+    // word bakes were restored (user: the non-ligated forms "look awful"), so those words' glyph
+    // advances changed back and fits computed under v5 must recompute.
+    nonisolated private static let fitterVersion = 7
+
     nonisolated private static let persistedMetricsSalt: String = {
         let os = ProcessInfo.processInfo.operatingSystemVersion
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
-        return "\(build)|\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+        // The bundled faces and text packs move the fit numbers WITHOUT a build bump (dev installs
+        // patch fonts/packs in place under one CFBundleVersion) - and a stale store then serves fits
+        // measured against outlines that no longer exist, pages standing short or overflowing until
+        // eviction ("the page doesn't take full height"). Fingerprint their byte sizes so any font or
+        // pack change misses the whole store instead. Sizes, not mtimes: reinstalls re-stamp every
+        // file's date, and salting on that would discard the store on each dev build for nothing.
+        let fm = FileManager.default
+        // Solidpacks and loose deflates too, not just fonts and qpk: the beta qiraah TEXTS and the
+        // riwayah page tables ship in those, and both move the fit (different words on a page, and
+        // different ayahs on it). They were the one unfingerprinted input - a pack rebuild under an
+        // unchanged CFBundleVersion kept serving fits measured against the old text.
+        let fingerprint = ((Bundle.main.urls(forResourcesWithExtension: "ttf", subdirectory: nil) ?? [])
+                           + (Bundle.main.urls(forResourcesWithExtension: "qpk", subdirectory: nil) ?? [])
+                           + (Bundle.main.urls(forResourcesWithExtension: "solidpack", subdirectory: nil) ?? [])
+                           + (Bundle.main.urls(forResourcesWithExtension: "deflate", subdirectory: nil) ?? []))
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .compactMap { url -> String? in
+                guard let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? NSNumber else { return nil }
+                return "\(url.lastPathComponent):\(size.int64Value)"
+            }
+            .joined(separator: ",")
+        return "f\(fitterVersion)|\(build)|\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)|\(fingerprint)"
     }()
 
     /// Callers hold `persistedMetricsLock`.
@@ -2453,6 +3706,9 @@ enum MushafPageRenderCache {
             config.displayQiraah ?? "Hafs",
             config.cleanArabicText ? "c" : "-",
             config.beginnerMode ? "b" : "-",
+            // Per-ayah beginner overrides change the composed text, so they change the fit. Scoped to THIS
+            // page's ayahs: a toggle elsewhere in the mushaf must not throw away this page's measured fit.
+            AyahBeginnerOverrides.signature(config.beginnerAyahs, limitedTo: page.ayahRefs),
             "\(config.fontSize)",
             config.fitPage ? "f" : "-",
         ].joined(separator: "|")
@@ -2512,7 +3768,8 @@ enum MushafPageRenderCache {
     static func prewarm(pages: [MushafPage], around index: Int, radius: Int = 5, includeCenter: Bool = false,
                         at geometryOverride: (width: CGFloat, height: CGFloat)? = nil) {
         // `(1...radius)` below traps on a non-positive radius - guard it rather than trusting every caller.
-        guard let geometry = geometryOverride ?? lastGeometry, !pages.isEmpty, radius >= 1 else { return }
+        guard let geometry = geometryOverride ?? lastGeometry, !pages.isEmpty, radius >= 1,
+              !isDegenerate(width: geometry.width, height: geometry.height) else { return }
         lastPrewarmContext = (pages, index)
         // The background fit is nearly free for the main thread, but each warmed page still costs a colored
         // compose on main - in Low Power Mode keep that to the immediate neighbours.
@@ -2574,6 +3831,7 @@ enum MushafPageRenderCache {
                     guard let waiters = pendingRenders[key] else { return }
                     if waiters.isEmpty {
                         pendingRenders.removeValue(forKey: key)
+                        upgradedClaims.remove(key)
                     } else {
                         enqueueFit(page: page, width: width, height: height, key: key, config: config, generation: nil)
                     }
@@ -2583,13 +3841,20 @@ enum MushafPageRenderCache {
 
             let composer = MushafPageComposer(page: page, config: config)
             let metrics = fitMetricsUsingStore(composer: composer, width: width, height: height)
+            // The justification (segment layouts, break probes, margin top-ups) is the expensive half of
+            // the final compose and depends on metrics only, never on colors - compute it HERE on the fit
+            // lane so the main-thread tail is just the colored compose plus attribute transplants.
+            let justification = composer.justification(size: metrics.size, extraLineSpacing: metrics.extraSpacing,
+                                                       width: width, spaceTracking: metrics.spaceTracking)
             DispatchQueue.main.async {
                 let key = keyString as NSString
                 if cache.object(forKey: key) == nil {
-                    let rendered = finalize(composer: composer, metrics: metrics, width: width)
+                    let rendered = finalize(composer: composer, metrics: metrics, width: width,
+                                            justification: justification)
                     cache.setObject(rendered, forKey: key)
                     noteLatest(page: page, width: width, budget: height, rendered: rendered)
                 }
+                upgradedClaims.remove(key)
                 (pendingRenders.removeValue(forKey: key) ?? []).forEach { $0() }
             }
         }
@@ -2597,7 +3862,10 @@ enum MushafPageRenderCache {
 
     private static func cacheKey(page: MushafPage, width: CGFloat, height: CGFloat, signature: String) -> NSString {
         // Geometry is rounded so a sub-point layout jitter can't miss the cache on every frame.
-        "\(page.page)|\(Int(width.rounded()))|\(Int(height.rounded()))|\(signature)" as NSString
+        // The per-ayah beginner overrides join in PER PAGE rather than through `settingsSignature`: they
+        // change the composed text, but toggling one ayah must only evict the page that ayah is on.
+        let beginner = AyahBeginnerOverrides.signature(AyahBeginnerOverrides.shared.ayahs, limitedTo: page.ayahRefs)
+        return "\(page.page)|\(Int(width.rounded()))|\(Int(height.rounded()))|\(signature)|\(beginner)" as NSString
     }
 
     /// The pure, heavy part: fit the size, spread the leftover height, measure. Runs on the prewarm queue
@@ -2617,17 +3885,19 @@ enum MushafPageRenderCache {
         var measured = composer.balancedLayoutHeight(size: size, width: width, tracking: tracking)
 
         // Sizing alone can never fill the page exactly: line wrapping is quantized, so one point more font
-        // pushes a whole extra line and overflows. A printed mushaf closes the leftover by spreading the
-        // lines - but only a LITTLE. The old cap (three quarters of the font size per gap!) let each page
-        // pick its own rhythm, which read as every page having different line spacing. A fifth of the font
-        // size is at most a subtle settle; whatever it can't absorb stays as the symmetric top/bottom band
-        // the centered layout already gives. English pages skip the spread entirely: prose reads on constant
-        // leading, and it was the English pages where the wandering spacing was most obvious.
+        // pushes a whole extra line and overflows. The leftover is spread across the line gaps so the text
+        // SPANS THE FULL HEIGHT (user rule: after maximizing the font, take the whole vertical space - a
+        // per-page rhythm difference is accepted for it; the old 0.2×size cap left a dead band instead).
+        // English pages skip the spread entirely: prose reads on constant leading, and it was the English
+        // pages where wandering spacing was most obvious.
         if composer.config.fitPage, !composer.config.pageLanguage.isEnglish, measured < height {
             let lines = composer.lineCount(size: size, width: width, tracking: tracking)
             if lines > 1 {
-                let perGap = (height - measured) / CGFloat(lines - 1)
-                extraSpacing = min(perGap, size * 0.2)
+                // One point of the budget is deliberately left on the table: filling it EXACTLY, with
+                // ceil-rounded layout heights on top, could land the final measure a fraction past the
+                // budget - which flips the page into the scroll container and lets a fitted page be
+                // dragged and rubber-banded (user rule: fit-to-page must never scroll).
+                extraSpacing = max((height - measured - 1) / CGFloat(lines - 1), 0)
                 measured = composer.balancedLayoutHeight(
                     size: size, width: width, tracking: tracking, extraLineSpacing: extraSpacing
                 )
@@ -2637,23 +3907,25 @@ enum MushafPageRenderCache {
         return FitMetrics(size: size, extraSpacing: extraSpacing, measured: measured, spaceTracking: tracking)
     }
 
-    /// The main-thread tail: the tajweed-colored compose (TajweedStore has main-confined state) and the
-    /// drawn-string height check.
-    private static func finalize(composer: MushafPageComposer, metrics: FitMetrics, width: CGFloat) -> MushafRenderedPage {
+    /// The main-thread tail: the tajweed-colored compose (TajweedStore has main-confined state), with the
+    /// off-main justification transplanted onto it. The height comes from the justified plain compose,
+    /// which lays out identically to the colored one (colors never move a glyph - the invariant the whole
+    /// fit pipeline rests on): this number IS the text view's frame, and measuring anything else (or
+    /// padding it "to be safe") either clips the last line or shrinks every page for slack it doesn't need.
+    private static func finalize(composer: MushafPageComposer, metrics: FitMetrics, width: CGFloat,
+                                 justification: (tracking: [(range: NSRange, value: CGFloat)], height: CGFloat)) -> MushafRenderedPage {
         let built = composer.attributed(size: metrics.size, extraLineSpacing: metrics.extraSpacing,
-                                        width: width, spaceTracking: metrics.spaceTracking)
-
-        // Measure the string that will ACTUALLY be drawn - colored and justified - with the same TextKit
-        // configuration the text view uses. This height IS the text view's frame: measuring anything else
-        // (or padding the number "to be safe") either clips the last line or shrinks every page for slack
-        // it doesn't need. Exact is the only correct value.
-        let laidOut = MushafPageComposer.layoutHeight(of: built.text, width: width)
+                                        width: width, justified: false)
+        let text = NSMutableAttributedString(attributedString: built.text)
+        for run in justification.tracking {
+            text.addAttribute(.tracking, value: run.value, range: run.range)
+        }
 
         return MushafRenderedPage(
             fontSize: metrics.size,
-            text: built.text,
+            text: text,
             ranges: built.ranges,
-            height: laidOut,
+            height: justification.height,
             baselineOffset: composer.bodyBaselineOffset(size: metrics.size),
             baselineBand: composer.uniformLineFragmentBand(size: metrics.size, extraLineSpacing: metrics.extraSpacing)
         )
@@ -2664,7 +3936,9 @@ enum MushafPageRenderCache {
     /// paid ~30 compose/measure passes on the main thread. A miss now returns nil and the page shows its
     /// last-known render (or, truly cold, a brief spinner) while `renderAsync` fits on the prewarm queue.
     static func renderedIfAvailable(page: MushafPage, width: CGFloat, height: CGFloat) -> MushafRenderedPage? {
-        lastGeometry = (width, height)
+        // Never let a mid-transition collapsed frame become the prewarm seed: a ring swept at degenerate
+        // geometry is 10+ wasted (or wedging) fits on the serial lane.
+        if !isDegenerate(width: width, height: height) { lastGeometry = (width, height) }
         // One signature build per call: this runs per mounted page per body pass (and the pager re-evals
         // on every playback tick), and it used to be rebuilt again inside noteLatest.
         let signature = settingsSignature
@@ -2703,31 +3977,55 @@ enum MushafPageRenderCache {
     /// exact fit runs. Same width and same settings only: the text re-wraps identically at the same width
     /// (so nothing clips), while a different width or changed settings would show genuinely wrong content.
     ///
-    /// Close-enough budgets only. The fallback exists for the small jitters (a bar mounting, the mini
-    /// player appearing - ~10-15% of the page). The reader's FIRST layout pass mid-launch can report
-    /// around half the final height; serving that fit as the fallback showed a visibly shrunken page
-    /// squatting in half the screen until the exact refit landed. A budget that far off gets the honest
-    /// spinner instead - and the refit itself is fast now (see `visibleFitQueue`).
+    /// Close-enough budgets only. The fallback exists for height jitters (a bar mounting, the mini
+    /// player appearing) AND the bottom-chrome collapse, whose band is up to ~40% of the page - the
+    /// old 30%-of-new-height bound refused the collapse jump, so toggling the chevron flashed the
+    /// spinner over a page that was JUST on screen (user report). The reader's FIRST layout pass
+    /// mid-launch can still report around half the final height, and serving that fit showed a
+    /// visibly shrunken page squatting in half the screen - so the bound stays, measured against the
+    /// LARGER of the two budgets (collapse: ~38%, accepted; mid-launch: ~50%, still refused) and only
+    /// a budget that far off gets the honest spinner. The refit itself is fast (see `visibleFitQueue`).
     static func nearestRendered(page: MushafPage, width: CGFloat, height: CGFloat) -> MushafRenderedPage? {
         guard let entry = latestByPage[page.page],
               Int(entry.width.rounded()) == Int(width.rounded()),
               entry.signature == settingsSignature,
-              abs(entry.budget - height) <= height * 0.3 else { return nil }
+              abs(entry.budget - height) <= max(entry.budget, height) * 0.45 else { return nil }
         return entry.rendered
     }
 
     /// In-flight async renders, keyed like the cache, each holding the completions to run when it lands -
     /// re-evaluations of a waiting page's body pile onto the same render instead of starting another.
     private static var pendingRenders: [NSString: [() -> Void]] = [:]
+    /// Claims that already got their one visible-lane duplicate (see `renderAsync`).
+    private static var upgradedClaims: Set<NSString> = []
 
     /// Fit + compose off-main, store, then tell every waiting page to re-read the cache. If the prewarm ring
     /// already queued this page's fit, the completion just attaches to it - one fit per key, ever.
+    /// Geometry a real reader can never have. Mid-navigation (a pop, a search-result push) SwiftUI can
+    /// report a collapsed frame for a beat; fitting a page into it is at best wasted ~30 passes and at
+    /// worst a degenerate fit that wedges the serial fit lane - after which every later page waits behind
+    /// it forever (the "spins forever after going back / tapping a search result" hang). The `.task(id:)`
+    /// on the spinner re-fires when the geometry becomes real, so refusing here loses nothing.
+    private static func isDegenerate(width: CGFloat, height: CGFloat) -> Bool {
+        width < 80 || height < 160
+    }
+
     static func renderAsync(page: MushafPage, width: CGFloat, height: CGFloat, onReady: @escaping () -> Void) {
+        guard !isDegenerate(width: width, height: height) else { return }
         let key = cacheKey(page: page, width: width, height: height, signature: settingsSignature)
         if cache.object(forKey: key) != nil { onReady(); return }
 
         if pendingRenders[key] != nil {
             pendingRenders[key]?.append(onReady)
+            // The claim may belong to a ring fit queued deep in the serial prewarm lane (or behind a
+            // wedged one). The user is LOOKING at this page: enqueue ONE must-run duplicate on the
+            // visible lane rather than waiting our turn. Safe: the completion path stores only if the
+            // cache is still empty and flushing waiters removes the key once - the loser's main-hop is
+            // a no-op. `upgradedClaims` bounds it to one duplicate per claim, not one per body pass.
+            if upgradedClaims.insert(key).inserted {
+                enqueueFit(page: page, width: width, height: height,
+                           key: key, config: MushafComposeConfig.current(), generation: nil)
+            }
             return
         }
         pendingRenders[key] = [onReady]
@@ -2744,6 +4042,50 @@ enum MushafPageRenderCache {
 
 /// The composed page in a non-scrolling `UITextView`. A merged SwiftUI `Text` can't hit-test an individual
 /// run, so the mushaf page uses UIKit and maps a tap to the ayah whose range contains the tapped character.
+extension AyahHighlightColor {
+    /// The page wash as a DYNAMIC UIColor. The alpha has to differ between light and dark (the same hue is
+    /// invisible on the dark page at the light theme's weight), and a dynamic color lets TextKit resolve it
+    /// against the text view's own traits - so a theme switch repaints the page for free, without the
+    /// composed-page cache key having to carry the color scheme.
+    /// Built once per color, not once per wash: `updateUIView` resolves this for every highlighted ayah
+    /// on the page, on every page update, and a dynamic UIColor allocates a closure box each time.
+    private static var pageWashCache: [AyahHighlightColor: UIColor] = [:]
+
+    var pageWashUIColor: UIColor {
+        if let cached = Self.pageWashCache[self] { return cached }
+        let base = UIColor(color)
+        // Kept in step with `tintOpacity` (the list rows' wash): the highlight is a standing margin
+        // note, deliberately faint (user rule: "make highlighting opacity wayyy less").
+        let wash = UIColor { traits in
+            base.withAlphaComponent(traits.userInterfaceStyle == .dark ? 0.14 : 0.10)
+        }
+        Self.pageWashCache[self] = wash
+        return wash
+    }
+}
+
+/// The scroll view hosting a composed mushaf page. UIScrollView never lays out its content on its own, so
+/// this keeps the text view pinned to the box SwiftUI gives the page - and resets the zoom whenever that
+/// box changes size (a rotation, a bars-fold): the page refits to the new box anyway, so a held-over
+/// magnification would be anchored to a layout that no longer exists.
+final class PageZoomScrollView: UIScrollView {
+    weak var pageView: UIView?
+    private var lastSize: CGSize = .zero
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let pageView, bounds.size != lastSize else { return }
+        lastSize = bounds.size
+        if zoomScale != 1 {
+            setZoomScale(1, animated: false)
+            bounces = false
+            clipsToBounds = false
+        }
+        pageView.frame = CGRect(origin: .zero, size: bounds.size)
+        contentSize = bounds.size
+    }
+}
+
 struct MushafPageTextView: UIViewRepresentable {
     let attributed: NSAttributedString
     let ranges: [MushafAyahRange]
@@ -2770,10 +4112,24 @@ struct MushafPageTextView: UIViewRepresentable {
     var searchHighlight: (matches: [(surahID: Int, ayahID: Int)], term: String)? = nil
     /// Multi-select: every listed ayah carries the accent selection tint.
     var selected: [(surahID: Int, ayahID: Int)] = []
+    /// Bookmarked ayahs on this page: each gets a small bookmark glyph drawn just ABOVE its number ornament,
+    /// so page mode shows the same "this one is saved" mark the list rows do (user rule). Drawn as an overlay
+    /// subview rather than as text: the fit/justification pipeline composes the page PLAIN and transplants
+    /// its tracking runs onto the colored compose BY CHARACTER INDEX, so inserting so much as one glyph into
+    /// the colored pass would slide every index after it out of alignment.
+    /// `highlight` is the highlighter's color when the bookmark carries one: it paints the badge AND washes
+    /// the ayah's range on the page, so the mark you left in the list reader is the same mark you see here.
+    var bookmarked: [(surahID: Int, ayahID: Int, highlight: AyahHighlightColor?)] = []
     /// Forced distance from each line fragment's top to its baseline - see `MushafRenderedPage.baselineOffset`.
     var baselineOffset: CGFloat = 0
     /// Fragment heights the forced baseline applies to (running text lines, not headings).
     var baselineBand: ClosedRange<CGFloat> = 0...0
+    /// PDF-style zoom (user rule: "text page zoom in and out should be the same as PDF"): pinch zooms the
+    /// page in and it STAYS zoomed, pan moves around it, and pinching back out stops at the fitted page -
+    /// the fit is the maximum zoom-out, exactly like the facsimile. On only for the fitted page; a page
+    /// that overflows into a scroll container keeps the old transient magnifier instead (a persistent
+    /// zoom inside a vertical scroller fights its pan).
+    var zoomsLikePDF: Bool = false
     let onTapAyah: (Int, Int) -> Void
     let onLongPressAyah: (Int, Int) -> Void
     /// A tap on a surah heading (name/basmala) - passes the surah's id.
@@ -2837,9 +4193,21 @@ struct MushafPageTextView: UIViewRepresentable {
             }
         }()
 
-        guard !tints.isEmpty || termTarget != nil || searchIsActive else { return text }
+        // The highlighter's standing washes, resolved before the momentary tints so those paint OVER them:
+        // the reciting/marked/selected tint has to win on the ayah it is on, exactly as it does in the list
+        // reader, and the highlight comes back when it moves away.
+        let highlightWashes: [(NSRange, UIColor)] = bookmarked.compactMap { ref in
+            guard let color = ref.highlight,
+                  let range = range(of: (ref.surahID, ref.ayahID)) else { return nil }
+            return (range, color.pageWashUIColor)
+        }
+
+        guard !tints.isEmpty || !highlightWashes.isEmpty || termTarget != nil || searchIsActive else { return text }
 
         let mutable = NSMutableAttributedString(attributedString: text)
+        for (range, color) in highlightWashes {
+            mutable.addAttribute(.backgroundColor, value: color, range: range)
+        }
         for (range, color) in tints {
             mutable.addAttribute(.backgroundColor, value: UIColor(color).withAlphaComponent(0.22), range: range)
         }
@@ -2900,7 +4268,7 @@ struct MushafPageTextView: UIViewRepresentable {
         }
     }
 
-    func makeUIView(context: Context) -> UITextView {
+    func makeUIView(context: Context) -> UIScrollView {
         let tv = UITextView()
         tv.isEditable = false
         tv.isSelectable = false
@@ -2937,11 +4305,64 @@ struct MushafPageTextView: UIViewRepresentable {
         tv.addGestureRecognizer(press)
         tap.require(toFail: press)
 
+        // A pointer's secondary (right / two-finger) click - on a Mac running the app as Designed for iPad,
+        // or an iPad trackpad - is the natural "act on this ayah" gesture, so it opens the same actions
+        // sheet as the long press without the hold. Touches never carry the secondary button, so this
+        // recognizer is inert on iPhone/iPad touch input (the plain tap above stays primary-only).
+        let secondaryClick = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleSecondaryClick(_:))
+        )
+        secondaryClick.buttonMaskRequired = .secondary
+        // Pointer input ONLY: without this, direct touches can satisfy the recognizer too (the
+        // button mask alone does not exclude them on every OS), so a plain fingertip tap opened
+        // the actions sheet alongside its selection. Finger taps must select; only a real
+        // right/two-finger CLICK (Mac, iPad trackpad) opens the sheet without a hold.
+        secondaryClick.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        tv.addGestureRecognizer(secondaryClick)
+
+        if !zoomsLikePDF {
+            // The overflowing page keeps the old transient magnifier: the text scales around the fingers
+            // and springs back when they lift. A persistent zoom would fight the surrounding vertical
+            // scroll container's pan, so it is reserved for the fitted page below.
+            let pinch = UIPinchGestureRecognizer(target: context.coordinator,
+                                                 action: #selector(Coordinator.handlePinch(_:)))
+            tv.addGestureRecognizer(pinch)
+        }
+
+        // The page always ships inside a scroll view; on the fitted page it IS the zoomer (PDF-style
+        // persistent pinch zoom), on an overflowing page it is inert (no scroll, no zoom) and just holds
+        // the text view for the SwiftUI scroll container around it.
+        let scroll = PageZoomScrollView()
+        scroll.pageView = tv
+        scroll.backgroundColor = .clear
+        scroll.showsVerticalScrollIndicator = false
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.delegate = context.coordinator
+        scroll.clipsToBounds = false
+        scroll.minimumZoomScale = 1
+        if zoomsLikePDF {
+            scroll.maximumZoomScale = 5
+            scroll.bouncesZoom = true
+            // No give at rest: the fitted page must never rubber-band (user rule). Panning while
+            // zoomed re-enables the bounce, and clipping turns on only while zoomed too (at rest the
+            // page's overhanging tashkeel ink must keep drawing into the horizontal padding - see
+            // `tv.clipsToBounds` above) - both in `scrollViewDidZoom`.
+            scroll.bounces = false
+        } else {
+            scroll.maximumZoomScale = 1
+            scroll.isScrollEnabled = false
+        }
+        scroll.addSubview(tv)
+
         context.coordinator.textView = tv
-        return tv
+        context.coordinator.scrollView = scroll
+        return scroll
     }
 
-    func updateUIView(_ tv: UITextView, context: Context) {
+    func updateUIView(_ scroll: UIScrollView, context: Context) {
+        guard let tv = context.coordinator.textView else { return }
         context.coordinator.ranges = ranges
         context.coordinator.onTapAyah = onTapAyah
         context.coordinator.onLongPressAyah = onLongPressAyah
@@ -2959,7 +4380,13 @@ struct MushafPageTextView: UIViewRepresentable {
         let termKey = termHighlight.map { "\($0.surahID):\($0.ayahID):\($0.term)" } ?? ""
         let selectedKey = selected.map { "\($0.surahID):\($0.ayahID)" }.sorted().joined(separator: ",")
         let searchKey = searchHighlight.map { "\($0.term)#\($0.matches.map { "\($0.surahID):\($0.ayahID)" }.joined(separator: ","))" } ?? ""
-        let highlightKey = "\(key(highlight))|\(playingSurahID.map(String.init) ?? "")|\(key(mark))|\(termKey)|\(selectedKey)|\(searchKey)"
+        // The color is part of the key: recoloring a highlight changes the page's wash and its badge while
+        // the bookmark set itself is unchanged, and without the color that repaint would be skipped.
+        let bookmarkKey = bookmarked
+            .map { "\($0.surahID):\($0.ayahID):\($0.highlight?.rawValue ?? "")" }
+            .sorted()
+            .joined(separator: ",")
+        let highlightKey = "\(key(highlight))|\(playingSurahID.map(String.init) ?? "")|\(key(mark))|\(termKey)|\(selectedKey)|\(searchKey)|\(bookmarkKey)"
         if context.coordinator.lastAssignedText === attributed,
            context.coordinator.lastHighlightKey == highlightKey,
            context.coordinator.lastWidth == width {
@@ -2973,13 +4400,30 @@ struct MushafPageTextView: UIViewRepresentable {
         tv.textContainer.widthTracksTextView = false
         tv.textContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)
         tv.attributedText = highlighted(attributed)
+        context.coordinator.updateBookmarkBadges(bookmarked, color: UIColor(highlightColor))
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    final class Coordinator: NSObject, NSLayoutManagerDelegate {
+    final class Coordinator: NSObject, NSLayoutManagerDelegate, UIScrollViewDelegate {
         weak var textView: UITextView?
+        weak var scrollView: UIScrollView?
         var ranges: [MushafAyahRange] = []
+
+        // MARK: PDF-style zoom (fitted page only - the host enables zooming there)
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { textView }
+
+        /// Bounce and clipping only exist while actually zoomed in: panning a magnified page should feel
+        /// like the facsimile's PDFView (and must not slide over the reader's chrome, hence the clip),
+        /// but at rest (scale 1) the fitted page stays perfectly still - no rubber-banding (user rule:
+        /// fit-to-page never scrolls) - and its overhanging tashkeel ink keeps drawing into the page's
+        /// horizontal padding unclipped.
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            let zoomed = scrollView.zoomScale > 1.001
+            scrollView.bounces = zoomed
+            scrollView.clipsToBounds = zoomed
+        }
         var onTapAyah: ((Int, Int) -> Void)?
         var onLongPressAyah: ((Int, Int) -> Void)?
         var onTapHeading: ((Int) -> Void)?
@@ -3011,6 +4455,88 @@ struct MushafPageTextView: UIViewRepresentable {
         var lastHighlightKey = ""
         var lastWidth: CGFloat = 0
 
+        /// The bookmark glyphs currently drawn over the page, so each update can clear the previous set.
+        private var bookmarkBadges: [UIImageView] = []
+
+        /// Draws a small bookmark just above each bookmarked ayah's number ornament.
+        ///
+        /// The ornament's own character range is already recorded by the composer (`ayahMarkerID`), but ALL
+        /// of a page's markers share that sentinel id - so a marker is matched to its ayah by the fact that it
+        /// is the tail of that ayah's range (the composer appends the number last, then records both ranges).
+        /// The badge is a plain non-interactive subview: it must not intercept the taps and presses that
+        /// select the ayah underneath it.
+        /// `color` is the fallback for a plain bookmark; a highlighted one paints in its own color instead.
+        func updateBookmarkBadges(_ refs: [(surahID: Int, ayahID: Int, highlight: AyahHighlightColor?)],
+                                  color: UIColor) {
+            for badge in bookmarkBadges { badge.removeFromSuperview() }
+            bookmarkBadges.removeAll()
+
+            guard let tv = textView, !refs.isEmpty, tv.textStorage.length > 0 else { return }
+            let markerRanges = ranges.filter { $0.ayahID == MushafAyahRange.ayahMarkerID }
+            guard !markerRanges.isEmpty else { return }
+            tv.layoutManager.ensureLayout(for: tv.textContainer)
+
+            for ref in refs {
+                guard let ayahRange = ranges.first(where: {
+                    $0.surahID == ref.surahID && $0.ayahID == ref.ayahID
+                })?.range else { continue }
+                // The marker that ENDS where this ayah ends is this ayah's number.
+                guard let marker = markerRanges.first(where: {
+                    NSMaxRange($0.range) == NSMaxRange(ayahRange) && $0.surahID == ref.surahID
+                })?.range, NSMaxRange(marker) <= tv.textStorage.length else { continue }
+
+                // The ornament ITSELF, not the composer's " ٢ " with its padding spaces - the badge points at
+                // the number.
+                let ornament = marker.length > 2
+                    ? NSRange(location: marker.location + 1, length: marker.length - 2)
+                    : marker
+                let glyphs = tv.layoutManager.glyphRange(forCharacterRange: ornament, actualCharacterRange: nil)
+                guard glyphs.length > 0 else { continue }
+                // `enumerateEnclosingRects`, NOT `boundingRect`: the page is right-to-left with LTR number
+                // runs inside it, and `boundingRect` returns the UNION over the bidi runs - which on a mushaf
+                // line came out as the whole ayah's extent, so every badge sat centred over its ayah instead
+                // of over its number. The enclosing rects follow the real visual runs (this is how selection
+                // highlights are drawn), and the first one is the ornament's own box.
+                var found: CGRect?
+                tv.layoutManager.enumerateEnclosingRects(
+                    forGlyphRange: glyphs,
+                    withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0),
+                    in: tv.textContainer
+                ) { candidate, stop in
+                    found = candidate
+                    stop.pointee = true
+                }
+                guard var rect = found, rect.height > 0, rect.width > 0 else { continue }
+                rect.origin.x += tv.textContainerInset.left
+                rect.origin.y += tv.textContainerInset.top
+
+                // Deliberately TINY - a hint, not a second ornament. Sized off the line box so it still
+                // scales with the page's fitted font, but kept well under the ayah number's own size (user
+                // rule: "keep it small, like a very small thing above it") and tucked close in above it.
+                let side = min(max(rect.height * 0.15, 4), 7)
+                let image = UIImage(systemName: "bookmark.fill")?
+                    .withConfiguration(UIImage.SymbolConfiguration(pointSize: side, weight: .semibold))
+                guard let image else { continue }
+
+                let badge = UIImageView(image: image)
+                badge.tintColor = ref.highlight.map { UIColor($0.color) } ?? color
+                badge.contentMode = .scaleAspectFit
+                badge.isUserInteractionEnabled = false
+                // `rect` is the LINE BOX, whose top sits well above the ornament's ink (the composer leads
+                // its lines generously to make room for stacked marks). Sitting the badge fully above that
+                // top left it marooned nearer the line above than the number it belongs to, so it is nudged
+                // down into the leading instead - close over the ornament, still clear of it.
+                badge.frame = CGRect(
+                    x: rect.midX - side / 2,
+                    y: rect.minY - side * 0.25,
+                    width: side,
+                    height: side
+                )
+                tv.addSubview(badge)
+                bookmarkBadges.append(badge)
+            }
+        }
+
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let (surahID, ayahID) = ayah(at: gesture.location(in: textView)) else { return }
             // `<= 0` also covers the name-only subrange sentinel, should a hit ever resolve to it.
@@ -3030,6 +4556,54 @@ struct MushafPageTextView: UIViewRepresentable {
                 onTapHeading?(surahID)
             } else {
                 onLongPressAyah?(surahID, ayahID)
+            }
+        }
+
+        /// A pointer's secondary (right / two-finger) click: the Mac-and-trackpad twin of the long press,
+        /// routed to the exact same per-ayah actions sheet.
+        @objc func handleSecondaryClick(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended else { return }
+            guard let (surahID, ayahID) = ayah(at: gesture.location(in: textView)) else { return }
+            if ayahID <= 0 {
+                onTapHeading?(surahID)
+            } else {
+                onLongPressAyah?(surahID, ayahID)
+            }
+        }
+
+        /// Pinch-to-magnify (composed pages only - the PDF facsimile zooms through PDFKit). The transform
+        /// anchors at the pinch centre and follows it as the fingers move, so the reader can pan while
+        /// zoomed by dragging the pinch; lifting the fingers springs the page back to rest. Transient by
+        /// design: a persistent zoom would fight the pager's swipe, the tap targets, and the fit-to-page
+        /// layout all at once.
+        @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+            guard let tv = textView else { return }
+            switch gesture.state {
+            case .began, .changed:
+                // Zoom out is meaningless on a page fitted to its box - clamp to [1, 5].
+                let currentScale = tv.transform.a
+                var factor = gesture.scale
+                if currentScale * factor < 1 { factor = 1 / currentScale }
+                if currentScale * factor > 5 { factor = 5 / currentScale }
+                // `location(in:)` converts through the current transform, so the anchor stays under the
+                // fingers across updates. Draw the zoomed page over its neighbours' chrome, not under it.
+                let center = gesture.location(in: tv)
+                let anchor = CGPoint(x: center.x - tv.bounds.midX, y: center.y - tv.bounds.midY)
+                tv.transform = tv.transform
+                    .translatedBy(x: anchor.x, y: anchor.y)
+                    .scaledBy(x: factor, y: factor)
+                    .translatedBy(x: -anchor.x, y: -anchor.y)
+                gesture.scale = 1
+                tv.layer.zPosition = 1
+            case .ended, .cancelled, .failed:
+                UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.85,
+                               initialSpringVelocity: 0, options: [.allowUserInteraction]) {
+                    tv.transform = .identity
+                } completion: { _ in
+                    tv.layer.zPosition = 0
+                }
+            default:
+                break
             }
         }
 
@@ -3101,6 +4675,12 @@ enum QuranLaunchWarmup {
         // main-actor piece, so give the runloop a turn first and keep it off the current transaction.
         if settings.quranPageMode, settings.lastReadSurah > 0 {
             await Task.yield()
+            // Compose OFF the main actor (the same path QuranView's own .task uses; the builder is
+            // idempotent), then read the cached result. The old direct `pages(...)` call ran the
+            // full 6,236-ayah pagination ON the main actor, squarely inside the under-cover tab
+            // walk - on older hardware that contention stretched the launch far past the settles.
+            await MushafPagination.buildInBackground(quran: quranData.quran, qiraah: settings.displayQiraahForArabic)
+            if Task.isCancelled { return }
             let pages = MushafPagination.pages(quran: quranData.quran, qiraah: settings.displayQiraahForArabic)
             if let index = MushafPagination.pageIndex(
                 surahID: settings.lastReadSurah,
@@ -3111,6 +4691,15 @@ enum QuranLaunchWarmup {
             }
             await Task.yield()
         }
+
+        // The broad all-surah sweep is POST-reveal work: warming every surah makes later pushes
+        // instant, but under the cover it competed with the tab walk for the main actor - on older
+        // hardware that contention (not the fixed settles) is what stretched the launch. The reveal
+        // flag flips as the cover starts dissolving; the extra beat clears the finale + dissolve so
+        // they run on a free CPU.
+        await AppReveal.waitUntilRevealed()
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+        if Task.isCancelled { return }
 
         for surah in quranData.quran where seen.insert(surah.id).inserted {
             if Task.isCancelled { return }

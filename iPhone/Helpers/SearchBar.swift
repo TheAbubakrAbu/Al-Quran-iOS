@@ -1,138 +1,226 @@
 #if os(iOS)
 import SwiftUI
+import UIKit
 
+/// The app's search field: the SYSTEM search field, just shorter (user rule: "keep it the exact same
+/// as it was before, just smaller in height"). `UISearchTextField` is the very view UISearchBar draws
+/// its field with - same background, magnifier, placeholder, clear button, fonts - but as a plain
+/// UITextField subclass it can be laid out at ANY height, while UISearchBar proper refuses anything
+/// under ~48pt (it keeps painting a 48pt field inside the smaller slot). So this hosts the field
+/// directly at 50pt (settled after rounds at 38, 42, and 46 - Abu's final pick)
+/// and adds the Cancel button UISearchBar used to own.
+///
+/// Same API as ever: a text binding, a focus-request token, a placeholder, the search-key callback,
+/// and focus-change notifications.
 struct SearchBar: View {
     @Binding var text: String
 
     /// Bump this to put the keyboard in the search bar. A token rather than a `Bool` so the same request can be
     /// made twice in a row (search, dismiss the keyboard, search again) and still be seen as a new one.
     var focusRequestID: Int = 0
+    /// Field placeholder. Screens that search one specific thing say so ("Search tafsir"),
+    /// which is what the `.searchable` prompts used to carry.
+    var placeholder: String = "Search"
     var onSearchButtonClicked: (() -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
+
+    @ObservedObject private var settings = Settings.shared
+    @State private var isEditing = false
+    /// Bumped by Cancel: the field clears and resigns on the next update (the representable can't be
+    /// reached imperatively from here).
+    @State private var cancelToken = 0
 
     init(
         text: Binding<String>,
         focusRequestID: Int = 0,
+        placeholder: String = "Search",
         onSearchButtonClicked: (() -> Void)? = nil,
         onFocusChanged: ((Bool) -> Void)? = nil
     ) {
         _text = text
         self.focusRequestID = focusRequestID
+        self.placeholder = placeholder
         self.onSearchButtonClicked = onSearchButtonClicked
         self.onFocusChanged = onFocusChanged
     }
 
     var body: some View {
-        Group {
-            if #available(iOS 26.0, *) {
-                SearchBarUIKit(
-                    text: $text,
-                    focusRequestID: focusRequestID,
-                    onSearchButtonClicked: onSearchButtonClicked,
-                    onFocusChanged: onFocusChanged
-                )
-            } else {
-                SearchBarUIKit(
-                    text: $text,
-                    focusRequestID: focusRequestID,
-                    onSearchButtonClicked: onSearchButtonClicked,
-                    onFocusChanged: onFocusChanged
-                )
-                .background {
-                    Capsule()
-                        .fill(.ultraThinMaterial)
-                        .padding(.vertical, 5)
-                        .padding(.horizontal, 3)
+        HStack(spacing: 8) {
+            SystemSearchField(
+                text: $text,
+                focusRequestID: focusRequestID,
+                cancelToken: cancelToken,
+                placeholder: placeholder,
+                onSearchButtonClicked: onSearchButtonClicked,
+                onFocusChanged: { focused in
+                    withAnimation(.easeInOut(duration: 0.2)) { isEditing = focused }
+                    onFocusChanged?(focused)
                 }
-                .padding(.horizontal, 5)
+            )
+            .frame(height: 50)
+
+            if isEditing {
+                // The app's circle-glass ✕, not a text "Cancel" (user rule: the word read as dated
+                // next to the new field) - sized to the field so the pair reads as one bar.
+                Button {
+                    settings.hapticFeedback()
+                    text = ""
+                    cancelToken += 1
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundColor(.primary)
+                        .frame(width: 50, height: 50)
+                        .contentShape(Circle())
+                        .conditionalGlassEffect(circle: true)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancel search")
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
+        .animation(.easeInOut(duration: 0.2), value: isEditing)
     }
 }
 
-struct SearchBarUIKit: UIViewRepresentable {
+/// The UIKit half: `UISearchTextField` with the old UISearchBar wrapper's text-sync guards intact.
+private struct SystemSearchField: UIViewRepresentable {
+    #if DEBUG
+    /// "-searchPasteProbe": headless reproduction of paste-into-search (crash report 2026-08-18) -
+    /// the simulator has no tap/key injection, and only the REAL `paste(_:)` path exercises the
+    /// keyboard's inline-candidate machinery. The first field mounted claims the probe; seed the sim
+    /// pasteboard with `simctl pbcopy` before launching.
+    nonisolated(unsafe) private static var didSchedulePasteProbe = false
+    #endif
     @Binding var text: String
-
-    var focusRequestID: Int = 0
+    var focusRequestID: Int
+    var cancelToken: Int
+    var placeholder: String
     var onSearchButtonClicked: (() -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(
-            text: $text,
-            onSearchButtonClicked: onSearchButtonClicked,
-            onFocusChanged: onFocusChanged
-        )
+        Coordinator(text: $text, onSearchButtonClicked: onSearchButtonClicked, onFocusChanged: onFocusChanged)
     }
 
-    func makeUIView(context: Context) -> UISearchBar {
-        let searchBar = UISearchBar(frame: .zero)
-        searchBar.delegate = context.coordinator
-        searchBar.placeholder = "Search"
-        searchBar.autocorrectionType = .no
-        searchBar.autocapitalizationType = .none
-        searchBar.returnKeyType = .search
-        searchBar.searchBarStyle = .minimal
-
-        configure(searchTextField: searchBar.searchTextField, coordinator: context.coordinator)
-        return searchBar
-    }
-
-    func updateUIView(_ uiView: UISearchBar, context: Context) {
-        // Push SwiftUI's text into UIKit ONLY when it's a value the user didn't just type (a programmatic
-        // set: the global-search handoff, a cleared query). While the field is being edited, UIKit is the
-        // source of truth and SwiftUI runs a beat behind - fast typing (worse under Low Power Mode, where
-        // every update is slower) delivered STALE values here, and writing them back into the actively
-        // edited field corrupted its text system mid-composition. That was the type-delete-retype search
-        // crash. The coordinator remembers what it recently sent; any of those values arriving back is an
-        // echo, never a programmatic set, so it must not be written into the field.
-        if uiView.text != text {
-            if !uiView.isFirstResponder || !context.coordinator.recentlySentTexts.contains(text) {
-                uiView.text = text
+    func makeUIView(context: Context) -> UISearchTextField {
+        let field = UISearchTextField()
+        field.placeholder = placeholder
+        field.autocorrectionType = .no
+        field.autocapitalizationType = .none
+        field.spellCheckingType = .no
+        if #available(iOS 17.0, *) {
+            // A search field must not run the keyboard's inline predictions (UISearchBar's own field
+            // never did): pasting Quranic Arabic - dagger alif, Uthmani sukoon - into this bare field
+            // trapped inside UIKit's UIKeyboardInlineCandidateStorage on iOS 26 (EXC_BREAKPOINT,
+            // 2026-08-18 report). Off = that machinery never engages.
+            field.inlinePredictionType = .no
+        }
+        field.returnKeyType = .search
+        field.clearButtonMode = .whileEditing
+        if #unavailable(iOS 26.0) {
+            // Pre-Liquid-Glass the bare field draws only its translucent gray fill, and floating over
+            // list content it read as "way too transparent" (user report). The old UISearchBar layered
+            // that same fill over an opaque bar; an opaque backing under the field restores that look.
+            // iOS 26 draws the field as glass and needs nothing.
+            field.backgroundColor = .secondarySystemBackground
+            field.layer.cornerRadius = 14
+            field.clipsToBounds = true
+        }
+        field.delegate = context.coordinator
+        field.addTarget(context.coordinator, action: #selector(Coordinator.editingChanged(_:)), for: .editingChanged)
+        field.addTarget(context.coordinator, action: #selector(Coordinator.editingBegan), for: .editingDidBegin)
+        field.addTarget(context.coordinator, action: #selector(Coordinator.editingEnded), for: .editingDidEnd)
+        // Don't let the field's intrinsic width fight the SwiftUI frame.
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        #if DEBUG
+        // The payload rides in "-searchPasteText <string>" and is planted on the pasteboard IN-PROCESS:
+        // a same-app paste skips the iOS cross-app paste permission dialog, which is untappable here.
+        if ProcessInfo.processInfo.arguments.contains("-searchPasteProbe"), !Self.didSchedulePasteProbe {
+            Self.didSchedulePasteProbe = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak field] in
+                let args = ProcessInfo.processInfo.arguments
+                if let i = args.firstIndex(of: "-searchPasteText"), args.indices.contains(i + 1) {
+                    let payload = args[i + 1]
+                    if args.contains("-searchPasteHTML") {
+                        // Mimic a copy from a browser/chat: the pasteboard carries RICH flavors, and the
+                        // paste converts through attributed text - a different UIKit path than plain.
+                        UIPasteboard.general.items = [[
+                            "public.html": "<html><body><b>\(payload)</b></body></html>",
+                            "public.utf8-plain-text": payload,
+                        ]]
+                    } else {
+                        UIPasteboard.general.string = payload
+                    }
+                }
+                field?.becomeFirstResponder()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    field?.paste(nil)
+                }
             }
         }
+        #endif
+        return field
+    }
 
-        uiView.searchTextField.rightViewMode = .always
-        ClearButtonContainer.updateVisibility(
-            in: uiView.searchTextField.rightView,
-            isVisible: !text.isEmpty
-        )
+    func updateUIView(_ field: UISearchTextField, context: Context) {
         context.coordinator.onSearchButtonClicked = onSearchButtonClicked
         context.coordinator.onFocusChanged = onFocusChanged
+
+        // Push SwiftUI's text into UIKit ONLY when it's a value the user didn't just type (a programmatic
+        // set: the global-search handoff, a cleared query). While the field is being edited, UIKit is the
+        // source of truth and SwiftUI runs a beat behind - fast typing delivered STALE values here, and
+        // writing them back into the actively edited field corrupted its text system mid-composition.
+        // That was the old type-delete-retype search crash; the guard carries over from the UISearchBar
+        // wrapper verbatim.
+        if field.text != text {
+            // Also never write while a composition/candidate session is open (`markedTextRange`):
+            // stomping marked text mid-session is the exact class of corruption behind both the old
+            // type-delete-retype crash and the 2026-08-18 paste trap in UIKit's keyboard code.
+            if (!field.isFirstResponder || !context.coordinator.recentlySentTexts.contains(text)),
+               field.markedTextRange == nil {
+                field.text = text
+            }
+        }
 
         // A new focus request (0 is "never asked"). Deferred: this runs inside a SwiftUI update, and taking
         // first responder synchronously from there fights the in-flight navigation that usually caused the ask.
         if focusRequestID > 0, focusRequestID != context.coordinator.lastFocusRequestID {
             context.coordinator.lastFocusRequestID = focusRequestID
             DispatchQueue.main.async {
-                guard !uiView.isFirstResponder else { return }
-                uiView.becomeFirstResponder()
+                guard !field.isFirstResponder else { return }
+                field.becomeFirstResponder()
             }
+        }
+
+        // Cancel: clear and drop the keyboard - what UISearchBar's own Cancel did.
+        if cancelToken != context.coordinator.lastCancelToken {
+            context.coordinator.lastCancelToken = cancelToken
+            context.coordinator.rememberSentText("")
+            field.text = ""
+            DispatchQueue.main.async { field.resignFirstResponder() }
         }
     }
 
-    private func configure(searchTextField: UITextField, coordinator: Coordinator) {
-        searchTextField.backgroundColor = .clear
-        searchTextField.layer.cornerRadius = 24
-        searchTextField.layer.masksToBounds = true
-        searchTextField.font = .systemFont(ofSize: 16)
-        searchTextField.clearButtonMode = .never
-        searchTextField.rightView = ClearButtonContainer.make(for: coordinator)
-        searchTextField.rightViewMode = .always
-        ClearButtonContainer.updateVisibility(in: searchTextField.rightView, isVisible: false)
-    }
-
-    final class Coordinator: NSObject, UISearchBarDelegate {
+    final class Coordinator: NSObject, UITextFieldDelegate {
         @Binding var text: String
 
         var onSearchButtonClicked: (() -> Void)?
         var onFocusChanged: ((Bool) -> Void)?
         /// The last focus request honoured, so a re-render can't keep re-taking first responder.
         var lastFocusRequestID = 0
-        /// The last few values `textDidChange` pushed INTO SwiftUI. When one of them comes back through
+        var lastCancelToken = 0
+        /// The last few values `editingChanged` pushed INTO SwiftUI. When one of them comes back through
         /// `updateUIView` it's an echo of the user's own typing (possibly stale by a beat), not a
         /// programmatic set - see the guard there.
         private(set) var recentlySentTexts: [String] = []
+
+        init(text: Binding<String>, onSearchButtonClicked: (() -> Void)?, onFocusChanged: ((Bool) -> Void)?) {
+            _text = text
+            self.onSearchButtonClicked = onSearchButtonClicked
+            self.onFocusChanged = onFocusChanged
+        }
 
         func rememberSentText(_ value: String) {
             recentlySentTexts.append(value)
@@ -141,84 +229,20 @@ struct SearchBarUIKit: UIViewRepresentable {
             }
         }
 
-        init(
-            text: Binding<String>,
-            onSearchButtonClicked: (() -> Void)?,
-            onFocusChanged: ((Bool) -> Void)?
-        ) {
-            _text = text
-            self.onSearchButtonClicked = onSearchButtonClicked
-            self.onFocusChanged = onFocusChanged
+        @objc func editingChanged(_ field: UITextField) {
+            let value = field.text ?? ""
+            rememberSentText(value)
+            text = value
         }
 
-        func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
-            rememberSentText(searchText)
-            text = searchText
-        }
+        @objc func editingBegan() { onFocusChanged?(true) }
+        @objc func editingEnded() { onFocusChanged?(false) }
 
-        func searchBarTextDidBeginEditing(_ searchBar: UISearchBar) {
-            searchBar.showsCancelButton = true
-            onFocusChanged?(true)
-        }
-
-        func searchBarTextDidEndEditing(_ searchBar: UISearchBar) {
-            searchBar.showsCancelButton = false
-            onFocusChanged?(false)
-        }
-
-        func searchBarCancelButtonClicked(_ searchBar: UISearchBar) {
-            searchBar.showsCancelButton = false
-            searchBar.text = ""
-            searchBar.resignFirstResponder()
-
-            rememberSentText("")
-            text = ""
-            onFocusChanged?(false)
-        }
-
-        func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
-            searchBar.resignFirstResponder()
-            text = searchBar.text ?? ""
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            textField.resignFirstResponder()
+            text = textField.text ?? ""
             onSearchButtonClicked?()
-        }
-
-        @objc func clearSearchText(_ sender: UIButton) {
-            rememberSentText("")
-            guard let textField = resolvedTextField(from: sender) else {
-                text = ""
-                return
-            }
-
-            textField.text = ""
-            text = ""
-            textField.sendActions(for: .editingChanged)
-        }
-
-        private func resolvedTextField(from sender: UIButton) -> UITextField? {
-            sender.superview?.superview as? UITextField ?? sender.superview as? UITextField
-        }
-    }
-    
-    private enum ClearButtonContainer {
-        static func make(for coordinator: SearchBarUIKit.Coordinator) -> UIView {
-            let leadingInset: CGFloat = 4
-            let container = UIView(frame: CGRect(x: 0, y: 0, width: 24 + leadingInset, height: 20))
-
-            let button = UIButton(type: .system)
-            button.frame = CGRect(x: leadingInset, y: 0, width: 20, height: 20)
-            button.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
-            button.tintColor = .secondaryLabel
-            button.addTarget(coordinator, action: #selector(SearchBarUIKit.Coordinator.clearSearchText(_:)), for: .touchUpInside)
-            button.tag = 999
-
-            container.addSubview(button)
-            return container
-        }
-
-        static func updateVisibility(in rightView: UIView?, isVisible: Bool) {
-            guard let button = rightView?.viewWithTag(999) as? UIButton else { return }
-            button.isHidden = !isVisible
-            button.isUserInteractionEnabled = isVisible
+            return true
         }
     }
 }

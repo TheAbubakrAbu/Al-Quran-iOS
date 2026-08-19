@@ -102,7 +102,7 @@ struct LastListenedSurahRow: View {
     @State private var confirmDeleteForever = false
 
     var body: some View {
-        guard let surah = quranData.quran.first(where: { $0.id == lastListenedSurah.surahNumber })
+        guard let surah = quranData.surah(lastListenedSurah.surahNumber)
         else { return AnyView(EmptyView()) }
 
         return AnyView(
@@ -185,7 +185,7 @@ struct LastListenedSurahRow: View {
 
                 if showListeningHistory && !quranPlayer.listeningHistory.isEmpty {
                     ForEach(quranPlayer.listeningHistory) { item in
-                        if let historySurah = quranData.quran.first(where: { $0.id == item.surahNumber }) {
+                        if let historySurah = quranData.surah(item.surahNumber) {
                             if let onSelectSurah {
                                 Button {
                                     settings.hapticFeedback()
@@ -432,8 +432,6 @@ struct SummaryAyahTile: View {
     /// When set, the tile grows a small toggle in its corner that unfolds this tile's recent history below
     /// the summary grid - the summary-mode counterpart of the +/- the full-size rows carry on their headers.
     var onExpand: (() -> Void)? = nil
-    /// When set, a trailing "Today 5:30 PM" caption in the title row - when this position was saved.
-    var timestamp: Date? = nil
     let onTap: () -> Void
 
     /// e.g. "Al-Fatiha 1:5"
@@ -441,7 +439,7 @@ struct SummaryAyahTile: View {
 
     private func arabicDisplayText() -> String {
         let text = ayah.displayArabicText(surahId: surah.id, clean: settings.cleanArabicText)
-        return settings.beginnerMode ? text.map { String($0) }.joined(separator: " ") : text
+        return settings.beginnerMode ? text.beginnerSpaced : text
     }
 
     private var shouldShowTajweedColors: Bool {
@@ -452,7 +450,7 @@ struct SummaryAyahTile: View {
         guard shouldShowTajweedColors else { return nil }
         let text = ayah.displayArabicText(surahId: surah.id, clean: false)
         let displayText = settings.cleanArabicText ? ayah.displayArabicText(surahId: surah.id, clean: true) : text
-        let renderedDisplayText = settings.beginnerMode ? displayText.map { String($0) }.joined(separator: " ") : displayText
+        let renderedDisplayText = settings.beginnerMode ? displayText.beginnerSpaced : displayText
         return TajweedStore.shared.attributedText(
             surah: surah.id,
             ayah: ayah.id,
@@ -480,20 +478,10 @@ struct SummaryAyahTile: View {
                             .lineLimit(1)
                             .layoutPriority(1)
 
-                        if let timestamp {
-                            Spacer(minLength: 4)
-                            // Shrinkable (unlike historyTimestampLabel): in this narrow tile the
-                            // timestamp yields rather than crushing the title.
-                            Text(formatCompactHistoryTimestamp(timestamp))
-                                .font(.caption2)
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.6)
-                        }
-
+                        // No timestamp on the compact tile - the "when" lives on the unfolded
+                        // history rows (the +'s expanded card) instead.
                         if let onExpand {
-                            if timestamp == nil { Spacer(minLength: 0) }
+                            Spacer(minLength: 0)
 
                             Image(systemName: isExpanded ? "minus.circle" : "plus.circle")
                                 .font(.caption)
@@ -586,8 +574,6 @@ struct SummarySurahTile: View {
     /// See `SummaryAyahTile.isExpanded` / `.onExpand`.
     var isExpanded: Bool = false
     var onExpand: (() -> Void)? = nil
-    /// See `SummaryAyahTile.timestamp`.
-    var timestamp: Date? = nil
     let onTap: () -> Void
 
     /// e.g. "1 - Al-Fatiha"
@@ -609,20 +595,10 @@ struct SummarySurahTile: View {
                         .lineLimit(1)
                         .layoutPriority(1)
 
-                    if let timestamp {
-                        Spacer(minLength: 4)
-                        // Shrinkable (unlike historyTimestampLabel): in this narrow tile the
-                        // timestamp yields rather than crushing the title.
-                        Text(formatCompactHistoryTimestamp(timestamp))
-                            .font(.caption2)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
-                    }
-
+                    // No timestamp on the compact tile - the "when" lives on the unfolded
+                    // history rows (the +'s expanded card) instead.
                     if let onExpand {
-                        if timestamp == nil { Spacer(minLength: 0) }
+                        Spacer(minLength: 0)
 
                         Image(systemName: isExpanded ? "minus.circle" : "plus.circle")
                             .font(.caption)
@@ -642,10 +618,12 @@ struct SummarySurahTile: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
 
+                // One line only: a long reciter + riwayah name truncates rather than wrapping and
+                // pushing the tile taller than its neighbor.
                 Text(lastListenedSurah.reciter.displayNameWithEnglishQiraah)
                     .font(.caption2)
                     .foregroundColor(.primary)
-                    .lineLimit(2)
+                    .lineLimit(1)
                     .minimumScaleFactor(0.6)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -839,7 +817,7 @@ struct LastReadAyahRow: View {
             if showReadingHistory && !quranPlayer.readingHistory.isEmpty {
                 ForEach(quranPlayer.readingHistory) { item in
                     let normalizedAyah = max(1, item.ayahNumber)
-                    if let surah = quranData.quran.first(where: { $0.id == item.surahNumber }), let ayah = surah.ayahs.first(where: { $0.id == normalizedAyah }) {
+                    if let surah = quranData.surah(item.surahNumber), let ayah = quranData.ayah(surah: item.surahNumber, ayah: normalizedAyah) {
                         Group {
                             if let onSelectAyah {
                                 Button {
@@ -977,6 +955,14 @@ struct LastListenedAyahRow: View {
                 bookmarkedAyahs: bookmarkedAyahs,
                 bookmarkedSurah: histSurah.id,
                 bookmarkedAyah: histAyah.id
+            )
+            .ayahContextMenuModifier(
+                surah: histSurah.id,
+                ayah: histAyah.id,
+                favoriteSurahs: favoriteSurahs,
+                bookmarkedAyahs: bookmarkedAyahs,
+                searchText: $searchText,
+                scrollToSurahID: $scrollToSurahID
             )
         }
     }

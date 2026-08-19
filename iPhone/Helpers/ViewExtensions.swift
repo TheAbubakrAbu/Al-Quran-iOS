@@ -1,5 +1,22 @@
 import SwiftUI
 
+// MARK: - App-wide toggle style
+
+/// The standard switch with 2pt of vertical padding (user rule: every toggle in the app breathes a
+/// little). Applied ONCE at each app root via `.toggleStyle(PaddedSwitchToggleStyle())`, so no
+/// individual settings row can forget it - and any future toggle gets it for free. The explicit
+/// `.switch` inside is what stops the style from recursing into itself.
+struct PaddedSwitchToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        // Rebuilt from the configuration's own binding + label rather than `Toggle(configuration)`,
+        // which needs iOS 16 (the app deploys to 15). The explicit `.switch` inside is what stops the
+        // style from recursing into itself.
+        Toggle(isOn: configuration.$isOn) { configuration.label }
+            .toggleStyle(.switch)
+            .padding(.vertical, 2)
+    }
+}
+
 // MARK: - Apple Music-style bar minimization
 //
 // The system tab bar minimizes natively on iOS 26 (`tabBarMinimizeBehavior`); the app's custom glass bars
@@ -10,6 +27,28 @@ import SwiftUI
 struct ScrollCollapseMetrics: Equatable {
     let offset: CGFloat
     let distanceFromBottom: CGFloat
+}
+
+/// A paragraph of body prose the iPhone reader can drag-select, the way Apple News lets you highlight
+/// part of an article rather than all of it or none.
+///
+/// Declared here rather than beside `SelectableProse` (Helpers/SelectableText.swift, iPhone-only) so
+/// views shared with the Watch app - the qiraat biographies, the credits - can use it too. watchOS has
+/// no text selection and simply gets the plain `Text` it always had.
+struct ProseText: View {
+    let text: String
+    var secondary: Bool = false
+
+    var body: some View {
+        #if os(iOS)
+        SelectableProse(text: text, secondary: secondary)
+        #else
+        Text(text)
+            .font(.body)
+            .foregroundColor(secondary ? .secondary : .primary)
+            .fixedSize(horizontal: false, vertical: true)
+        #endif
+    }
 }
 
 extension View {
@@ -49,6 +88,35 @@ extension View {
                         collapsed.wrappedValue = shouldCollapse
                     }
                 }
+            }
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+
+    /// Streams this scroll view's TRUE scroll progress (0...1 of the scrollable span) into `update`,
+    /// or nil when the content fits the viewport and there is nothing to measure. iOS 18+ (same
+    /// mechanism as `collapseBarsOnScroll`); on earlier OSes `update` is simply never called, so the
+    /// consumer keeps whatever coarser fallback it has. Built for the reader's top progress bar: the
+    /// ayah-anchor fill only moves when the TOP-visible ayah changes, which on a surah of a page or
+    /// two meant sitting at ~25% and then snapping to 100% at the footer (user report).
+    @ViewBuilder
+    func trackScrollFraction(_ update: @escaping (Double?) -> Void) -> some View {
+        #if os(iOS)
+        if #available(iOS 18.0, *) {
+            self.onScrollGeometryChange(for: Double.self) { geometry in
+                // Same adjusted-offset convention as `collapseBarsOnScroll`: 0 at rest at the top,
+                // and the span ends where `distanceFromBottom` reaches 0.
+                let span = geometry.contentSize.height + geometry.contentInsets.top
+                    + geometry.contentInsets.bottom - geometry.containerSize.height
+                guard span > 1 else { return -1 }
+                let offset = geometry.contentOffset.y + geometry.contentInsets.top
+                return min(max(offset / span, 0), 1)
+            } action: { _, newValue in
+                update(newValue < 0 ? nil : newValue)
             }
         } else {
             self
@@ -142,6 +210,29 @@ extension View {
         modifier(ConditionalListStyle(disableNowPlayingInset: disableNowPlayingInset, topContentMargin: topContentMargin))
     }
 
+
+    /// `applyConditionalListStyle()` plus text selection, for the app's ARTICLE screens - the Islam
+    /// tab's explainers, the tajweed topics, the how-to guides, the qiraat biographies.
+    ///
+    /// This is the cheap, broad half of making the app's prose selectable: it costs nothing, changes
+    /// no rendering, and gives every paragraph on the screen at least a long-press "Copy". The
+    /// passages worth quoting precisely use `SelectableProse` (Helpers/SelectableText.swift) on top
+    /// of it, which is what actually allows a partial highlight inside a List - see the note there
+    /// for why the modifier alone can't. SwiftUI doesn't apply text selection to text inside
+    /// controls, so rows that are navigation links or buttons keep behaving as taps.
+    @ViewBuilder
+    func selectableArticleList(disableNowPlayingInset: Bool = false, topContentMargin: CGFloat = 0) -> some View {
+        let styled = applyConditionalListStyle(
+            disableNowPlayingInset: disableNowPlayingInset,
+            topContentMargin: topContentMargin
+        )
+        #if os(iOS)
+        styled.textSelection(.enabled)
+        #else
+        styled
+        #endif
+    }
+
     /// Tints list rows for the Sepia / Gray reading themes. Apply this to the rows/sections INSIDE a `List`
     /// (not to the `List` itself) - `.listRowBackground` only propagates when attached to row content, which
     /// is why the list-level version in `ConditionalListStyle` couldn't color the cells.
@@ -153,6 +244,12 @@ extension View {
     func compactListSectionSpacing() -> some View {
         #if os(iOS)
         if #available(iOS 17.0, macOS 14.0, tvOS 17.0, visionOS 1.0, *) {
+            self.listSectionSpacing(.compact)
+        } else {
+            self
+        }
+        #elseif os(watchOS)
+        if #available(watchOS 10.0, *) {
             self.listSectionSpacing(.compact)
         } else {
             self
@@ -196,6 +293,16 @@ enum SafeAreaInsetVStackSpacing {
     }
 }
 
+/// The cushion UNDER a floating bottom bar (above the tab bar / home indicator). On iOS 26 the bar
+/// floats over content and 8pt reads right. Pre-26 this has swung both ways: 8pt read as dead space
+/// when the bars were built on UISearchBar, whose own fat internal padding stacked onto it ("a lot
+/// of padding on pre iOS 26"), so it went to 0 - but after the 38pt SwiftUI search field replaced
+/// UISearchBar, 0 left the row sitting flush on the opaque tab bar ("no spacing at the bottom looks
+/// bad"). With the compact field the same 8pt now reads right on both, so the cushion is uniform.
+enum BottomBarCushion {
+    static var standard: CGFloat { 8 }
+}
+
 /// The now-playing bar's narrow seam between shared chrome and whichever module owns playback.
 ///
 /// Lives in HELPERS - not next to QuranPlayer - so shared files never name a Quran type: this is what
@@ -235,18 +342,43 @@ struct AccentGlowOverlay: View {
     @ObservedObject private var settings = Settings.shared
     @Environment(\.colorScheme) private var systemColorScheme
 
+    /// How far down the wash reaches before it is fully faded. The default covers the navigation
+    /// area and dies before mid-screen. The PDF mushaf reader passes a short reach that ends at the
+    /// surah-info bar: the facsimile page starts right below it, and the wash tinting the background
+    /// around the page made the (black) night page read as a separate slab on a green field.
+    var verticalReach: CGFloat = 380
+
+    /// Light mode gets the HIGHER opacity, which looks backwards written down but is what parity
+    /// requires: a translucent tint over white barely shifts the pixel, while the same tint over black
+    /// is most of the light in it. At the old matched-ish 0.10 the light-mode wash was invisible - the
+    /// yellow half especially, yellow-on-white being the weakest pairing in the brand palette. 0.26
+    /// against dark's 0.16 reads as the same glow in both; measured side by side, not guessed.
+    private var resolvedStrength: Double {
+        guard !settings.hasCustomThemeColors, settings.showAccentGlow else { return 0 }
+        return (settings.colorScheme ?? systemColorScheme) == .dark ? 0.16 : 0.26
+    }
+
     var body: some View {
-        let strength: Double = (settings.hasCustomThemeColors || !settings.showAccentGlow)
-            ? 0 : ((settings.colorScheme ?? systemColorScheme) == .dark ? 0.16 : 0.10)
+        let strength = resolvedStrength
         let brand = settings.alIslamGlow
 
-        VStack(spacing: 0) {
+        // Top-only, by explicit choice (a bottom band was tried and rolled back): the wash lights the
+        // navigation-bar edge and fades before mid-screen, leaving the bottom bars on plain background.
+        //
+        // The radius must track the screen width or wide screens break the look: 380pt covers an
+        // iPhone edge-to-edge, but on iPad/Mac the single-color glow died mid-screen (lit middle,
+        // dark corners) and the brand corners never met in the middle. Scaling the circle up would
+        // also drag the wash way down the page, so the vertical axis is pinned back to the iPhone's
+        // reach with a y-compression - the glow becomes a wide, shallow ellipse across the whole top.
+        GeometryReader { geo in
+            let radius = max(380, geo.size.width)
+
             ZStack {
                 RadialGradient(
                     colors: [settings.accentColor.color.opacity(brand ? 0 : strength), .clear],
                     center: .top,
                     startRadius: 8,
-                    endRadius: 380
+                    endRadius: radius
                 )
 
                 // Absolute corners, not leading/trailing: the brand look is yellow on the LEFT and
@@ -255,37 +387,194 @@ struct AccentGlowOverlay: View {
                     colors: [Color.yellow.opacity(brand ? strength : 0), .clear],
                     center: UnitPoint(x: 0, y: 0),
                     startRadius: 8,
-                    endRadius: 380
+                    endRadius: radius
                 )
 
                 RadialGradient(
                     colors: [Color.green.opacity(brand ? strength : 0), .clear],
                     center: UnitPoint(x: 1, y: 0),
                     startRadius: 8,
-                    endRadius: 380
+                    endRadius: radius
                 )
             }
-            .frame(height: 420)
-
-            Spacer(minLength: 0)
+            .frame(width: geo.size.width, height: radius)
+            .scaleEffect(y: verticalReach / radius, anchor: .top)
         }
         .allowsHitTesting(false)
         .ignoresSafeArea()
     }
 }
 
+#if os(watchOS)
+/// The watch's top accent glow: a quiet radial wash bleeding down from the top edge - the
+/// wrist-scale mirror of the iPhone's top accent wash (`AccentGlowOverlay`). Every list screen gets
+/// it through `ConditionalListStyle`'s watch branch, so the whole watch app sits on the same
+/// grounded light. (A bottom-anchored version shipped first and read as upside-down next to the
+/// iPhone, so it now matches the phone: light from the top.)
+///
+/// Structurally constant like its iOS sibling: all three gradients are always in the tree and the
+/// settings only drive their opacities - the accent one for the normal glow, the yellow (left) +
+/// green (right) pair for the Al-Islam brand look. Everything collapses to invisible when the glow
+/// is off or a custom reading theme owns the background, and theme/accent flips never recreate the
+/// List they sit behind.
+struct WatchTopGlowOverlay: View {
+    @ObservedObject private var settings = Settings.shared
+
+    var body: some View {
+        // The watch renders on pure black OLED, so the wash can sit a touch brighter than the
+        // iPhone's dark-mode 0.16 and still stay quiet.
+        let strength: Double = (settings.hasCustomThemeColors || !settings.showAccentGlow) ? 0 : 0.20
+        let brand = settings.alIslamGlow
+
+        // Same width-tracking ellipse as the iPhone overlay: the radius follows the screen width
+        // (198pt on a 45mm, wider on Ultra) so the wash spans the whole top edge, then compresses
+        // vertically to the tuned 150pt reach so it still dies well above the bottom.
+        GeometryReader { geo in
+            let radius = max(190, geo.size.width)
+            let verticalReach: CGFloat = 150
+
+            ZStack {
+                RadialGradient(
+                    colors: [settings.accentColor.color.opacity(brand ? 0 : strength), .clear],
+                    center: .top,
+                    startRadius: 4,
+                    endRadius: radius
+                )
+
+                // Absolute corners, not leading/trailing: the brand look is yellow on the LEFT and
+                // green on the RIGHT, and it shouldn't mirror when the app runs in an RTL locale.
+                RadialGradient(
+                    colors: [Color.yellow.opacity(brand ? strength : 0), .clear],
+                    center: UnitPoint(x: 0, y: 0),
+                    startRadius: 4,
+                    endRadius: radius
+                )
+
+                RadialGradient(
+                    colors: [Color.green.opacity(brand ? strength : 0), .clear],
+                    center: UnitPoint(x: 1, y: 0),
+                    startRadius: 4,
+                    endRadius: radius
+                )
+            }
+            .frame(width: geo.size.width, height: radius)
+            .scaleEffect(y: verticalReach / radius, anchor: .top)
+        }
+        .allowsHitTesting(false)
+        .ignoresSafeArea()
+    }
+}
+#endif
+
+/// The app's ambient wash as a standalone modifier - the ONE implementation of "every screen sits on
+/// the same light": the themed base color + top accent glow on iOS, the top accent glow on the
+/// watch. `ConditionalListStyle` routes through this for every List screen; screens that are NOT
+/// system Lists (ScrollView sheets like tafsir/comparison/share, custom canvases) apply it directly
+/// via `.accentWashedBackground()`. Edit the look HERE and every screen on every platform follows.
+///
+/// Also re-asserts the theme's color scheme and accent: sheets are their own presentation contexts
+/// and don't inherit the root's `preferredColorScheme` - without this, a forced-Dark theme would
+/// paint a black wash behind light-mode sheet content.
+struct AccentWashedBackground: ViewModifier {
+    @ObservedObject private var settings = Settings.shared
+    @Environment(\.colorScheme) private var systemColorScheme
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content
+            .background(
+                ZStack(alignment: .top) {
+                    resolvedBackground
+
+                    AccentGlowOverlay()
+                }
+                .ignoresSafeArea()
+            )
+            .accentColor(settings.accentColor.color)
+            .tint(settings.accentColor.color)
+            .preferredColorScheme(settings.colorScheme)
+        #elseif os(watchOS)
+        // The watch does NOT honor the reading themes (user rule: don't send background/theme colors
+        // to the watch) - a themed ground painted the whole watch gray and its flat row color erased
+        // the native rounded section cards. The watch keeps its black ground + glow, always.
+        content
+            .background(
+                ZStack(alignment: .top) {
+                    WatchTopGlowOverlay()
+                }
+                .ignoresSafeArea()
+            )
+        #else
+        content
+        #endif
+    }
+
+    #if os(iOS)
+    /// The list background every theme resolves to - identical to what `ConditionalListStyle` painted
+    /// historically (`resolvedListBackground`), kept in ONE place now.
+    private var resolvedBackground: Color {
+        if settings.hasCustomThemeColors {
+            return settings.themeBackgroundColor ?? Color(.systemGroupedBackground)
+        }
+        if settings.defaultView {
+            return Color(.systemGroupedBackground)
+        }
+        return (settings.colorScheme ?? systemColorScheme) == .dark ? .black : .white
+    }
+    #endif
+}
+
+/// The reading theme's base color alone (no glow, no scheme assertion) - for the page-mode readers,
+/// which draw their own `AccentGlowOverlay` but historically fell through to the bare system window
+/// background, so Sepia/Gray/Custom never reached them. No-op on Light/Dark/System.
+struct ThemedReaderBackground: ViewModifier {
+    @ObservedObject private var settings = Settings.shared
+
+    func body(content: Content) -> some View {
+        content.background((settings.themeBackgroundColor ?? Color.clear).ignoresSafeArea())
+    }
+}
+
+extension View {
+    /// The themed base + accent glow for screens that are not system Lists - see `AccentWashedBackground`.
+    func accentWashedBackground() -> some View {
+        modifier(AccentWashedBackground())
+    }
+
+    /// The reading theme's base color for page-mode readers - see `ThemedReaderBackground`.
+    func themedReaderBackground() -> some View {
+        modifier(ThemedReaderBackground())
+    }
+
+    /// Clamp to `limit` lines AND always reserve that much height, so a one-line item and a three-line
+    /// one occupy the same box and a column of preview cards never comes out ragged. `reservesSpace`
+    /// is iOS 16+; below that this degrades to a plain clamp (ragged, but never clipped or crashed).
+    func reservedLineLimit(_ limit: Int = 2) -> some View {
+        modifier(ReservedLineLimit(limit: limit))
+    }
+}
+
+/// Backing modifier for `reservedLineLimit(_:)` - the availability branch lives here so call sites stay
+/// one clean modifier.
+struct ReservedLineLimit: ViewModifier {
+    let limit: Int
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, watchOS 9.0, *) {
+            content.lineLimit(limit, reservesSpace: true)
+        } else {
+            content.lineLimit(limit)
+        }
+    }
+}
+
 struct ConditionalListStyle: ViewModifier {
     @ObservedObject private var settings = Settings.shared
     @ObservedObject private var playback = PlaybackVisibility.shared
-    @Environment(\.colorScheme) private var systemColorScheme
-    @Environment(\.customColorScheme) private var customColorScheme
 
     let disableNowPlayingInset: Bool
     var topContentMargin: CGFloat = 0
-
-    private var currentColorScheme: ColorScheme {
-        settings.colorScheme ?? systemColorScheme
-    }
 
     private var shouldShowNowPlaying: Bool {
         playback.showsNowPlaying
@@ -297,7 +586,7 @@ struct ConditionalListStyle: ViewModifier {
             styledContent(content)
                 .navigationBarTitleDisplayMode(.inline)
             #else
-            content
+            watchStyledContent(content)
             #endif
         }
         .accentColor(settings.accentColor.color)
@@ -314,7 +603,7 @@ struct ConditionalListStyle: ViewModifier {
                     bar()
                 }
                 .padding(.horizontal, 24)
-                .padding(.bottom, 8)
+                .padding(.bottom, BottomBarCushion.standard)
                 .background(Color.white.opacity(0.00001))
                 .animation(.easeInOut, value: shouldShowNowPlaying)
             }
@@ -326,46 +615,41 @@ struct ConditionalListStyle: ViewModifier {
     // Single, structurally-constant modifier chain (only the VALUES change with the theme). Switching to/from
     // Sepia/Gray used to flip between if/else branches, which changed the view tree and recreated the List -
     // scrolling it back to the top. Keeping one branch preserves the List, so no theme change resets scroll.
-    // (Row colors are handled separately by `themedListRowBackground()` applied inside each List.)
+    // (Row colors are handled separately by `themedListRowBackground()` applied inside each List. The wash
+    // itself lives in `AccentWashedBackground` - one implementation for lists, sheets, and the watch.)
     @ViewBuilder
     private func styledContent(_ content: Content) -> some View {
         let base = settings.defaultView ? AnyView(content) : AnyView(content.listStyle(.plain))
 
         if #available(iOS 16.0, *) {
-            // Always hidden (not just for custom themes): `resolvedListBackground` reproduces every
-            // theme's system color exactly, and hiding the system layer is what lets the accent wash
-            // below actually show through. Still one structurally-constant chain - values only.
+            // Always hidden (not just for custom themes): the wash reproduces every theme's system
+            // color exactly, and hiding the system layer is what lets the accent glow show through.
             base
                 .scrollContentBackground(.hidden)
-                .background(washedListBackground)
+                .modifier(AccentWashedBackground())
         } else {
             base
-                .background(washedListBackground)
+                .modifier(AccentWashedBackground())
         }
     }
+    #endif
 
-    /// The list background plus the splash screen's accent wash: a quiet radial glow of the user's
-    /// accent bleeding down from the top of every list, gone by mid-screen. Zeroed for the Sepia/Gray
-    /// reading themes - their whole point is calm paper, and an accent glow would pollute it. (An
-    /// opacity of 0, not a branch: the view tree must stay structurally constant or theme flips
-    /// recreate the List and reset its scroll position.)
-    private var washedListBackground: some View {
-        ZStack(alignment: .top) {
-            resolvedListBackground
-
-            AccentGlowOverlay()
+    #if os(watchOS)
+    /// The watch styling pass: the top accent glow behind every list (via the shared
+    /// `AccentWashedBackground`) plus compact section spacing, so the small screen spends its pixels
+    /// on content instead of gaps. The watch List canvas is transparent over black, so the wash reads
+    /// through it; the chain stays structurally constant (the glow zeroes its opacities rather than
+    /// leaving the tree), preserving List identity across theme and accent flips.
+    @ViewBuilder
+    private func watchStyledContent(_ content: Content) -> some View {
+        if #available(watchOS 10.0, *) {
+            content
+                .listSectionSpacing(.compact)
+                .modifier(AccentWashedBackground())
+        } else {
+            content
+                .modifier(AccentWashedBackground())
         }
-        .ignoresSafeArea()
-    }
-
-    private var resolvedListBackground: Color {
-        if settings.hasCustomThemeColors {
-            return settings.themeBackgroundColor ?? Color(.systemGroupedBackground)
-        }
-        if settings.defaultView {
-            return Color(.systemGroupedBackground)
-        }
-        return currentColorScheme == .dark ? .black : .white
     }
     #endif
 }
@@ -377,11 +661,18 @@ struct ThemedListRowBackground: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
+        // iOS only: on the watch a flat `.listRowBackground` color REPLACES the native rounded
+        // section cards (rows read as square, "cut off") - and the reading themes are phone-only
+        // looks anyway (they no longer sync to the watch).
+        #if os(iOS)
         if settings.hasCustomThemeColors, let rowColor = settings.themeRowBackgroundColor {
             content.listRowBackground(rowColor)
         } else {
             content
         }
+        #else
+        content
+        #endif
     }
 }
 
@@ -564,6 +855,12 @@ struct SectionPillHeader: View {
 
             Spacer()
 
+            // The trailing cluster's ONE ordering rule, app-wide: the count pill sits at the far LEFT
+            // of the cluster (it is information, not a control), then the buttons - shuffle, then the
+            // expand chevron. SurahsHeader lays out the same way; a header that hand-rolls its cluster
+            // must follow this order too.
+            CountPill(count: count, overflow: overflow)
+
             if let onShuffle {
                 // A circle exactly as tall as the count pill (caption line + its 4pt vertical padding),
                 // and as wide as it is tall.
@@ -578,8 +875,6 @@ struct SectionPillHeader: View {
                     }
                     .accessibilityLabel("Random \(title.lowercased())")
             }
-
-            CountPill(count: count, overflow: overflow)
 
             if let isExpanded {
                 Image(systemName: isExpanded.wrappedValue ? "chevron.down.circle" : "chevron.up.circle")

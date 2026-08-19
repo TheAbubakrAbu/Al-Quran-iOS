@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 import Combine
 import WidgetKit
 import os
@@ -87,8 +88,18 @@ extension Settings {
             let teacher: String
             let teacherArabic: String
             let order: Int
+            /// Machine-extracted text pending scholarly verification (the 12 riwayat
+            /// beyond the eight the app ships from the King Fahd Complex data).
+            var beta: Bool = false
+            /// The rawi's (narrator's) own death year, Hijri - the pickers' secondary line.
+            var narratorDiedAH: Int? = nil
 
             var id: String { tag.isEmpty ? "Hafs" : tag }
+
+            /// "d. 180 AH" - secondary text under the rawi's name in the qiraah menus.
+            var narratorDetail: String? {
+                narratorDiedAH.map { "d. \($0) AH" }
+            }
         }
 
         struct Group: Identifiable, Hashable {
@@ -111,17 +122,63 @@ extension Settings {
         static let duri = "ad-Duri an Abi Amr"
         static let susi = "as-Susi an Abi Amr"
 
+        // The 12 remaining riwayat of the Ten Qiraat, extracted from the Islamweb
+        // mushaf set (see `BetaQiraatStore`). BETA: machine-extracted, not yet
+        // scholar-verified - always gated behind `Settings.betaQiraatEnabled`.
+        static let hisham = "Hisham an Ibn Amir"
+        static let ibnDhakwan = "Ibn Dhakwan an Ibn Amir"
+        static let khallad = "Khallad an Hamzah"
+        static let abuHarith = "Abu al-Harith an al-Kisai"
+        static let duriKisai = "ad-Duri an al-Kisai"
+        static let ibnWardan = "Ibn Wardan an Abi Jafar"
+        static let ibnJammaz = "Ibn Jammaz an Abi Jafar"
+        static let ruways = "Ruways an Yaqub"
+        static let rawh = "Rawh an Yaqub"
+        static let ishaq = "Ishaq an Khalaf al-Ashir"
+        static let idris = "Idris an Khalaf al-Ashir"
+
         static let asimTeacher = "Asim"
         static let nafiTeacher = "Nafi"
         static let ibnKathirTeacher = "Ibn Kathir"
         static let abiAmrTeacher = "Abu Amr"
         static let hamzahTeacher = "Hamzah"
+        static let ibnAmirTeacher = "Ibn Amir"
+        static let kisaiTeacher = "al-Kisai"
+        static let abiJafarTeacher = "Abu Jafar"
+        static let yaqubTeacher = "Yaqub"
+        static let khalafAshirTeacher = "Khalaf al-Ashir"
 
         static let asimTeacherArabic = "عَاصِم"
         static let nafiTeacherArabic = "نَافِع"
         static let ibnKathirTeacherArabic = "ابنِ كَثِير"
         static let abiAmrTeacherArabic = "أَبُو عَمرٍو"
         static let hamzahTeacherArabic = "حَمزَة"
+        static let ibnAmirTeacherArabic = "ابنُ عَامِر"
+        static let kisaiTeacherArabic = "الكِسَائِي"
+        static let abiJafarTeacherArabic = "أَبُو جَعفَر"
+        static let yaqubTeacherArabic = "يَعقُوب"
+        static let khalafAshirTeacherArabic = "خَلَفٌ العَاشِر"
+
+        // Where each qiraah imam taught, and when he died (Hijri) - the pickers' secondary line and
+        // the Qiraat guide's facts. Cities match the "Companions behind each Qiraah" section.
+        static let teacherCity: [String: String] = [
+            asimTeacher: "Kufa", nafiTeacher: "Madinah", ibnKathirTeacher: "Makkah",
+            abiAmrTeacher: "Basra", hamzahTeacher: "Kufa", ibnAmirTeacher: "Damascus",
+            kisaiTeacher: "Kufa", abiJafarTeacher: "Madinah", yaqubTeacher: "Basra",
+            khalafAshirTeacher: "Baghdad",
+        ]
+
+        static let teacherDiedAH: [String: Int] = [
+            asimTeacher: 127, nafiTeacher: 169, ibnKathirTeacher: 120, abiAmrTeacher: 154,
+            hamzahTeacher: 156, ibnAmirTeacher: 118, kisaiTeacher: 189, abiJafarTeacher: 130,
+            yaqubTeacher: 205, khalafAshirTeacher: 229,
+        ]
+
+        /// "Kufa, d. 127 AH" - the qiraah submenus' secondary line for an imam.
+        static func teacherDetail(_ teacher: String) -> String? {
+            guard let city = teacherCity[teacher], let died = teacherDiedAH[teacher] else { return nil }
+            return "\(city), d. \(died) AH"
+        }
 
         static let hafsArabic = "حَفص عَن عَاصِم"
         static let warshArabic = "وَرش عَن نَافِع"
@@ -132,53 +189,108 @@ extension Settings {
         static let qunbulArabic = "قُنبُل عَن ابنِ كَثِير"
         static let shubahArabic = "شُعبَة عَن عَاصِم"
         static let khalafArabic = "خَلَف عَن حَمزَة"
+        static let hishamArabic = "هِشَام عَن ابنِ عَامِر"
+        static let ibnDhakwanArabic = "ابنُ ذَكوَان عَن ابنِ عَامِر"
+        static let khalladArabic = "خَلَّاد عَن حَمزَة"
+        static let abuHarithArabic = "أَبُو الحَارِث عَنِ الكِسَائِي"
+        static let duriKisaiArabic = "الدُّورِي عَنِ الكِسَائِي"
+        static let ibnWardanArabic = "ابنُ وَردَان عَن أَبِي جَعفَر"
+        static let ibnJammazArabic = "ابنُ جَمَّاز عَن أَبِي جَعفَر"
+        static let ruwaysArabic = "رُوَيس عَن يَعقُوب"
+        static let rawhArabic = "رَوح عَن يَعقُوب"
+        static let ishaqArabic = "إِسحَاق عَن خَلَفٍ العَاشِر"
+        static let idrisArabic = "إِدرِيس عَن خَلَفٍ العَاشِر"
 
-        static let options: [Option] = [
-            Option(label: hafsLabel, tag: hafsTag, arabic: hafsArabic, teacher: asimTeacher, teacherArabic: asimTeacherArabic, order: 0),
-            Option(label: shubah, tag: shubah, arabic: shubahArabic, teacher: asimTeacher, teacherArabic: asimTeacherArabic, order: 1),
-            Option(label: warsh, tag: warsh, arabic: warshArabic, teacher: nafiTeacher, teacherArabic: nafiTeacherArabic, order: 2),
-            Option(label: qaloon, tag: qaloon, arabic: qaloonArabic, teacher: nafiTeacher, teacherArabic: nafiTeacherArabic, order: 3),
-            Option(label: buzzi, tag: buzzi, arabic: buzziArabic, teacher: ibnKathirTeacher, teacherArabic: ibnKathirTeacherArabic, order: 4),
-            Option(label: qunbul, tag: qunbul, arabic: qunbulArabic, teacher: ibnKathirTeacher, teacherArabic: ibnKathirTeacherArabic, order: 5),
-            Option(label: duri, tag: duri, arabic: duriArabic, teacher: abiAmrTeacher, teacherArabic: abiAmrTeacherArabic, order: 6),
-            Option(label: susi, tag: susi, arabic: susiArabic, teacher: abiAmrTeacher, teacherArabic: abiAmrTeacherArabic, order: 7),
+        /// Every riwayah the app can display. `beta` ones need `Settings.betaQiraatEnabled`
+        /// AND ship their text from `BetaQiraatStore` rather than the bundled pack.
+        static let allOptions: [Option] = [
+            // Asim
+            Option(label: hafsLabel, tag: hafsTag, arabic: hafsArabic, teacher: asimTeacher, teacherArabic: asimTeacherArabic, order: 0, narratorDiedAH: 180),
+            Option(label: shubah, tag: shubah, arabic: shubahArabic, teacher: asimTeacher, teacherArabic: asimTeacherArabic, order: 1, narratorDiedAH: 193),
+            // Nafi
+            Option(label: warsh, tag: warsh, arabic: warshArabic, teacher: nafiTeacher, teacherArabic: nafiTeacherArabic, order: 2, narratorDiedAH: 197),
+            Option(label: qaloon, tag: qaloon, arabic: qaloonArabic, teacher: nafiTeacher, teacherArabic: nafiTeacherArabic, order: 3, narratorDiedAH: 220),
+            // Ibn Kathir
+            Option(label: buzzi, tag: buzzi, arabic: buzziArabic, teacher: ibnKathirTeacher, teacherArabic: ibnKathirTeacherArabic, order: 4, narratorDiedAH: 250),
+            Option(label: qunbul, tag: qunbul, arabic: qunbulArabic, teacher: ibnKathirTeacher, teacherArabic: ibnKathirTeacherArabic, order: 5, narratorDiedAH: 291),
+            // Abu Amr
+            Option(label: duri, tag: duri, arabic: duriArabic, teacher: abiAmrTeacher, teacherArabic: abiAmrTeacherArabic, order: 6, narratorDiedAH: 246),
+            Option(label: susi, tag: susi, arabic: susiArabic, teacher: abiAmrTeacher, teacherArabic: abiAmrTeacherArabic, order: 7, narratorDiedAH: 261),
+            // Ibn Amir (beta)
+            Option(label: hisham, tag: hisham, arabic: hishamArabic, teacher: ibnAmirTeacher, teacherArabic: ibnAmirTeacherArabic, order: 8, beta: true, narratorDiedAH: 245),
+            Option(label: ibnDhakwan, tag: ibnDhakwan, arabic: ibnDhakwanArabic, teacher: ibnAmirTeacher, teacherArabic: ibnAmirTeacherArabic, order: 9, beta: true, narratorDiedAH: 242),
+            // Hamzah (beta)
+            Option(label: khalaf, tag: khalaf, arabic: khalafArabic, teacher: hamzahTeacher, teacherArabic: hamzahTeacherArabic, order: 10, beta: true, narratorDiedAH: 229),
+            Option(label: khallad, tag: khallad, arabic: khalladArabic, teacher: hamzahTeacher, teacherArabic: hamzahTeacherArabic, order: 11, beta: true, narratorDiedAH: 220),
+            // al-Kisai (beta)
+            Option(label: abuHarith, tag: abuHarith, arabic: abuHarithArabic, teacher: kisaiTeacher, teacherArabic: kisaiTeacherArabic, order: 12, beta: true, narratorDiedAH: 240),
+            Option(label: duriKisai, tag: duriKisai, arabic: duriKisaiArabic, teacher: kisaiTeacher, teacherArabic: kisaiTeacherArabic, order: 13, beta: true, narratorDiedAH: 246),
+            // Abu Jafar (beta)
+            Option(label: ibnWardan, tag: ibnWardan, arabic: ibnWardanArabic, teacher: abiJafarTeacher, teacherArabic: abiJafarTeacherArabic, order: 14, beta: true, narratorDiedAH: 160),
+            Option(label: ibnJammaz, tag: ibnJammaz, arabic: ibnJammazArabic, teacher: abiJafarTeacher, teacherArabic: abiJafarTeacherArabic, order: 15, beta: true, narratorDiedAH: 170),
+            // Yaqub (beta)
+            Option(label: ruways, tag: ruways, arabic: ruwaysArabic, teacher: yaqubTeacher, teacherArabic: yaqubTeacherArabic, order: 16, beta: true, narratorDiedAH: 238),
+            Option(label: rawh, tag: rawh, arabic: rawhArabic, teacher: yaqubTeacher, teacherArabic: yaqubTeacherArabic, order: 17, beta: true, narratorDiedAH: 234),
+            // Khalaf al-Ashir (beta)
+            Option(label: ishaq, tag: ishaq, arabic: ishaqArabic, teacher: khalafAshirTeacher, teacherArabic: khalafAshirTeacherArabic, order: 18, beta: true, narratorDiedAH: 286),
+            Option(label: idris, tag: idris, arabic: idrisArabic, teacher: khalafAshirTeacher, teacherArabic: khalafAshirTeacherArabic, order: 19, beta: true, narratorDiedAH: 292),
         ]
 
-        static let groups: [Group] = [
-            Group(teacher: asimTeacher, teacherArabic: asimTeacherArabic, options: options.filter { $0.teacher == asimTeacher }),
-            Group(teacher: nafiTeacher, teacherArabic: nafiTeacherArabic, options: options.filter { $0.teacher == nafiTeacher }),
-            Group(teacher: ibnKathirTeacher, teacherArabic: ibnKathirTeacherArabic, options: options.filter { $0.teacher == ibnKathirTeacher }),
-            Group(teacher: abiAmrTeacher, teacherArabic: abiAmrTeacherArabic, options: options.filter { $0.teacher == abiAmrTeacher }),
+        /// Every riwayah is always offered: the printed mushaf (PDF) of each is exact
+        /// regardless of `betaQiraatEnabled`, which now gates only whether the 12
+        /// machine-extracted TEXTS may render (see `BetaTextConsentCard`).
+        static var options: [Option] { allOptions }
+
+        /// Riwayat whose TEXT may render right now - surfaces that can only show
+        /// composed text (comparison columns, text pickers with no facsimile
+        /// fallback) list these, so unaccepted beta text never renders as a
+        /// silent Hafs stand-in.
+        static var textOptions: [Option] {
+            Settings.shared.betaQiraatEnabled ? allOptions : allOptions.filter { !$0.beta }
+        }
+
+        static let betaTags: Set<String> = Set(allOptions.filter(\.beta).map(\.tag))
+
+        static func isBeta(_ tag: String) -> Bool { betaTags.contains(canonicalTag(tag)) }
+
+        /// Teacher order for the qiraah menus - the classical order of the Ten.
+        static let teacherOrder: [String] = [
+            nafiTeacher, ibnKathirTeacher, abiAmrTeacher, ibnAmirTeacher,
+            asimTeacher, hamzahTeacher, kisaiTeacher,
+            abiJafarTeacher, yaqubTeacher, khalafAshirTeacher,
         ]
 
-        static let menuOptions: [(label: String, tag: String)] = [
-            (options[0].label, options[0].tag),
-            (options[1].label, options[1].tag),
-            (options[2].label, options[2].tag),
-            (options[3].label, options[3].tag),
-            (options[4].label, options[4].tag),
-            (options[5].label, options[5].tag),
-            (options[6].label, options[6].tag),
-            (options[7].label, options[7].tag),
-        ]
+        static var groups: [Group] {
+            let live = options
+            var result = teacherOrder.compactMap { teacher -> Group? in
+                let opts = live.filter { $0.teacher == teacher }
+                guard let first = opts.first else { return nil }
+                return Group(teacher: teacher, teacherArabic: first.teacherArabic, options: opts)
+            }
+            // All ten qiraat always show now, and at ten the classical ordering reads
+            // as arbitrary in a menu - alphabetical (ignoring "al-") scans better.
+            result.sort { alphaKey($0.teacher) < alphaKey($1.teacher) }
+            return result
+        }
 
-        static let arabicCaptionByTag: [String: String] = [
-            hafsTag: hafsArabic,
-            warsh: warshArabic,
-            qaloon: qaloonArabic,
-            duri: duriArabic,
-            susi: susiArabic,
-            buzzi: buzziArabic,
-            qunbul: qunbulArabic,
-            shubah: shubahArabic,
-            khalaf: khalafArabic,
-        ]
+        private static func alphaKey(_ teacher: String) -> String {
+            let lower = teacher.lowercased()
+            return lower.hasPrefix("al-") ? String(lower.dropFirst(3)) : lower
+        }
 
-        static let optionByTag: [String: Option] = Dictionary(uniqueKeysWithValues: options.map { ($0.tag, $0) })
+        static var menuOptions: [(label: String, tag: String)] {
+            options.map { ($0.label, $0.tag) }
+        }
+
+        static let arabicCaptionByTag: [String: String] = Dictionary(
+            uniqueKeysWithValues: allOptions.map { ($0.tag, $0.arabic) }
+        )
+
+        static let optionByTag: [String: Option] = Dictionary(uniqueKeysWithValues: allOptions.map { ($0.tag, $0) })
 
         static func option(for tag: String) -> Option {
             let key = canonicalTag(tag)
-            return optionByTag[key] ?? options[0]
+            return optionByTag[key] ?? allOptions[0]
         }
 
         static func canonicalTag(_ stored: String) -> String {
@@ -204,8 +316,15 @@ extension Settings {
     func runQuranStartupMigrations() {
         let defaults = UserDefaults(suiteName: AppIdentifiers.appGroupSuiteName)
 
-        if fontArabic == Self.qiraatUthmaniFontName {
+        if fontArabic == Self.legacyQiraatFontName {
             fontArabic = Self.hafsUthmaniFontName
+        }
+
+        // The IndoPak face changed from "Al_Mushaf" to the King Fahd Complex Nastaleeq, so the
+        // PostScript name it is stored under changed too. Without this, a reader who had IndoPak
+        // selected keeps a name no installed font answers to and silently drops to the system face.
+        if Self.legacyIndopakFontNames.contains(fontArabic) {
+            fontArabic = Self.indopakFontName
         }
 
         if defaults?.object(forKey: "quranSortMode") == nil,
@@ -300,7 +419,9 @@ extension Settings {
             showEnglishSaheeh ? "1" : "0",
             showEnglishMustafa ? "1" : "0",
             displayQiraah,
+            arabicScriptStyleRaw,
             fontArabic,
+            useFontArabic ? "1" : "0",
             "\(fontArabicSize)",
             "\(englishFontSize)",
             // Was missing: per-category tajweed visibility and the accent color. Equatable rows skipped
@@ -308,7 +429,21 @@ extension Settings {
             // every VISIBLE row on its old colors until it scrolled off screen and back.
             tajweedCategoryVisibilitySignature,
             accentColor.rawValue,
-            customAccentColorHex
+            customAccentColorHex,
+            // Also previously missing (same class of bug, audited 2026-08-17): every remaining Settings
+            // field an equatable ayah row reads in its body. Word-by-word drives the tappable-word
+            // overlay, the hidden-rules list feeds the tajweed builder (the mushaf page cache already
+            // keyed on it - the two signatures now agree), the muqattaat helper adds its disclosure row,
+            // the khatm pair drives the checkmark/mark button, defaultView picks the selection tint
+            // opacity, and showFullSurahRow adds the page/juz line under search results.
+            wordByWordMeanings ? "1" : "0",
+            wordByWordInline ? "1" : "0",
+            riwayahTajweedHiddenRules,
+            showMuqattaatHelper ? "1" : "0",
+            quranSortModeRaw,
+            automaticKhatmCompletion ? "1" : "0",
+            defaultView ? "1" : "0",
+            showFullSurahRow ? "1" : "0"
         ].joined(separator: "|")
     }
 
@@ -417,13 +552,51 @@ extension Settings {
         }
     }
 
+    /// The bookmarks in mushaf order, memoized on the same blob. Every list that shows bookmarks wants
+    /// this order and each was sorting the array itself, inside a view body - so the Quran tab re-sorted
+    /// the whole list on every render pass, which during recitation is once per player tick.
+    private static var bookmarksInOrderCache: (data: Data, value: [BookmarkedAyah])?
+    var bookmarkedAyahsInMushafOrder: [BookmarkedAyah] {
+        if let cached = Self.bookmarksInOrderCache, cached.data == bookmarkedAyahsData {
+            return cached.value
+        }
+        let sorted = bookmarkedAyahs.sorted {
+            $0.surah == $1.surah ? ($0.ayah < $1.ayah) : ($0.surah < $1.surah)
+        }
+        Self.bookmarksInOrderCache = (bookmarkedAyahsData, sorted)
+        return sorted
+    }
+
+    /// `"surah-ayah"` → position in `bookmarkedAyahs`, memoized on the same blob the list itself is.
+    ///
+    /// The list is walked LINEARLY by every lookup that doesn't go through here, and the reader asks
+    /// several times per row per body pass - is it bookmarked, what tint does its badge take, does it
+    /// carry a note, what highlight is on it - across every visible row of a scrolling surah. That is
+    /// O(bookmarks x rows x passes) against a list that a long-time user grows into the hundreds. The
+    /// index makes each of those a dictionary hit, and it is built once per change to the bookmark data
+    /// rather than once per question asked about it.
+    private static var bookmarkLookupCache: (data: Data, value: [String: Int])?
+    private var bookmarkLookup: [String: Int] {
+        if let cached = Self.bookmarkLookupCache, cached.data == bookmarkedAyahsData {
+            return cached.value
+        }
+        // Built off `bookmarkedAyahs` (not a fresh decode) so the two caches share one decode. Later
+        // duplicates of an id lose to the first, matching `firstIndex(where:)`'s answer exactly.
+        var lookup: [String: Int] = [:]
+        for (index, bookmark) in bookmarkedAyahs.enumerated() where lookup[bookmark.id] == nil {
+            lookup[bookmark.id] = index
+        }
+        Self.bookmarkLookupCache = (bookmarkedAyahsData, lookup)
+        return lookup
+    }
+
     static func normalizedArabicFontName(_ fontName: String) -> String {
-        fontName == qiraatUthmaniFontName ? hafsUthmaniFontName : fontName
+        fontName == legacyQiraatFontName ? hafsUthmaniFontName : fontName
     }
 
     static func isUthmaniArabicFont(_ fontName: String) -> Bool {
         let trimmed = fontName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed == hafsUthmaniFontName || trimmed == qiraatUthmaniFontName
+        return trimmed == hafsUthmaniFontName || trimmed == legacyQiraatFontName
     }
 
     static func isNonHafsQiraah(_ qiraah: String?) -> Bool {
@@ -431,11 +604,136 @@ extension Settings {
         return Riwayah.options.contains { !$0.tag.isEmpty && $0.tag == normalizedQiraah }
     }
 
-    static func quranArabicFontName(selectedFontName: String, qiraah: String?) -> String {
+    // Three KFGQPC faces, picked by what a riwayah's text actually needs.
+    //
+    // WARSH - the North African script. Used only where the reader has asked for it: the Maghribi
+    // style outright, or Automatic on Nafi's two readings, whose printed mushaf really is that
+    // script. Never more broadly than that: it has no glyph for up to 2,695 codepoints in a single
+    // riwayah's text (U+06DA, U+06ED, U+06DB - the waqf marks - and U+0671), which is exactly what
+    // shows up on the page as missing letters.
+    static let warshUthmaniFontName = "KFGQPCWarshUthmanicScript-Regul"
+
+    /// SOUSI - the Basri script, formerly the face for the dot-wasl readings. Retired from the
+    /// bundle: the Hafs face now carries everything those texts need - the bare-alef wasl-dot
+    /// cluster ligatures (b8-b24, ported from this face), a proper filled dot below (U+065C,
+    /// imaalah kubra) and hollow ring below (U+06EA, taqlil/tashil) as zero-width marks. The
+    /// name stays declared so an old stored font preference can still be normalized.
+    static let susiUthmaniFontName = "KFGQPCSousiUthmanicScript-Regul"
+
+    /// The riwayat that mark hamzatul wasl with the round DOT (U+06EC over a bare alef) rather than
+    /// the Hafs saad-topped alef (U+0671): both of Nafi's, Abu Amr's, Abu Jafar's, and Yaqub's.
+    ///
+    /// Measured, not assumed - and the split across the twenty shipped texts is total, with no
+    /// riwayah mixing the conventions: these eight carry 9,755-10,088 dots and at most one saad,
+    /// the other twelve ~13,470 saads and at most a handful of dots.
+    static let dotWaslRiwayahTags: Set<String> = [
+        Riwayah.warsh, Riwayah.qaloon, Riwayah.duri, Riwayah.susi,
+        Riwayah.ibnWardan, Riwayah.ibnJammaz, Riwayah.ruways, Riwayah.rawh,
+    ]
+
+    /// Nafi's pair - the only two whose printed mushaf really is the Maghribi script, and so the
+    /// only two Automatic puts on the Warsh face. Under Madani they follow the dot rule like every
+    /// other reading, because Madani is a request for a script, not for a riwayah's own printing.
+    static let nafiRiwayahTags: Set<String> = [Riwayah.warsh, Riwayah.qaloon]
+
+    /// The caption under the script picker, for readers who have the qiraat on screen. Named by the
+    /// TEN, not the twenty: a qiraah's two riwayat never disagree about this (checked across all
+    /// twenty shipped texts), so the riwayah always follows its qiraah here.
+    /// Four lines at `.caption` on a phone - checked, not guessed. The one Arabic sample is a bare
+    /// ص: the composed اَ۬ cluster this describes does NOT survive being dropped into a Latin
+    /// caption (it shapes as garbage in the system face), which is why the marks are named in words.
+    static let waslNotationNote = """
+        Hamzatul wasl, the silent alef a joined reading slides over, is marked two ways: a small \
+        circle over a bare alef in Nafi, Abu Amr, Abu Jafar and Yaqub; a ص on the alef in Asim, \
+        Ibn Kathir, Ibn Amir, Hamzah, al-Kisai and Khalaf al-Ashir.
+        """
+
+    /// Which Uthmani script the Quran draws in. `.madani` is the default - the script all but
+    /// one reader has ever seen. `.automatic` follows the riwayah's own notation family (the
+    /// printed convention each reading is set in) and is only offered to readers who have the
+    /// riwayat on screen at all; `.maghribi` sets everything in the North African script.
+    enum ArabicScriptStyle: String, CaseIterable, Identifiable {
+        case automatic, madani, maghribi
+        var id: String { rawValue }
+
+        /// What the picker offers. Automatic has nothing to follow for a reader who never sees
+        /// the riwayat, so it isn't offered there - just the two scripts themselves.
+        static func options(showQiraah: Bool) -> [ArabicScriptStyle] {
+            showQiraah ? allCases : [.madani, .maghribi]
+        }
+
+        var label: String {
+            switch self {
+            case .automatic: return "Automatic"
+            case .madani: return "Madani"
+            case .maghribi: return "Maghribi"
+            }
+        }
+
+        /// Caption under the picker. `namingRiwayat` matches the picker's own gating: with the
+        /// riwayat hidden, naming Hafs or Warsh would mean nothing to that reader, so the
+        /// captions describe the scripts on their own terms.
+        func detail(namingRiwayat: Bool) -> String {
+            switch self {
+            case .automatic: return "Each riwayah in the script its printed mushaf uses."
+            case .madani:
+                return namingRiwayat ? "The Madinah mushaf script (Hafs an Asim)." : "The Madinah mushaf script."
+            case .maghribi:
+                return namingRiwayat ? "The North African mushaf script (Warsh an Nafi)." : "The North African mushaf script."
+            }
+        }
+
+        /// The face this style forces regardless of riwayah, or nil when the riwayah decides.
+        /// Madani is nil too: it pins the SCRIPT, but a dot-wasl reading still has to be set in a
+        /// face that has the dot's companion marks - see `quranArabicFontName`.
+        var forcedFontName: String? {
+            switch self {
+            case .automatic, .madani: return nil
+            case .maghribi: return Settings.warshUthmaniFontName
+            }
+        }
+    }
+
+    /// The one choke point every consumer reads, so the picker, the reader, and sharing can
+    /// never disagree. Two corrections live here rather than in the storage:
+    /// - no stored value at all (the raw string is empty) means the reader never chose, and the
+    ///   effective default is Madani, not Automatic;
+    /// - a stored `.automatic` while the riwayat are hidden resolves to Madani, because Automatic
+    ///   isn't among the options offered in that state (see `ArabicScriptStyle.options`). The
+    ///   stored value survives untouched, so turning the riwayat back on restores Automatic.
+    var arabicScriptStyle: ArabicScriptStyle {
+        get {
+            let stored = ArabicScriptStyle(rawValue: arabicScriptStyleRaw) ?? .madani
+            if stored == .automatic && !showQiraahDetails { return .madani }
+            return stored
+        }
+        set { arabicScriptStyleRaw = newValue.rawValue }
+    }
+
+    static func quranArabicFontName(selectedFontName: String, qiraah: String?,
+                                    style: ArabicScriptStyle = .automatic) -> String {
         guard isUthmaniArabicFont(selectedFontName) else {
             return normalizedArabicFontName(selectedFontName)
         }
-        return isNonHafsQiraah(qiraah) ? qiraatUthmaniFontName : hafsUthmaniFontName
+        // Maghribi is the one style that overrides the riwayah outright: it means "set the whole
+        // Quran in the North African script". A custom font pick (IndoPak/Basic) never reaches
+        // this branch at all, so the reader's own font choice always survives.
+        if let forced = style.forcedFontName { return forced }
+
+        let riwayahTag = normalizeLegacyRiwayahTag(qiraah ?? Riwayah.hafsTag)
+
+        // Automatic sets Nafi's two readings in the script their mushaf is actually printed in.
+        // Everything else falls through to the Madani rule below - which is what Automatic means
+        // for a reading whose printing is not Maghribi.
+        if style == .automatic, nafiRiwayahTags.contains(riwayahTag) {
+            return warshUthmaniFontName
+        }
+
+        // Madani (and Automatic on a non-Nafi reading): everything is set in the Hafs face. It
+        // carries both wasl notations now - the saad-topped alef AND the Sousi bare-alef dot
+        // clusters (ported ligatures) - plus the filled/hollow imaalah marks, so the dot readings
+        // no longer need the separate Basri face.
+        return hafsUthmaniFontName
     }
 
     var normalizedArabicFontName: String {
@@ -447,19 +745,40 @@ extension Settings {
     /// The reader's Hide-Tashkeel / Hide-Dots choices applied to ANY Quranic Arabic string - surah
     /// names, the title picker, share headers - so every corner of the app matches the reading view.
     /// Hafs-only, exactly like the reading text itself.
+    /// The KFGQPC faces (Uthmani/IndoPak) DROP contextual shaping when a single Text lays out a very
+    /// long string - every letter renders in isolated form, the "shattered Arabic" bug on the longest
+    /// narrations (verified: Muslim's ~7,800-char Ifk hadith shatters in the custom face and shapes
+    /// perfectly in the system face; short hadiths are fine in both). The ~30 hadiths past this limit
+    /// fall back to the system Arabic face instead. 4,000 leaves margin under the smallest observed
+    /// failure; the longest KNOWN-GOOD custom-face render is ~3k.
+    static let arabicShapingCharacterLimit = 4_000
+
+    /// The hadith-surface Arabic font for `text`: the user's chosen face, unless the text is long
+    /// enough to hit the custom faces' shaping cliff (see `arabicShapingCharacterLimit`).
+    func hadithArabicFont(for text: String, size: CGFloat) -> Font {
+        hadithArabicUsesCustomFace(for: text)
+            ? Font.arabic(nonQuranArabicFontName, size: size)
+            : .system(size: size)
+    }
+
+    /// Whether `text` renders in a bundled custom face (drives `arabicFontDesign(custom:)` and the
+    /// comma re-fonting, which only classical faces need).
+    func hadithArabicUsesCustomFace(for text: String) -> Bool {
+        useFontArabic && islamUsesCustomArabicFace && text.count < Self.arabicShapingCharacterLimit
+    }
+
     func cleanedQuranArabic(_ text: String) -> String {
-        guard isHafsDisplay else { return text }
         var out = text
         if cleanArabicText { out = out.removingArabicDiacriticsAndSigns }
         if removeArabicDots { out = out.removingArabicDots }
         return out
     }
 
-    /// The face for Quran Arabic outside the main reader (summary tiles, bookmarks, surah names):
-    /// "Hide Arabic Dots" forces the system face, because the bundled faces carry no glyphs for the
-    /// dotless skeleton letters (U+066E ...). Mirrors what the reading view already does.
+    /// The face for Quran Arabic outside the main reader (summary tiles, bookmarks, surah names).
+    /// "Hide Arabic Dots" no longer forces the system face: the bundled ttfs carry real dotless
+    /// skeleton glyphs with full joining forms now (`Scripts/patch_dotless_glyphs.py`).
     var quranDisplayFontName: String {
-        removeArabicDots && isHafsDisplay ? Settings.systemArabicFontName : fontArabic
+        fontArabic
     }
 
     /// Whether `quranDisplayFontName` resolves to a real bundled face (for `arabicFontDesign(custom:)`).
@@ -472,7 +791,7 @@ extension Settings {
     }
 
     func quranArabicFontName(for qiraah: String?) -> String {
-        Self.quranArabicFontName(selectedFontName: fontArabic, qiraah: qiraah)
+        Self.quranArabicFontName(selectedFontName: fontArabic, qiraah: qiraah, style: arabicScriptStyle)
     }
 
     func toggleSurahFavorite(surah: Int) {
@@ -674,7 +993,7 @@ extension Settings {
     static let bookmarkNoteRemovalDialogMessage = "This ayah has a note. Unbookmarking will delete the note."
 
     func bookmarkIndex(surah: Int, ayah: Int) -> Int? {
-        bookmarkedAyahs.firstIndex { $0.surah == surah && $0.ayah == ayah }
+        bookmarkLookup["\(surah)-\(ayah)"]
     }
 
     func bookmarkedAyah(surah: Int, ayah: Int) -> BookmarkedAyah? {
@@ -693,18 +1012,16 @@ extension Settings {
 
     func toggleBookmark(surah: Int, ayah: Int) {
         withAnimation {
-            let bookmark = BookmarkedAyah(surah: surah, ayah: ayah)
-            if let index = bookmarkedAyahs.firstIndex(where: {$0.id == bookmark.id}) {
+            if let index = bookmarkIndex(surah: surah, ayah: ayah) {
                 bookmarkedAyahs.remove(at: index)
             } else {
-                bookmarkedAyahs.append(bookmark)
+                bookmarkedAyahs.append(BookmarkedAyah(surah: surah, ayah: ayah))
             }
         }
     }
 
     func isBookmarked(surah: Int, ayah: Int) -> Bool {
-        let bookmark = BookmarkedAyah(surah: surah, ayah: ayah)
-        return bookmarkedAyahs.contains(where: {$0.id == bookmark.id})
+        bookmarkIndex(surah: surah, ayah: ayah) != nil
     }
 
     @discardableResult
@@ -734,6 +1051,45 @@ extension Settings {
             } else {
                 bookmarkedAyahs.append(BookmarkedAyah(surah: surah, ayah: ayah, note: storedNote))
             }
+        }
+    }
+
+    // MARK: - Highlights
+    // A highlight is a color ON a bookmark, never a record of its own. Highlighting an ayah that isn't
+    // bookmarked bookmarks it first (that is the whole point: you highlighted it, so you saved it), and
+    // the bookmark then renders in the highlight's color instead of the accent. Clearing the highlight
+    // deliberately KEEPS the bookmark - the user asked for a color, not for the ayah to be forgotten.
+
+    func bookmarkHighlight(surah: Int, ayah: Int) -> AyahHighlightColor? {
+        bookmarkedAyah(surah: surah, ayah: ayah)?.highlight
+    }
+
+    func isAyahHighlighted(surah: Int, ayah: Int) -> Bool {
+        bookmarkHighlight(surah: surah, ayah: ayah) != nil
+    }
+
+    /// Sets (or with `nil`, clears) the highlight. Creating the bookmark when one is missing is the
+    /// bookmark-on-highlight rule; clearing on an ayah that isn't bookmarked is a no-op rather than an
+    /// empty bookmark.
+    func setBookmarkHighlight(surah: Int, ayah: Int, color: AyahHighlightColor?) {
+        withAnimation {
+            if let index = bookmarkIndex(surah: surah, ayah: ayah) {
+                var bookmark = bookmarkedAyahs[index]
+                bookmark.highlight = color
+                bookmarkedAyahs[index] = bookmark
+            } else if let color {
+                bookmarkedAyahs.append(BookmarkedAyah(surah: surah, ayah: ayah, highlightRaw: color.rawValue))
+            }
+        }
+    }
+
+    /// The one-tap path: highlight in the last color used (or the default), or lift the highlight if the
+    /// ayah already wears that same color. A different color replaces the existing one.
+    func toggleBookmarkHighlight(surah: Int, ayah: Int, color: AyahHighlightColor) {
+        if bookmarkHighlight(surah: surah, ayah: ayah) == color {
+            setBookmarkHighlight(surah: surah, ayah: ayah, color: nil)
+        } else {
+            setBookmarkHighlight(surah: surah, ayah: ayah, color: color)
         }
     }
 
@@ -1095,5 +1451,38 @@ extension Settings {
             cards.append(quranWidgetAyahCard(surah: surah, ayah: ayah))
         }
         return cards
+    }
+}
+
+// MARK: - Notification permission
+
+// The full Al-Islam version of this lives in SettingsAdhan.swift (a domain this app does not
+// ship) and also manages the "notifications denied" settings banner. Here the only caller is
+// the Quran planner's daily-reminder toggle, so the helper reduces to the permission dance.
+extension Settings {
+    @MainActor
+    func requestNotificationAuthorization() async -> Bool {
+        #if os(iOS)
+        let center = UNUserNotificationCenter.current()
+        let status = await center.notificationSettings().authorizationStatus
+
+        switch status {
+        case .authorized, .provisional, .ephemeral:
+            return true
+        case .denied:
+            return false
+        case .notDetermined:
+            do {
+                return try await center.requestAuthorization(options: [.alert, .sound])
+            } catch {
+                logger.error("Notification request failed: \(error.localizedDescription)")
+                return false
+            }
+        @unknown default:
+            return false
+        }
+        #else
+        return true
+        #endif
     }
 }

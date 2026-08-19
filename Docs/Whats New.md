@@ -1,3 +1,32 @@
+# Version 2.6.3
+
+Tap-a-word meanings, a real printed mushaf for every riwayah, reading themes, similar ayahs, and a progress profile with badges.
+
+Word by Word:
+- Tap any word in the reader for its meaning, or turn on inline mode to see meanings under every word.
+
+The Printed Mushaf:
+- Page-perfect facsimiles of the actual printed mushaf, one for every riwayah - twenty complete mushafs, 604 pages each.
+
+Al-Quran:
+- Reading themes: give the reader a sepia, gray, or custom look.
+- Similar Ayahs: from any ayah, see every place its phrases recur across the Quran.
+- Browse by Theme: find ayahs by what they speak about.
+- Beta qiraat: twelve more riwayat of the Ten Readings, with tajweed coloring.
+- Surah stats and a new outline in About this Surah.
+- Reading-plan reminder: an optional daily notification at your chosen time.
+- Select and copy text in tafsir and articles, and summarize them on device with Apple Intelligence.
+
+Your Progress:
+- Rings for your khatm and reading plan, streaks, and a badge cabinet spanning reading, listening, library, and dhikr.
+
+Islamic Tools:
+- Tajweed Lessons: a guided course from the alphabet to the rules, with Quranic examples you can hear.
+- Qiraat guide: biographies of the ten imams and twenty narrators.
+- Arabic Basics and guided dua sessions.
+
+Bug fixes and optimizations throughout.
+
 # Version 2.6.0
 
 On-device AI search, a Quran planner, tafsir in Arabic and English, a real mushaf, and everything a beginner needs to start reading.

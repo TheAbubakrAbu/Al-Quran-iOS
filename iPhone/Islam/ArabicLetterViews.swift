@@ -5,7 +5,7 @@ struct TashkeelLettersView: View {
     @State private var barsCollapsed = false
     @ObservedObject private var settings = Settings.shared
 
-    private static let shaddahMark = "\u{0651}"
+    private static let shaddahMark = arabicShaddahMark
 
     /// Every mark the per-letter detail shows - the short vowels, the tanween, the long vowels and their madd
     /// forms, the dagger alif and the miniatures, both sukoons, and the shaddah. This screen is the same table
@@ -41,6 +41,16 @@ struct TashkeelLettersView: View {
     /// selected.
     @State private var useQuranicSukoon = false
     @State private var detailLetter: LetterData?
+
+    /// The one row being taught right now. Shared with the per-letter practice tables, so exactly one
+    /// thing anywhere is ever selected - and only the selection carries a play button.
+    @ObservedObject private var selection = ArabicPracticeSelection.shared
+
+    /// Letters whose shaddah line is written out as the two letters the shaddah stands for.
+    @State private var expandedShaddahLetters: Set<Int> = []
+
+    /// Vowels whose row in the shaddah detail sheet is written out the same way.
+    @State private var expandedDetailVowels: Set<String> = []
 
     /// The mark actually drawn. For the sukoon that's whichever script is chosen below the grid; for everything
     /// else it's simply the chip you picked.
@@ -103,11 +113,17 @@ struct TashkeelLettersView: View {
             Group {
                 markPickerSection
                 lettersSection
+                allMarksSection
             }
             .themedListRowBackground()
+
         }
         .applyConditionalListStyle()
         .navigationTitle("Tashkeel")
+        .onDisappear {
+            ArabicSpeech.shared.stop()
+            ArabicPracticeSelection.shared.clear()
+        }
         #if os(iOS)
         // Apple Music-style: the bottom bar minimizes while scrolling down, restores on scroll-up.
         .collapseBarsOnScroll($barsCollapsed)
@@ -121,12 +137,13 @@ struct TashkeelLettersView: View {
             }
             .minimizedBarStyle(barsCollapsed)
             .padding(.horizontal, 24)
-            .padding(.bottom, 8)
+            .padding(.bottom, BottomBarCushion.standard)
         }
         .sheet(item: $detailLetter) { letter in
             NavigationView {
                 shaddahDetail(for: letter)
             }
+            .navigationViewStyle(.stack)
             .smallMediumSheetPresentation()
         }
         .toolbar {
@@ -232,6 +249,116 @@ struct TashkeelLettersView: View {
         }
     }
 
+    /// The grid read the other way round, all at once: one row per letter carrying every core mark side by
+    /// side - the short vowels, the sukoon, the three tanween, and beneath them the shaddah with each vowel.
+    /// The grid above answers "one mark on every letter"; this answers "every mark on one letter" without
+    /// touching the picker. The long vowels and madd forms stay in the grid only - ten glyphs to a line is
+    /// already the limit of legible.
+    private static let allMarksCoreNames = ["Fatha", "Kasra", "Damma", plainSukoonName, "Fathatayn", "Kasratayn", "Dammatayn"]
+
+    /// بَ بِ بُ بْ بًا بٍ بٌ - written fatha-first, so under right-to-left rendering the fatha lands on the
+    /// right, the order the marks are taught in. Em-spaced like the letter forms, so the groups stay separate.
+    private func allMarksLine(_ letter: LetterData) -> String {
+        Self.allMarksCoreNames
+            .compactMap { name in tashkeels.first { $0.english == name }?.tashkeelMark }
+            .map { letter.letter + $0 }
+            .joined(separator: "\u{2002}")
+    }
+
+    /// بَّ بِّ بُّ - the shaddah carrying each short vowel, the second line of each row.
+    private func allMarksShaddahLine(_ letter: LetterData) -> String {
+        ["\u{064E}", "\u{0650}", "\u{064F}"]
+            .map { letter.letter + Self.shaddahMark + $0 }
+            .joined(separator: "\u{2002}")
+    }
+
+    /// The same shaddah line written out as what a shaddah IS: the letter with sukoon, then the letter
+    /// carrying the vowel. The sukoon is whichever script the letter practice is set to.
+    private func allMarksShaddahExpandedLine(_ letter: LetterData) -> String {
+        ["\u{064E}", "\u{0650}", "\u{064F}"]
+            .map { shaddahWrittenOut(letter: letter.letter, vowel: $0) }
+            .joined(separator: "\u{2002}")
+    }
+
+    private var allMarksSection: some View {
+        Section {
+            ForEach(letters) { letter in
+                allMarksRow(letter)
+            }
+        } header: {
+            Text("EVERY MARK ON EVERY LETTER")
+        } footer: {
+            Text("Read each row right to left: fatha, kasra, damma, sukoon, then the three tanween - and beneath them the shaddah carrying each vowel. The \"an\" tanween is written with its silent alif, as it appears at the end of words. Tap a row to select it - the selected row offers play, and a chevron that writes the shaddah line out beneath as the two letters it stands for.")
+        }
+    }
+
+    private func allMarksRow(_ letter: LetterData) -> some View {
+        let id = "allMarks:\(letter.id)"
+        let isSelected = selection.isSelected(id)
+        // Expansion only SHOWS on the selected row (the chevron lives on the selection, so a
+        // deselected row must never be stuck open with no control to close it). The set remembers
+        // the choice, so re-selecting the letter comes back expanded.
+        let isExpanded = isSelected && expandedShaddahLetters.contains(letter.id)
+
+        return HStack(alignment: .center, spacing: 10) {
+            // A FIXED leading slot (user rule: selecting must never resize the letters - the controls
+            // used to be INSERTED here, and the width they took scaled the whole Arabic line down).
+            // Unselected it carries the reading; selected, the chevron and play stack into the same
+            // slot - so the Arabic keeps its exact size either way.
+            Group {
+                if isSelected {
+                    VStack(spacing: 5) {
+                        ShaddahExpandButton(isExpanded: isExpanded) {
+                            if isExpanded {
+                                expandedShaddahLetters.remove(letter.id)
+                            } else {
+                                expandedShaddahLetters.insert(letter.id)
+                            }
+                        }
+
+                        PracticeListenButton(text: allMarksLine(letter))
+                    }
+                } else if !settings.hideEnglishInArabicLetters {
+                    Text(letter.transliteration)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                }
+            }
+            .frame(width: 34)
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 0) {
+                Text(allMarksLine(letter))
+                Text(allMarksShaddahLine(letter))
+                // The chevron ADDS the written-out spelling beneath the shaddah line - the normal
+                // shaddah and its sukoon-decomposed form read together (user rule), instead of the
+                // old in-place swap that hid what the expansion was explaining.
+                if isExpanded {
+                    Text(allMarksShaddahExpandedLine(letter))
+                }
+            }
+            .font(useQuranicFont ? settings.scalableIslamArabicFont(base: 20, relativeTo: .title3) : .title3)
+            .arabicFontDesign(custom: useQuranicFont && settings.islamUsesCustomArabicFace)
+            .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+            .lineLimit(1)
+            .minimumScaleFactor(0.4)
+            .multilineTextAlignment(.trailing)
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        // The wash reaches the row's full height (user rule), not just the text band.
+        .arabicPracticeSelection(isSelected, hInset: -8, vInset: -6)
+        .onTapGesture {
+            settings.hapticFeedback()
+            withAnimation(.easeInOut) { selection.toggle(id) }
+        }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("\(letter.transliteration) with every mark\(isSelected ? ", selected" : "")")
+    }
+
     /// Sized to the glyph, not to the Quranic face's (very tall) line box - but it grows with the size slider,
     /// or the letters would be pinned at whatever fits 34pt no matter where the slider sat.
     private var glyphBoxHeight: CGFloat {
@@ -285,7 +412,19 @@ struct TashkeelLettersView: View {
             Group {
                 Section {
                     ForEach(shaddahVowels, id: \.english) { vowel in
+                        let isExpanded = expandedDetailVowels.contains(vowel.english)
+
                         HStack {
+                            // The same chevron the hamza practice table carries: it writes the doubling
+                            // out instead of only describing it in the footer.
+                            ShaddahExpandButton(isExpanded: isExpanded) {
+                                if isExpanded {
+                                    expandedDetailVowels.remove(vowel.english)
+                                } else {
+                                    expandedDetailVowels.insert(vowel.english)
+                                }
+                            }
+
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Shaddah + \(vowel.english)")
                                     .font(.subheadline.weight(.semibold))
@@ -293,7 +432,9 @@ struct TashkeelLettersView: View {
                                 // The mark's NAME stays (it's what the row is about); only the reading -
                                 // the answer - follows Hide English, as in `TashkeelDetailSheet`.
                                 if !settings.hideEnglishInArabicLetters {
-                                    Text(sound + sound + vowel.transliteration)
+                                    Text(isExpanded
+                                         ? sound + "-" + sound + vowel.transliteration
+                                         : sound + sound + vowel.transliteration)
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                 }
@@ -301,17 +442,28 @@ struct TashkeelLettersView: View {
 
                             Spacer()
 
-                            Text(letter.letter + Self.shaddahMark + vowel.tashkeelMark)
-                                .font(useQuranicFont ? settings.scalableIslamArabicFont(base: 30, relativeTo: .title) : .title)
-                                .arabicFontDesign(custom: useQuranicFont && settings.islamUsesCustomArabicFace)
-                                .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                            // The chevron ADDS the written-out spelling beneath the shaddah form - both
+                            // read together (user rule), never an in-place swap.
+                            VStack(alignment: .trailing, spacing: 0) {
+                                Text(letter.letter + Self.shaddahMark + vowel.tashkeelMark)
+
+                                if isExpanded {
+                                    Text(shaddahWrittenOut(letter: letter.letter, vowel: vowel.tashkeelMark))
+                                }
+                            }
+                            .font(useQuranicFont ? settings.scalableIslamArabicFont(base: 30, relativeTo: .title) : .title)
+                            .arabicFontDesign(custom: useQuranicFont && settings.islamUsesCustomArabicFace)
+                            .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
+                            .multilineTextAlignment(.trailing)
                         }
                         .padding(.vertical, 2)
                     }
                 } header: {
                     Text("\(letter.transliteration.uppercased()) WITH SHADDAH")
                 } footer: {
-                    Text("A shaddah doubles the letter: the first is silent (sukoon) and the second carries the vowel. It never appears at the start of a word.")
+                    Text("A shaddah doubles the letter: the first is silent (sukoon) and the second carries the vowel. It never appears at the start of a word. Press the chevron to see the doubling written out beneath - the letter with sukoon, then the letter with its vowel.")
                 }
             }
             .themedListRowBackground()
@@ -392,11 +544,25 @@ struct ArabicLetterView: View {
         settings.useFontArabic && !letterData.isNonArabicScriptLetter
     }
 
+    /// One of the five bounce letters (قطب جد) - the letter page names the rule right where a learner
+    /// meets the letter (user rule).
+    private var isQalqalahLetter: Bool {
+        letterData.letter.count == 1 && TajweedRules.qalqalahLetters.contains(letterData.letter.first!)
+    }
+
     /// Whether this page shows any English readings the eye toggle can hide - the harakaat/hamza practice
-    /// tables or the non-Arabic vowel row. Letters without them (taa marbuuTah, the hamza forms) have
-    /// nothing for the toggle to do, so it isn't offered and the name label ignores the flag.
+    /// tables, the non-Arabic vowel row, or the taa marbuuTah worked examples. Letters without them (the
+    /// hamza forms) have nothing for the toggle to do, so it isn't offered and the name label ignores the flag.
     private var hasHideableEnglish: Bool {
-        letterData.showTashkeel || letterData.isNonArabicScriptLetter
+        letterData.showTashkeel || letterData.isNonArabicScriptLetter || isTaaMarbuta || isAlifMaqsurah
+    }
+
+    private var isTaaMarbuta: Bool {
+        letterData.transliteration == "taa marbuuTah"
+    }
+
+    private var isAlifMaqsurah: Bool {
+        letterData.transliteration == "alif maqSoorah"
     }
 
     /// The "it is always this" sentence for a letter whose weight never changes, phrased exactly like the one
@@ -497,6 +663,37 @@ struct ArabicLetterView: View {
                 }
             }
 
+            // The five qalqalah letters carry their bounce wherever they appear - name the rule on the
+            // letter's own page (user rule), with the glyph in the exact color the Quran reader paints
+            // qalqalah so the two surfaces teach each other.
+            if isQalqalahLetter {
+                Section(header: Text("QALQALAH (BOUNCE LETTER)")) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .center, spacing: 12) {
+                            Text("\(letterData.transliteration.capitalized) is one of the five qalqalah letters (قُطۡبُ جَدٍّ - ق ط ب ج د). When it carries a sukoon, or you stop on it, it is pronounced with a short, crisp bounce - a quick echo of the letter, never a flat stop. The Quran reader colors it this way when tajweed colors are on.")
+                                .font(.body)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Spacer(minLength: 8)
+
+                            Text(letterData.letter + LetterPracticeSukoon.mark)
+                                .font(useQuranicFontForLetter
+                                      ? settings.scalableIslamArabicFont(base: 34, relativeTo: .largeTitle)
+                                      : .largeTitle)
+                                .arabicFontDesign(custom: useQuranicFontForLetter && settings.islamUsesCustomArabicFace)
+                                .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                                .foregroundColor(TajweedLegendCategory.qalqalah.color)
+                        }
+
+                        NavigationLink(destination: LazyDestination { TajweedFoundationsView() }) {
+                            Label("Learn the Qalqalah Rule", systemImage: "book")
+                                .font(.body)
+                                .foregroundColor(settings.accentColor.color)
+                        }
+                    }
+                }
+            }
+
             Section(header: Text("DIFFERENT FORMS")) {
                 VStack {
                     // `forms` is ordered [final, medial, initial], so laid out left-to-right the initial form
@@ -519,6 +716,14 @@ struct ArabicLetterView: View {
                     }
                 }
                 .padding(.vertical, useQuranicFontForLetter ? 0 : 2)
+            }
+
+            if isTaaMarbuta {
+                taaMarbutaPracticeSections
+            }
+
+            if isAlifMaqsurah {
+                alifMaqsurahPracticeSections
             }
 
             if ["alif", "waaw", "yaa"].contains(letterData.transliteration) {
@@ -590,11 +795,28 @@ struct ArabicLetterView: View {
                     .padding(.top, 6)
                 }
 
-                Section(header: Text("WITH HAMZA")) {
+                Section {
+                    // Same mark, two scripts - the plain sukoon and the Uthmani one the mushaf prints
+                    // (the Tashkeel screen's "Sukoon script" choice, persisted here). It also writes the
+                    // sukoon in the expanded shaddah rows below.
+                    Toggle("Use Quranic Sukoon", isOn: Binding(
+                        get: { settings.quranicSukoonInLetterPractice },
+                        set: { newValue in
+                            settings.hapticFeedback()
+                            withAnimation(.easeInOut) { settings.quranicSukoonInLetterPractice = newValue }
+                        }
+                    ))
+                    .font(.subheadline)
+                    .tint(settings.accentColor.color)
+
                     HamzaPracticeRow(
                         letterData: letterData,
                         useQuranicFontForLetter: useQuranicFontForLetter
                     )
+                } header: {
+                    Text("WITH HAMZA")
+                } footer: {
+                    Text("Tap a syllable to select it, then press play to hear it. The last three rows carry a shaddah: select one and press the chevron to see each syllable written out beneath as the two letters the shaddah stands for - the letter with sukoon, then the letter with the tashkeel.")
                 }
             }
 
@@ -617,10 +839,10 @@ struct ArabicLetterView: View {
 
             if letterData.transliteration == "alif madd" {
                 Section(header: Text("OUTSIDE OF THE QURAN")) {
-                    Text("In modern Arabic outside of the Quran, Alif Madd usually does not mean a 4, 5, or 6 count Tajweed elongation by itself. It normally represents ءا, so آ is a shortened spelling of ءا.")
+                    Text("In modern Arabic outside of the Quran, Alif Madd usually does not mean a 4, 5, or 6 count Tajweed elongation by itself. It normally represents ءا, so آ is a shortened spelling of ءا.")
                         .font(.body)
 
-                    Text("For example, قُرءَان is how it is spelled in the Quran, while outside the Quran it is commonly shortened to قُرآن. Likewise, ءَامِين is commonly written آمِين.")
+                    Text("For example, قُرۡءَان is how it is spelled in the Quran, while outside the Quran it is commonly shortened to قُرآن. Likewise, ءَامِين is commonly written آمِين.")
                         .font(.body)
                 }
             }
@@ -649,6 +871,10 @@ struct ArabicLetterView: View {
         #endif
         .applyConditionalListStyle()
         .navigationTitle(letterData.letter)
+        .onDisappear {
+            ArabicSpeech.shared.stop()
+            ArabicPracticeSelection.shared.clear()
+        }
         #if os(iOS)
         // Every reading on this screen (the transliteration above, the harakaat table, the hamza and
         // non-Arabic practice rows) is spelled out in English - this hides them all so the letter can be
@@ -664,6 +890,145 @@ struct ArabicLetterView: View {
             }
         }
         #endif
+    }
+
+    /// The taa marbuuTah page's worked examples, in the same section grammar as WITH HAMZA above: real words,
+    /// practised three ways. First stopping on the ة (it closes to a soft "h"), then continuing through it
+    /// (it opens to a full "t"), then unknotting it entirely - the dual and the sound feminine plural turn
+    /// the ة into an open ت.
+    @ViewBuilder
+    private var taaMarbutaPracticeSections: some View {
+        Section {
+            ArabicExampleRow(
+                arabic: "ٱلۡجَنَّة",
+                transliteration: "al-jannah",
+                note: "Paradise"
+            )
+            ArabicExampleRow(
+                arabic: "رَحۡمَة",
+                transliteration: "rahmah",
+                note: "Mercy"
+            )
+            ArabicExampleRow(
+                arabic: "صَلَاة",
+                transliteration: "salah",
+                note: "Prayer"
+            )
+            ArabicExampleRow(
+                arabic: "مَدۡرَسَة",
+                transliteration: "madrasah",
+                note: "School"
+            )
+        } header: {
+            Text("STOPPING ON IT: SOUNDS LIKE HAA")
+        } footer: {
+            Text("Stop on a word ending in ة and it closes into a soft \"h\", exactly like a haa.")
+        }
+
+        Section {
+            ArabicExampleRow(
+                arabic: "رَحۡمَةُ ٱللَّهِ",
+                transliteration: "rahmatu-llahi",
+                note: "The mercy of Allah"
+            )
+            ArabicExampleRow(
+                arabic: "سُورَةُ ٱلۡبَقَرَة",
+                transliteration: "suratu-l-baqarah",
+                note: "Surah al-Baqarah - the first ة is read \"t\"; the last is stopped on as \"h\""
+            )
+            ArabicExampleRow(
+                arabic: "مَدِينَةُ ٱلنَّبِيِّ",
+                transliteration: "madinatu-n-nabiyy",
+                note: "The city of the Prophet"
+            )
+        } header: {
+            Text("CONTINUING THROUGH: SOUNDS LIKE TAA")
+        } footer: {
+            Text("Keep reading into the next word and the ة is pronounced as a full \"t\".")
+        }
+
+        Section {
+            ArabicExampleRow(
+                arabic: "مُسۡلِمَة \u{2190} مُسۡلِمَتَانِ",
+                transliteration: "muslimah \u{2192} muslimataan(i)",
+                note: "One Muslim woman \u{2192} two: the ة opens into ت"
+            )
+            ArabicExampleRow(
+                arabic: "مُسۡلِمَات",
+                transliteration: "muslimaat",
+                note: "Muslim women: ـات replaces the ة"
+            )
+            ArabicExampleRow(
+                arabic: "شَجَرَة \u{2190} شَجَرَتَانِ",
+                transliteration: "shajarah \u{2192} shajarataan(i)",
+                note: "One tree \u{2192} two trees"
+            )
+            ArabicExampleRow(
+                arabic: "صَلَاة \u{2190} صَلَوَات",
+                transliteration: "salah \u{2192} salawaat",
+                note: "Prayer \u{2192} prayers: this plural brings out a waaw"
+            )
+        } header: {
+            Text("UNKNOTTING INTO AN OPEN TAA")
+        } footer: {
+            Text("In the dual (ـتَانِ) and the sound feminine plural (ـات) the knot opens: the ة becomes a regular ت.")
+        }
+    }
+
+    /// The alif maqSoorah page's worked examples, in the taa marbuuTah sections' grammar: first the
+    /// Quran's dagger-alif spellings (the small alif above the ى IS the long "aa"), then the pairs that
+    /// teach how to tell a final ى-shape apart from a dotless yaa - in the mushaf both are written
+    /// without dots, so the vowel BEFORE the letter is what decides it.
+    @ViewBuilder
+    private var alifMaqsurahPracticeSections: some View {
+        Section {
+            ArabicExampleRow(
+                arabic: "عَلَىٰ",
+                transliteration: "'alaa",
+                note: "Upon - the dagger alif above the ى writes the long \"aa\""
+            )
+            ArabicExampleRow(
+                arabic: "إِلَىٰ",
+                transliteration: "ilaa",
+                note: "To / toward"
+            )
+            ArabicExampleRow(
+                arabic: "مُوسَىٰ",
+                transliteration: "Musaa",
+                note: "Musa (Moses) - names ending in the \"aa\" sound use it too"
+            )
+            ArabicExampleRow(
+                arabic: "هُدٗى",
+                transliteration: "hudan",
+                note: "Guidance - with tanween the maqsurah still looks the same"
+            )
+        } header: {
+            Text("WITH THE DAGGER ALIF")
+        } footer: {
+            Text("In the Quran the alif maqSoorah very often carries a small dagger alif (ىٰ). That tiny mark IS the alif: it writes the 2-count \"aa\" the letter stands for.")
+        }
+
+        Section {
+            ArabicExampleRow(
+                arabic: "ٱهۡتَدَىٰ",
+                transliteration: "ihtadaa",
+                note: "FATHA before it \u{2192} alif maqSoorah, read \"aa\""
+            )
+            ArabicExampleRow(
+                arabic: "فِي",
+                transliteration: "fee",
+                note: "KASRA before it \u{2192} a yaa, read \"ee\" - dotless in the mushaf"
+            )
+            ArabicExampleRow(
+                arabic: "ٱلَّذِي",
+                transliteration: "alladhee",
+                note: "Kasra before \u{2192} yaa again, even though it looks identical"
+            )
+        } header: {
+            Text("MAQSURAH OR YAA? THE VOWEL BEFORE TELLS YOU")
+        } footer: {
+            Text("The mushaf writes the final yaa without dots too, so the SHAPE cannot tell you which letter it is. Read the vowel before it: after a fatha (or under a dagger alif) it is alif maqSoorah and sounds \"aa\"; after a kasra it is yaa and sounds \"ee\". Outside the Quran, modern print dots the yaa (ي) and leaves the maqsurah bare (ى), so there the dots decide.")
+        }
     }
 
     @ViewBuilder
@@ -709,9 +1074,9 @@ struct ArabicLetterView: View {
                 Group {
                     Text("\"Taa marbuuTah\" means \"tied/knotted taa.\" It is written as a haa (ه) with the two dots of taa (ت) above it, and it is used to indicate the feminine gender in Arabic.")
                     Text("It is typically added to the end of a noun to show that the noun is feminine. For example, the Arabic word for teacher is \"مُعَلِّم\" (mu'allim) for a male and \"مُعَلِّمَة\" (mu'allimah) for a female.")
-                    Text("Its pronunciation depends on whether you stop or keep going: if you continue reading past the word, it is pronounced as a taa (\"t\"), as in \"مُعَلِّمَةُ الفَصلِ\" (mu'allimatul-faSl). If you stop on the word, it is pronounced as a haa (\"h\"), as in \"mu'allimah.\"")
+                    Text("Its pronunciation depends on whether you stop or keep going: if you continue reading past the word, it is pronounced as a taa (\"t\"), as in \"مُعَلِّمَةُ ٱلۡفَصۡلِ\" (mu'allimatul-faSl). If you stop on the word, it is pronounced as a haa (\"h\"), as in \"mu'allimah.\"")
                     Text("When a singular feminine word is made plural, the taa marbuuTah is unknotted: it is removed and an alif and a regular taa (ـات) are added in its place. For example, \"مُعَلِّمَة\" (mu'allimah) becomes \"مُعَلِّمَات\" (mu'allimaat).")
-                    Text("If the feminine word ends in a hamza instead, like \"سَمَاء\" (samaa', sky), the plural is formed by adding a waaw, then an alif and a taa: \"سَمَاء\" becomes \"سَمَاوَات\" (samaawaat).")
+                    Text("If the feminine word ends in a hamza instead, like \"سَمَآء\" (samaa', sky), the plural is formed by adding a waaw, then an alif and a taa: \"سَمَآء\" becomes \"سَمَاوَات\" (samaawaat).")
                 }
                 .font(.body)
             case "hamzatul waSl":
@@ -745,11 +1110,21 @@ struct ArabicLetterView: View {
                     }
                     .font(.body)
                 } else if data.transliteration == "alif maqSoorah" {
-                    Text("Alif maqSoorah resembles a Yaa without dots and usually replaces a regular Alif at the end of a word. It appears in certain cases, including some Quranic words and non-Arabic proper nouns. It is pronounced exactly the same as a regular Alif.")
-                        .font(.body)
-                } else if data.transliteration == "laa" {
-                    Text("The combination of ل and ا forms a unique shape: لا.")
-                        .font(.body)
+                    Group {
+                        Text("Alif maqSoorah is an alif written in the SHAPE of a dotless yaa (ى). It only ever appears at the end of a word, and it is pronounced exactly like a regular alif - a 2-count \"aa\".")
+                        Text("In the Quran it usually carries a small dagger alif above it (ىٰ), as in عَلَىٰ and مُوسَىٰ - that tiny mark IS the alif sound, written small. The examples below practise it.")
+                        Text("Telling it apart from yaa: the mushaf writes the final yaa without dots too, so the shape alone cannot decide. Read the vowel before the letter - a fatha before it means alif maqSoorah (\"aa\", as in ٱهۡتَدَىٰ); a kasra before it means yaa (\"ee\", as in فِي and ٱلَّذِي).")
+                    }
+                    .font(.body)
+                } else if data.transliteration == "laam alif" {
+                    // The case used to check "laa", which is not this letter's transliteration - so the
+                    // PURPOSE section rendered empty for the one ligature letter (user report).
+                    Group {
+                        Text("When laam (ل) is followed by alif (ا), the two must be written as one joined shape: لا. It is the only compulsory ligature in Arabic script - writing them side by side unjoined is considered incorrect - which is why it is taught alongside the alphabet.")
+                        Text("The sound does not change: read it simply as laam, then the long alif. Order matters, though - the definite article ٱل is alif then laam, so no ligature forms there.")
+                        Text("You meet it constantly in the Quran, most familiarly as the word of negation لَا (\"no\" / \"not\") and in لَآ إِلَٰهَ إِلَّا ٱللَّهُ.")
+                    }
+                    .font(.body)
                 }
             }
         }
@@ -764,14 +1139,172 @@ extension Array {
     }
 }
 
+// MARK: - Practice tables: selection, playback, and the shaddah written out
+
+/// Which single cell or row of the Arabic practice tables is being taught right now.
+///
+/// The tables used to SPEAK on tap, which meant a teacher could not point at a combination without the
+/// device blurting it out. Now a tap only SELECTS - the selection is drawn with the accent wash the
+/// Tashkeel screen's chosen mark chip carries - and the play button appears on (and speaks for) the
+/// selected one alone. Tapping the selection again clears it.
+///
+/// One shared object rather than per-table state: the selection is exactly one thing per screen, and the
+/// tables are separate views (three `TashkeelRow` chunks, the hamza table, the example rows) that would
+/// otherwise each keep their own.
+@MainActor
+final class ArabicPracticeSelection: ObservableObject {
+    static let shared = ArabicPracticeSelection()
+
+    private init() {}
+
+    @Published private(set) var selectedID: String?
+
+    func isSelected(_ id: String) -> Bool { selectedID == id }
+
+    /// Selects `id`, or clears it when it is already the selection. Deselecting also stops whatever the
+    /// old selection was saying - the play button that started it is gone.
+    func toggle(_ id: String) {
+        if selectedID == id {
+            selectedID = nil
+            ArabicSpeech.shared.stop()
+        } else {
+            selectedID = id
+        }
+    }
+
+    /// Leaving a screen drops the selection, so arriving back never shows a stale highlight.
+    func clear() {
+        guard selectedID != nil else { return }
+        selectedID = nil
+        ArabicSpeech.shared.stop()
+    }
+}
+
+extension View {
+    /// The one "this is the combination being taught" treatment on the Arabic screens: the accent wash and
+    /// hairline `TashkeelLettersView`'s chosen mark chip already uses. The insets let a full-width list row
+    /// bleed its wash past the text without the text itself moving when the selection changes.
+    func arabicPracticeSelection(
+        _ isSelected: Bool,
+        cornerRadius: CGFloat = 12,
+        hInset: CGFloat = 0,
+        vInset: CGFloat = 0
+    ) -> some View {
+        let accent = Settings.shared.accentColor.color
+        return background(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(accent.opacity(isSelected ? 0.18 : 0))
+                .padding(.horizontal, hInset)
+                .padding(.vertical, vInset)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .stroke(isSelected ? accent : .clear, lineWidth: 1.5)
+                .padding(.horizontal, hInset)
+                .padding(.vertical, vInset)
+        )
+    }
+}
+
+/// The play control that appears on the SELECTED practice cell or row - the Adhkar screen's Listen/Stop
+/// button shrunk to fit a table. It renders nothing when the device has no Arabic voice; the selection
+/// highlight still works, because pointing at a combination is most of what it is for.
+struct PracticeListenButton: View {
+    @ObservedObject private var settings = Settings.shared
+    @ObservedObject private var speech = ArabicSpeech.shared
+
+    let text: String
+
+    @ViewBuilder
+    var body: some View {
+        if speech.isAvailable {
+            let isSpeaking = speech.currentText == text
+            Button {
+                settings.hapticFeedback()
+                if isSpeaking {
+                    speech.stop()
+                } else {
+                    speech.speak(text)
+                }
+            } label: {
+                Image(systemName: isSpeaking ? "stop.fill" : "speaker.wave.2.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(settings.accentColor.color)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+                    .conditionalGlassEffect(circle: true)
+            }
+            .buttonStyle(.plain)
+            // The tables render right-to-left; the button is an icon, and must not be mirrored with them.
+            .environment(\.layoutDirection, .leftToRight)
+            .accessibilityLabel(isSpeaking ? "Stop" : "Hear it")
+        }
+    }
+}
+
+/// The chevron that writes a shaddah out as the two letters it stands for, in the app's expand/collapse
+/// idiom (`SectionPillHeader`'s accent chevron-in-a-circle).
+struct ShaddahExpandButton: View {
+    @ObservedObject private var settings = Settings.shared
+
+    let isExpanded: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button {
+            settings.hapticFeedback()
+            withAnimation(.easeInOut) { toggle() }
+        } label: {
+            Image(systemName: isExpanded ? "chevron.down.circle" : "chevron.up.circle")
+                .font(.footnote.weight(.semibold))
+                .foregroundColor(settings.accentColor.color)
+                .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
+                .conditionalGlassEffect(circle: true)
+        }
+        .buttonStyle(.plain)
+        .environment(\.layoutDirection, .leftToRight)
+        .accessibilityLabel(isExpanded
+            ? "Write the shaddah back as one letter"
+            : "Write the shaddah out as two letters")
+    }
+}
+
+/// The one place the practice screens decide which sukoon they draw: the plain U+0652, or the Uthmani
+/// U+06E1 a printed mushaf uses, per `settings.quranicSukoonInLetterPractice` (the "Use Quranic Sukoon"
+/// toggle in the WITH HAMZA section). The shaddah expansions write a sukoon, so they answer to it too.
+enum LetterPracticeSukoon {
+    static var mark: String {
+        Settings.shared.quranicSukoonInLetterPractice ? "\u{06E1}" : "\u{0652}"
+    }
+}
+
+/// The shaddah, U+0651.
+let arabicShaddahMark = "\u{0651}"
+
+/// A shaddah is a DOUBLED letter, so `بَّ` is really `بْ` + `بَ`: the letter with sukoon, then the same
+/// letter carrying the vowel. This rewrites one such syllable that way, and it is the single definition
+/// every expand button on these screens uses.
+///
+/// - Parameters:
+///   - prefix: whatever is written before the doubled letter (the hamza seat, or nothing).
+///   - letter: the doubled letter.
+///   - vowel: the harakah riding on the shaddah - the one the SECOND copy carries.
+///   - suffix: whatever follows (the madd letter of a long ending, or nothing).
+func shaddahWrittenOut(prefix: String = "", letter: String, vowel: String, suffix: String = "") -> String {
+    prefix + letter + LetterPracticeSukoon.mark + letter + vowel + suffix
+}
+
 struct TashkeelRow: View {
     @ObservedObject var settings = Settings.shared
+    @ObservedObject private var selection = ArabicPracticeSelection.shared
 
     let letterData: LetterData
     let tashkeels: [Tashkeel]
     let useQuranicFontForLetter: Bool
 
-    /// The mark whose detail sheet is open. Tapping a cell both speaks it and opens this.
+    /// The mark whose detail sheet is open. A tap no longer opens it (nor speaks): a tap SELECTS the cell,
+    /// and the selected cell offers the two buttons - hear it, and what the mark is.
     @State private var selectedTashkeel: Tashkeel?
 
     private var baseSound: String {
@@ -802,7 +1335,11 @@ struct TashkeelRow: View {
             }
 
             ForEach(tashkeels, id: \.english) { tk in
-                VStack {
+                let glyph = letterData.letter + tk.tashkeelMark
+                let id = "tashkeel:\(letterData.letter):\(tk.english)"
+                let isSelected = selection.isSelected(id)
+
+                VStack(spacing: 4) {
                     if !settings.hideEnglishInArabicLetters {
                         Text(reading(tk))
                             .font(.caption)
@@ -811,7 +1348,7 @@ struct TashkeelRow: View {
                             .minimumScaleFactor(0.5)
                     }
 
-                    Text(letterData.letter + tk.tashkeelMark)
+                    Text(glyph)
                         .font(
                             useQuranicFontForLetter
                                 ? settings.scalableIslamArabicFont(base: 28, relativeTo: .title)
@@ -821,15 +1358,38 @@ struct TashkeelRow: View {
                         .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, useQuranicFontForLetter ? 0 : 8)
+
+                    // The selection's two actions: hear it, and read what the mark is. Tapping used to do
+                    // both at once, unasked - now nothing happens until one of these is pressed.
+                    if isSelected {
+                        HStack(spacing: 6) {
+                            PracticeListenButton(text: glyph)
+
+                            Button {
+                                settings.hapticFeedback()
+                                selectedTashkeel = tk
+                            } label: {
+                                Image(systemName: "info.circle")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(settings.accentColor.color)
+                                    .frame(width: 28, height: 28)
+                                    .contentShape(Rectangle())
+                                    .conditionalGlassEffect(circle: true)
+                            }
+                            .buttonStyle(.plain)
+                            .environment(\.layoutDirection, .leftToRight)
+                            .accessibilityLabel("About \(tk.english)")
+                        }
+                    }
                 }
                 .contentShape(Rectangle())
+                .arabicPracticeSelection(isSelected, cornerRadius: 10, hInset: -4, vInset: -2)
                 .onTapGesture {
                     settings.hapticFeedback()
-                    ArabicSpeech.shared.speak(letterData.letter + tk.tashkeelMark)
-                    selectedTashkeel = tk
+                    withAnimation(.easeInOut) { selection.toggle(id) }
                 }
                 .accessibilityAddTraits(.isButton)
-                .accessibilityLabel("\(tk.english), read \(reading(tk))")
+                .accessibilityLabel("\(tk.english), read \(reading(tk))\(isSelected ? ", selected" : "")")
             }
         }
         .environment(\.layoutDirection, .rightToLeft)
@@ -848,7 +1408,7 @@ struct TashkeelRow: View {
 }
 
 /// What a tashkeel mark actually is: its name, the root that name comes from, how long it is held, and what your
-/// mouth has to do to make it. Opened by tapping a mark, which also speaks it.
+/// mouth has to do to make it. Opened from the info button on the selected mark.
 struct TashkeelDetailSheet: View {
     @ObservedObject var settings = Settings.shared
     @Environment(\.dismiss) private var dismiss
@@ -962,99 +1522,137 @@ struct TashkeelDetailSheet: View {
             .sheetDismissToolbar()
             #endif
         }
+        .navigationViewStyle(.stack)
     }
 }
 
 struct HamzaPracticeRow: View {
     @ObservedObject var settings = Settings.shared
+    @ObservedObject private var selection = ArabicPracticeSelection.shared
 
     let letterData: LetterData
     let useQuranicFontForLetter: Bool
 
-    /// U+0652 SUKUN, written onto the closing consonant of each closed syllable (أَبْ, not أَب): these rows
-    /// teach "hamza + vowel + stopped letter", and without the sukoon the final letter reads as unmarked.
-    private static let sukoon = "\u{0652}"
+    /// Which shaddah rows are currently written out as the two letters they stand for.
+    @State private var expandedRows: Set<Int> = []
 
-    private var hamzaShortSyllables: [(latin: String, arabic: String)] {
+    /// The sukoon written onto the closing consonant of each closed syllable (with sukoon, not bare):
+    /// these rows teach "hamza + vowel + stopped letter", and without the sukoon the final letter reads
+    /// as unmarked. Plain U+0652 by default; the section's toggle swaps in the Uthmani U+06E1 the mushaf
+    /// prints - and that same choice writes the sukoon in the expanded shaddahs below.
+    private var sukoon: String { LetterPracticeSukoon.mark }
+
+    // Every piece these tables are built from, spelled out by code point. A combining mark is invisible
+    // in source and easy to reorder by accident; this is teaching material, so the sequences are explicit.
+    private static let hamzaSeatFatha = "\u{0623}\u{064E}"   // أَ - hamza on alif with fatha
+    private static let hamzaSeatKasra = "\u{0625}\u{0650}"   // إِ - hamza under alif with kasra
+    private static let hamzaSeatDamma = "\u{0623}\u{064F}"   // أُ - hamza on alif with damma
+    private static let bareHamzaFatha = "\u{0621}\u{064E}"   // ءَ - the standalone hamza with fatha
+    private static let alif = "\u{0627}"
+    private static let yaa = "\u{064A}"
+    private static let waaw = "\u{0648}"
+    private static let fatha = "\u{064E}"
+    private static let kasra = "\u{0650}"
+    private static let damma = "\u{064F}"
+
+    /// One cell of a practice triplet: what is written, how it reads, and - on the shaddah cells only -
+    /// the same syllable spelled out as the doubled letter a shaddah actually is.
+    private struct Syllable {
+        let latin: String
+        let arabic: String
+        var expandedLatin: String? = nil
+        var expandedArabic: String? = nil
+    }
+
+    /// The long ending each shaddah row runs through: the harakah, the madd letter it is written with, and
+    /// how the pair reads. Fatha + alif, kasra + yaa, damma + waaw - the order every table here uses.
+    private static let longEndings: [(vowel: String, madd: String, latin: String)] = [
+        (fatha, alif, "aa"),
+        (kasra, yaa, "ii"),
+        (damma, waaw, "uu")
+    ]
+
+    private var hamzaShortSyllables: [Syllable] {
         let s = letterData.sound
-        let l = letterData.letter + Self.sukoon
+        let l = letterData.letter + sukoon
         return [
-            ("a" + s, "أَ" + l),
-            ("i" + s, "إِ" + l),
-            ("u" + s, "أُ" + l)
+            Syllable(latin: "a" + s, arabic: Self.hamzaSeatFatha + l),
+            Syllable(latin: "i" + s, arabic: Self.hamzaSeatKasra + l),
+            Syllable(latin: "u" + s, arabic: Self.hamzaSeatDamma + l)
         ]
     }
 
-    private var hamzaLongSyllablesBasic: [(latin: String, arabic: String)] {
+    private var hamzaLongSyllablesBasic: [Syllable] {
         let s = letterData.sound
-        let l = letterData.letter + Self.sukoon
+        let l = letterData.letter + sukoon
         return [
-            ("aa" + s, "ءَ" + "ا" + l),
-            ("ii" + s, "إِ" + "ي" + l),
-            ("uu" + s, "أُ" + "و" + l)
+            Syllable(latin: "aa" + s, arabic: Self.bareHamzaFatha + Self.alif + l),
+            Syllable(latin: "ii" + s, arabic: Self.hamzaSeatKasra + Self.yaa + l),
+            Syllable(latin: "uu" + s, arabic: Self.hamzaSeatDamma + Self.waaw + l)
         ]
     }
 
-    private var hamzaLongSyllables: [(latin: String, arabic: String)] {
+    private var hamzaLongSyllables: [Syllable] {
         let s = letterData.sound
         let l = letterData.letter
         return [
-            ("a" + s + "aa", "أَ" + l + "َا"),
-            ("a" + s + "ii", "أَ" + l + "ِي"),
-            ("a" + s + "uu", "أَ" + l + "ُو")
+            Syllable(latin: "a" + s + "aa", arabic: Self.hamzaSeatFatha + l + Self.fatha + Self.alif),
+            Syllable(latin: "a" + s + "ii", arabic: Self.hamzaSeatFatha + l + Self.kasra + Self.yaa),
+            Syllable(latin: "a" + s + "uu", arabic: Self.hamzaSeatFatha + l + Self.damma + Self.waaw)
         ]
     }
 
-    private var hamzaShaddahA: [(latin: String, arabic: String)] {
+    /// One shaddah row: the hamza seat, then this letter doubled by a shaddah carrying each long ending.
+    ///
+    /// Collapsed, it is written the way a mushaf writes it - hamza, letter, shaddah, vowel, madd letter.
+    /// Expanded, it is written the way it is READ, which is what the shaddah has meant all along: the
+    /// letter with sukoon, then the same letter with the tashkeel. Same seat, same letter, same ending;
+    /// only the shaddah is unpacked.
+    private func shaddahTriplet(seat: String, seatLatin: String) -> [Syllable] {
         let s = letterData.sound
         let l = letterData.letter
-        return [
-            ("a" + s + s + "aa", "أَ" + l + "َّا"),
-            ("a" + s + s + "ii", "أَ" + l + "ِّي"),
-            ("a" + s + s + "uu", "أَ" + l + "ُّو")
-        ]
+        return Self.longEndings.map { ending in
+            Syllable(
+                latin: seatLatin + s + s + ending.latin,
+                arabic: seat + l + arabicShaddahMark + ending.vowel + ending.madd,
+                // The hyphen stands where the sukoon does: it marks where the first letter stops.
+                expandedLatin: seatLatin + s + "-" + s + ending.latin,
+                expandedArabic: shaddahWrittenOut(
+                    prefix: seat,
+                    letter: l,
+                    vowel: ending.vowel,
+                    suffix: ending.madd
+                )
+            )
+        }
     }
 
-    private var hamzaShaddahI: [(latin: String, arabic: String)] {
-        let s = letterData.sound
-        let l = letterData.letter
-        return [
-            ("i" + s + s + "aa", "إِ" + l + "َّا"),
-            ("i" + s + s + "ii", "إِ" + l + "ِّي"),
-            ("i" + s + s + "uu", "إِ" + l + "ُّو")
-        ]
-    }
-
-    private var hamzaShaddahU: [(latin: String, arabic: String)] {
-        let s = letterData.sound
-        let l = letterData.letter
-        return [
-            ("u" + s + s + "aa", "أُ" + l + "َّا"),
-            ("u" + s + s + "ii", "أُ" + l + "ِّي"),
-            ("u" + s + s + "uu", "أُ" + l + "ُّو")
-        ]
-    }
-
-    private var rows: [[(latin: String, arabic: String)]] {
+    private var rows: [[Syllable]] {
         [
             hamzaShortSyllables,
             hamzaLongSyllablesBasic,
             hamzaLongSyllables,
-            hamzaShaddahA,
-            hamzaShaddahI,
-            hamzaShaddahU
+            shaddahTriplet(seat: Self.hamzaSeatFatha, seatLatin: "a"),
+            shaddahTriplet(seat: Self.hamzaSeatKasra, seatLatin: "i"),
+            shaddahTriplet(seat: Self.hamzaSeatDamma, seatLatin: "u")
         ]
     }
 
     @ViewBuilder
-    private func practiceTriplet(_ syllables: [(latin: String, arabic: String)]) -> some View {
+    private func practiceTriplet(_ syllables: [Syllable], expanded: Bool) -> some View {
         HStack(spacing: 20) {
             ForEach(syllables, id: \.latin) { syllable in
-                VStack {
+                // Keyed on the COLLAPSED spelling, so expanding a row never drops its selection.
+                let id = "hamza:" + syllable.arabic
+                let isSelected = selection.isSelected(id)
+
+                VStack(spacing: 4) {
                     if !settings.hideEnglishInArabicLetters {
                         Text(syllable.latin)
                             .font(.caption)
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
                     }
 
                     Text(syllable.arabic)
@@ -1065,14 +1663,50 @@ struct HamzaPracticeRow: View {
                         )
                         .arabicFontDesign(custom: useQuranicFontForLetter && settings.islamUsesCustomArabicFace)
                         .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, useQuranicFontForLetter ? 0 : 8)
+
+                    // The chevron ADDS the written-out spelling beneath the shaddah form (user rule:
+                    // the normal shaddah and its sukoon decomposition read together), instead of the
+                    // old in-place swap that hid the very form the expansion explains.
+                    if expanded, let expandedArabic = syllable.expandedArabic {
+                        Text(expandedArabic)
+                            .font(
+                                useQuranicFontForLetter
+                                    ? settings.scalableIslamArabicFont(base: 28, relativeTo: .title)
+                                    : .title
+                            )
+                            .arabicFontDesign(custom: useQuranicFontForLetter && settings.islamUsesCustomArabicFace)
+                            .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, useQuranicFontForLetter ? 0 : 8)
+
+                        if !settings.hideEnglishInArabicLetters, let expandedLatin = syllable.expandedLatin {
+                            Text(expandedLatin)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.6)
+                        }
+                    }
+
+                    // The play button belongs to the selection alone - a tap anywhere else only selects.
+                    if isSelected {
+                        PracticeListenButton(text: syllable.arabic)
+                    }
                 }
                 .contentShape(Rectangle())
+                .arabicPracticeSelection(isSelected, cornerRadius: 10, hInset: -4, vInset: -2)
                 .onTapGesture {
                     settings.hapticFeedback()
-                    ArabicSpeech.shared.speak(syllable.arabic)
+                    withAnimation(.easeInOut) { selection.toggle(id) }
                 }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel(isSelected ? "\(syllable.latin), selected" : syllable.latin)
             }
         }
         .environment(\.layoutDirection, .rightToLeft)
@@ -1087,15 +1721,44 @@ struct HamzaPracticeRow: View {
                 }
                 #endif
 
-                practiceTriplet(rows[idx])
+                practiceLine(rows[idx], index: idx)
             }
         }
         .padding(.top, 6)
+    }
+
+    /// A triplet with its expand control. The control's column is reserved on EVERY row, not just the
+    /// shaddah ones, so the three glyphs stay in the same three places all the way down the table -
+    /// and so the chevron APPEARING never shifts anything (user rule: selection must not resize).
+    /// The chevron itself only exists while one of the row's syllables is selected; expansion shows
+    /// only then too, so a deselected row can never be stuck open with no control to close it.
+    private func practiceLine(_ syllables: [Syllable], index: Int) -> some View {
+        let hasShaddah = syllables.contains { $0.expandedArabic != nil }
+        let rowSelected = syllables.contains { selection.isSelected("hamza:" + $0.arabic) }
+        let isExpanded = rowSelected && expandedRows.contains(index)
+
+        return HStack(spacing: 2) {
+            Group {
+                if hasShaddah, rowSelected {
+                    ShaddahExpandButton(isExpanded: isExpanded) {
+                        if isExpanded {
+                            expandedRows.remove(index)
+                        } else {
+                            expandedRows.insert(index)
+                        }
+                    }
+                }
+            }
+            .frame(width: 28)
+
+            practiceTriplet(syllables, expanded: isExpanded)
+        }
     }
 }
 
 struct NonArabicVowelPracticeRow: View {
     @ObservedObject var settings = Settings.shared
+    @ObservedObject private var selection = ArabicPracticeSelection.shared
 
     let letterData: LetterData
     let baseSound: String
@@ -1115,7 +1778,10 @@ struct NonArabicVowelPracticeRow: View {
         // Arabic reads right-to-left, so the syllable columns run right-to-left (first one on the right).
         HStack(spacing: 20) {
             ForEach(syllables, id: \.latin) { syllable in
-                VStack {
+                let id = "nonArabic:" + syllable.arabic
+                let isSelected = selection.isSelected(id)
+
+                VStack(spacing: 4) {
                     if !settings.hideEnglishInArabicLetters {
                         Text(syllable.latin)
                             .font(.caption)
@@ -1132,15 +1798,81 @@ struct NonArabicVowelPracticeRow: View {
                         .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, useQuranicFontForLetter ? 0 : 8)
+
+                    // Tapping selects; only the selected syllable carries (and answers to) a play button.
+                    if isSelected {
+                        PracticeListenButton(text: syllable.arabic)
+                    }
                 }
                 .contentShape(Rectangle())
+                .arabicPracticeSelection(isSelected, cornerRadius: 10, hInset: -4, vInset: -2)
                 .onTapGesture {
                     settings.hapticFeedback()
-                    ArabicSpeech.shared.speak(syllable.arabic)
+                    withAnimation(.easeInOut) { selection.toggle(id) }
                 }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel(isSelected ? "\(syllable.latin), selected" : syllable.latin)
             }
         }
         .environment(\.layoutDirection, .rightToLeft)
+    }
+}
+
+/// One worked example: the Arabic large on the trailing side in the app's Arabic font settings, the
+/// transliteration and a one-line English note leading - the shaddah detail rows' shape, shared by the
+/// taa marbuuTah teaching sections and the Basic Grammar screen. Tap to SELECT the row - the play button
+/// appears on the selection alone - and the English obeys the same Hide English flag every other practice
+/// table does.
+struct ArabicExampleRow: View {
+    @ObservedObject var settings = Settings.shared
+    @ObservedObject private var selection = ArabicPracticeSelection.shared
+
+    let arabic: String
+    let transliteration: String
+    let note: String
+
+    private var useQuranicFont: Bool { settings.useFontArabic }
+
+    var body: some View {
+        let id = "example:" + arabic
+        let isSelected = selection.isSelected(id)
+
+        return HStack(alignment: .center, spacing: 12) {
+            if isSelected {
+                PracticeListenButton(text: arabic)
+            }
+
+            if !settings.hideEnglishInArabicLetters {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(transliteration)
+                        .font(.subheadline.weight(.semibold))
+
+                    Text(note)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Text(arabic)
+                .font(useQuranicFont ? settings.scalableIslamArabicFont(base: 24, relativeTo: .title2) : .title2)
+                .arabicFontDesign(custom: useQuranicFont && settings.islamUsesCustomArabicFace)
+                .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+                .minimumScaleFactor(0.5)
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .arabicPracticeSelection(isSelected, hInset: -8, vInset: -2)
+        .onTapGesture {
+            settings.hapticFeedback()
+            withAnimation(.easeInOut) { selection.toggle(id) }
+        }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("\(transliteration), \(note)\(isSelected ? ", selected" : "")")
     }
 }
 
@@ -1150,6 +1882,9 @@ struct ArabicLetterRow: View, Equatable {
     let letterData: LetterData
     let isFavorite: Bool
     let accentColor: AccentColor
+    /// The `.custom` accent resolves `.color` through this hex, so an edit to it must fail `==` -
+    /// comparing only the enum case left rows on the old tint (the `ReciterRow` fix, applied here).
+    let customAccentHex: String
     let useFontArabic: Bool
     let fontArabic: String
     let searchQuery: String
@@ -1165,6 +1900,7 @@ struct ArabicLetterRow: View, Equatable {
         self.letterData = letterData
         self.isFavorite = isFavorite ?? Settings.shared.isLetterFavorite(letterData: letterData)
         self.accentColor = accentColor
+        self.customAccentHex = Settings.shared.customAccentColorHex
         self.useFontArabic = useFontArabic
         self.fontArabic = fontArabic
         self.searchQuery = searchQuery
@@ -1194,7 +1930,10 @@ struct ArabicLetterRow: View, Equatable {
             // tinted in the accent when it's a favorite, so favorites are visible while scrolling.
             HStack(spacing: 12) {
                 HighlightedSnippet(
-                    source: letterData.letter,
+                    // The badge is a GLYPH slot: laam alif's full "ل ا - لا" spelling doesn't fit a
+                    // 42pt pill at any legible scale (user report: it gets cut off), so the badge shows
+                    // the ligature itself and the composite stays in the title and the detail page.
+                    source: letterData.letter.components(separatedBy: " - ").last ?? letterData.letter,
                     term: searchQuery,
                     font: (useFontArabic && !letterData.isNonArabicScriptLetter)
                         ? Font.arabic(fontArabic, size: 24, relativeTo: .title2)
@@ -1296,6 +2035,7 @@ struct ArabicLetterRow: View, Equatable {
         lhs.letterData == rhs.letterData &&
         lhs.isFavorite == rhs.isFavorite &&
         lhs.accentColor == rhs.accentColor &&
+        lhs.customAccentHex == rhs.customAccentHex &&
         lhs.useFontArabic == rhs.useFontArabic &&
         lhs.fontArabic == rhs.fontArabic &&
         lhs.searchQuery == rhs.searchQuery &&
@@ -1653,6 +2393,9 @@ struct ArabicLetterGridTile: View, Equatable {
     let fontArabic: String
     /// Snapshot of the size slider, folded into `==` because the body scales with it.
     var sizeIndex: Int = Settings.shared.arabicLetterSizeIndex
+    /// The `.custom` accent resolves `.color` through this hex, so an edit to it must fail `==` -
+    /// comparing only the enum case left tiles on the old tint (the `ReciterRow` fix, applied here).
+    var customAccentHex: String = Settings.shared.customAccentColorHex
 
     /// `onTap` is deliberately not compared (closures cannot be) - it is stable per call site, and every
     /// input that changes what the tile DRAWS is compared, so skipping the body on equality is safe.
@@ -1660,6 +2403,7 @@ struct ArabicLetterGridTile: View, Equatable {
         lhs.letterData == rhs.letterData &&
         lhs.isFavorite == rhs.isFavorite &&
         lhs.accentColor == rhs.accentColor &&
+        lhs.customAccentHex == rhs.customAccentHex &&
         lhs.useFontArabic == rhs.useFontArabic &&
         lhs.fontArabic == rhs.fontArabic &&
         lhs.sizeIndex == rhs.sizeIndex
