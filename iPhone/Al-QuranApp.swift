@@ -159,6 +159,12 @@ private struct MainTabView: View {
             // touch used to land on the MAIN thread mid-launch (aiQueryEligible / corpus prep). Pay it
             // here, off-main.
             .task { Task.detached(priority: .utility) { SemanticSearchEngine.prewarmOffMain() } }
+            // "-auditPacks" - fingerprint every bundled pack and loose payload through the app's own
+            // readers (see PackAudit); run before and after a repack and diff Documents/packaudit.txt.
+            .task {
+                guard ProcessInfo.processInfo.arguments.contains("-auditPacks") else { return }
+                await Task.detached(priority: .utility) { PackAudit.run() }.value
+            }
     }
 
     /// Build + retain the Quran tab behind the launch cover, settle back on Adhan, then signal `LaunchWarmup`
