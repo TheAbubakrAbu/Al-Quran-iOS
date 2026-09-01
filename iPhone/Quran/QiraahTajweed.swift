@@ -60,6 +60,8 @@ final class QiraahTajweedStore: @unchecked Sendable {
         "madd_leen": "Soft wāw/yāʾ stretched before a stop.",
         "raa_muraqqaqah": "Rāʾ pronounced light here.",
         "lam_mughallazah": "Lām pronounced heavy here.",
+        "tashdid_ta": "Tāʾ doubled onto the word before.",
+        "ibtida_wasl": "If you begin here, the hamzah becomes a madd letter.",
     ]
 
     /// The longer note under the card.
@@ -79,6 +81,8 @@ final class QiraahTajweedStore: @unchecked Sendable {
         "madd_leen": "The soft wāw or yāʾ (preceded by fatḥah) before the word's final letter is stretched - Warsh gives these extra length when stopping.",
         "raa_muraqqaqah": "This rāʾ is pronounced LIGHT (muraqqaqah) where Ḥafṣ says it heavy - one of Warsh's well-known rāʾ rules after a kasrah or yāʾ.",
         "lam_mughallazah": "This lām is pronounced HEAVY (mughallaẓah) - Warsh thickens the lām after ṣād, ṭāʾ, or ẓāʾ, similar to the lām of Allāh.",
+        "tashdid_ta": "The tāʾ that begins this word is doubled and joined to the word before it (وَلَا تَّيَمَّمُوا, أَن تَّبَدَّلَ) - al-Bazzī's best-known rule. It only happens when the two words are joined, so the particle before is colored with it; when stopping there, the tāʾ is read single.",
+        "ibtida_wasl": "Joined to the word before, this waṣl hamzah is silent. But if you BEGIN reciting at this word, it takes a vowel and the silent hamzah after it becomes a long vowel: ٱئۡتِنَا is begun إِيتِنَا, and ٱؤۡتُمِنَ is begun اُوتُمِنَ. The dot's position on the alif is the vowel - below for kasrah, halfway up for ḍammah - and this muṣḥaf colors it in the sixteen places where beginning changes the word this way.",
     ]
 
     struct WordRule {
@@ -186,7 +190,7 @@ final class QiraahTajweedStore: @unchecked Sendable {
     // MARK: - Colors
 
     /// The print palette, adjusted per appearance for on-screen legibility.
-    /// r red, b blue, m magenta, c cyan, o orange, g green, l royal, y olive.
+    /// r red, b blue, m magenta, c cyan, o orange, g green, e sea green, l royal, y olive.
     static func uiColor(for letter: Character) -> UIColor {
         func dyn(_ light: (CGFloat, CGFloat, CGFloat), _ dark: (CGFloat, CGFloat, CGFloat)) -> UIColor {
             UIColor { traits in
@@ -201,6 +205,10 @@ final class QiraahTajweedStore: @unchecked Sendable {
         case "c": return dyn((0.00, 0.52, 0.66), (0.30, 0.83, 1.00))
         case "o": return dyn((0.85, 0.42, 0.00), (1.00, 0.64, 0.22))
         case "g": return dyn((0.00, 0.58, 0.12), (0.32, 0.88, 0.42))
+        // Deeper and bluer than "g" on purpose: the two Abu Jaʿfar volumes are the only
+        // ones that use both, and the print itself separates them the same way
+        // (#00ff00 for the sakt, #00b050 for the waṣl dot).
+        case "e": return dyn((0.00, 0.45, 0.33), (0.20, 0.80, 0.62))
         case "l": return dyn((0.32, 0.42, 0.95), (0.60, 0.72, 1.00))
         case "y": return dyn((0.55, 0.53, 0.00), (0.82, 0.80, 0.28))
         default:  return .label
@@ -218,20 +226,42 @@ final class QiraahTajweedStore: @unchecked Sendable {
     /// `hiddenRules` (rule keys) come from the legend's show/hide toggles.
     /// `beginnerSpacing` tells the tokenizer the text carries a space after every
     /// letter, so words are recovered from the wider original gaps instead.
+    /// `fullText` is the fully vocalized twin of a "Hide Tashkeel and Signs"
+    /// `displayText`: with it, the colors are computed over the full text and
+    /// projected onto the stripped rendering - the same offsets-mapped survival
+    /// the Hafs engine gets from `tajweedProjection` - so the coloring no longer
+    /// vanishes when tashkeel or dots are hidden.
     /// Nil when nothing paints (plain text renders cheaper).
     func attributedText(tag: String, surah: Int, ayah: Int, displayText: String,
                         beginnerSpacing: Bool = false,
-                        hiddenRules: Set<String> = []) -> AttributedString? {
-        // "Hide Tashkeel and Signs" text never paints: the packs address words by TOKEN INDEX and
-        // letters by measured extents of the FULL text - stripping deletes the standalone ۞ token
-        // (so every later wash shifts a word) and moves the letter offsets. Every riwayah text
-        // ships fully vocalized, so a display string with no combining marks at all can only be
-        // the cleaned rendering; dropping the colors is the safe failure (Hafs keeps its colors
-        // through `tajweedProjection`, which maps offsets properly).
-        guard displayText.unicodeScalars.contains(where: { scalar in
+                        hiddenRules: Set<String> = [],
+                        fullText: String? = nil) -> AttributedString? {
+        // A display string with combining marks IS the full text - paint it directly. Without
+        // marks it can only be the "Hide Tashkeel and Signs" rendering, whose token indices and
+        // letter offsets no longer match the pack (stripping deletes the standalone ۞ token and
+        // moves the letter extents) - so paint the FULL text instead and project the colored
+        // runs onto the stripped twin. With no `fullText` to project from, dropping the colors
+        // stays the safe failure.
+        let hasMarks = displayText.unicodeScalars.contains(where: { scalar in
             let v = scalar.value
             return (0x064B...0x065F).contains(v) || v == 0x0670 || (0x06D6...0x06ED).contains(v)
-        }) else { return nil }
+        })
+        if !hasMarks {
+            guard let fullText, fullText != displayText,
+                  let coloredFull = paintedText(tag: tag, surah: surah, ayah: ayah,
+                                                displayText: fullText,
+                                                beginnerSpacing: beginnerSpacing,
+                                                hiddenRules: hiddenRules) else { return nil }
+            return Self.projectColors(from: coloredFull, fullText: fullText, onto: displayText)
+        }
+        return paintedText(tag: tag, surah: surah, ayah: ayah, displayText: displayText,
+                           beginnerSpacing: beginnerSpacing, hiddenRules: hiddenRules)
+    }
+
+    /// The direct painting pass over a fully vocalized text (the pre-projection body of
+    /// `attributedText`).
+    private func paintedText(tag: String, surah: Int, ayah: Int, displayText: String,
+                             beginnerSpacing: Bool, hiddenRules: Set<String>) -> AttributedString? {
         guard let pack = pack(for: tag),
               let rules = pack.rules[surah]?[ayah], !rules.isEmpty else { return nil }
         var keyOf: [Character: String] = [:]
@@ -300,6 +330,66 @@ final class QiraahTajweedStore: @unchecked Sendable {
         }
         if end > runStart { runs.append(NSRange(location: runStart, length: end - runStart)) }
         return runs
+    }
+
+    // MARK: Stripped-text projection
+
+    /// The scalar values `removingArabicDiacriticsAndSigns` deletes, derived by probing the
+    /// public transform itself so the two can never drift apart. (The strip set lives file-private
+    /// in Globals.swift; every stripped scalar is inside the Arabic blocks probed here.)
+    private static let strippedScalarValues: Set<UInt32> = {
+        var set = Set<UInt32>()
+        for value: UInt32 in 0x0600...0x08FF {
+            guard let scalar = UnicodeScalar(value) else { continue }
+            if String(String.UnicodeScalarView([scalar])).removingArabicDiacriticsAndSigns.isEmpty {
+                set.insert(value)
+            }
+        }
+        return set
+    }()
+
+    /// `coloredFull` (painted over the fully vocalized `fullText`) re-painted onto its stripped
+    /// twin `displayText`. The strip transforms are pure scalar maps - each full-text scalar is
+    /// either dropped, kept, or mapped 1:1 (hamzatul-wasl seat, the dotless skeletons) - so the
+    /// two texts walk in lockstep and every colored UTF-16 unit lands on its surviving letter.
+    /// Nil when `displayText` is not a recognized stripped rendering of `fullText` (then the
+    /// offsets would lie) or when nothing colored survives the strip.
+    private static func projectColors(from coloredFull: AttributedString, fullText: String,
+                                      onto displayText: String) -> AttributedString? {
+        // Which pipeline produced the display string: tashkeel stripped, or tashkeel + dots.
+        let stripped = fullText.removingArabicDiacriticsAndSigns
+        guard stripped == displayText || stripped.removingArabicDots == displayText else { return nil }
+
+        let ns = NSMutableAttributedString(string: displayText)
+        ns.addAttribute(.foregroundColor, value: UIColor.label,
+                        range: NSRange(location: 0, length: ns.length))
+
+        let coloredNS = NSAttributedString(coloredFull)
+        guard coloredNS.string == fullText else { return nil }
+
+        var fullOffset = 0
+        var displayOffset = 0
+        var painted = false
+        for scalar in fullText.unicodeScalars {
+            let length = scalar.value > 0xFFFF ? 2 : 1
+            let dropped = Self.strippedScalarValues.contains(scalar.value)
+            if !dropped {
+                // Kept scalars map 1:1 (seat/dot substitutions never change UTF-16 length).
+                if fullOffset < coloredNS.length,
+                   let color = coloredNS.attribute(.foregroundColor, at: fullOffset,
+                                                   effectiveRange: nil) as? UIColor,
+                   color != .label,
+                   displayOffset + length <= ns.length {
+                    ns.addAttribute(.foregroundColor, value: color,
+                                    range: NSRange(location: displayOffset, length: length))
+                    painted = true
+                }
+                displayOffset += length
+            }
+            fullOffset += length
+        }
+        guard painted, displayOffset == ns.length else { return nil }
+        return AttributedString(ns)
     }
 
     /// The word-token spans of `displayText`'s UTF-16 units, in reading order - the

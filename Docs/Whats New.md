@@ -1,3 +1,32 @@
+# Version 2.6.3
+
+Ask AI: a real conversation about the Quran, two new Arabic faces, tajweed on every riwayah comparison, and a much deeper Islam tab.
+
+Ask AI:
+- Ask a question, read the answer, ask a follow-up: a conversation, not a one-shot search.
+- Every reply cites the ayahs and the app's own articles it drew on, and each citation opens.
+- Runs on Apple Intelligence on your device. Private, offline, and free.
+- Reached from the ASK AI row above search results, and from the Islam tab.
+
+Al-Quran:
+- Two new Arabic faces: Hijazi, in four styles, and Kufi.
+- Show Tajweed in the riwayah comparison: each print's coloring now stays on with tashkeel or dots hidden.
+- Smart Ayah Matching lines up riwayat that number their verses differently.
+- The tajweed legend covers all twenty riwayat: tap one for its full legend.
+- A larger mushaf page: tighter margins and a compressed line box put more of the page to use.
+- Reading plan: an optional reminder the day before.
+
+Islamic Tools:
+- Inheritance Calculator: divide an estate by the Quranic shares.
+- Aqeedah: Tawhid, Shirk, Kufr, Bid'ah, the Mawlid, Salafiyyah, Quran and Sunnah, and the schools of creed.
+- Scholars: the scholars among the Sahabah, the Salaf and the imams, at-Tabari, Ibn Taymiyyah, Ibn al-Qayyim, adh-Dhahabi, Ibn Kathir, and those who followed.
+- Answering: Sufism, the Shia, Christianity, Judaism, Hinduism, Paganism, Buddhism, and Atheism.
+
+Smaller and faster:
+- The bundled Quran data was repacked: a smaller download that opens quicker.
+
+Bug fixes and optimizations throughout.
+
 # Version 2.6.2
 
 Tap-a-word meanings, a real printed mushaf for every riwayah, reading themes, similar ayahs, and a progress profile with badges.

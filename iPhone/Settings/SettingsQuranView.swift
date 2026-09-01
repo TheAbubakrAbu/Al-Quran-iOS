@@ -62,6 +62,14 @@ struct SettingsQuranView: View {
         )
     }
     
+    #if DEBUG && os(iOS)
+    /// Headless visual verification (no tap access on the dev machine): `-launchQuranSettingsArabic`
+    /// lands directly on the Arabic Text subpage, the Hadith tab's `-launchHadithSettingsReading`
+    /// pattern. DEBUG builds only.
+    @State private var autoOpenArabicText =
+        ProcessInfo.processInfo.arguments.contains("-launchQuranSettingsArabic")
+    #endif
+
     var body: some View {
         List {
             Group {
@@ -98,6 +106,13 @@ struct SettingsQuranView: View {
         }
         .applyConditionalListStyle()
         .compactListSectionSpacing()
+        #if DEBUG && os(iOS)
+        .background(
+            NavigationLink(isActive: $autoOpenArabicText) { arabicTextDestination }
+                          label: { EmptyView() }
+                .hidden()
+        )
+        #endif
         .navigationTitle("Al-Quran Settings")
         #if os(iOS)
         .toolbar {
@@ -468,7 +483,7 @@ struct SettingsQuranView: View {
                 }
 
             Text(canRenderNow || !settings.showArabicText
-                 ? "Tap any word while reading to see what that word means on its own. Works offline."
+                 ? "Tap any word while reading to see what that word means on its own. With tajweed colors on, the word's card also explains every tajweed color painted on it. Works offline."
                  : "Available in Hafs an Asim, with beginner mode off - the meanings are counted word by word against that text.")
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -479,12 +494,12 @@ struct SettingsQuranView: View {
                     get: { settings.wordByWordInline && canRenderNow },
                     set: { settings.wordByWordInline = $0 }
                 )
-                Toggle("Show Meanings Under Words", isOn: inlineBinding.animation(.easeInOut))
+                Toggle("Show Meanings Under Words (Word by Word)", isOn: inlineBinding.animation(.easeInOut))
                     .font(.subheadline)
                     .disabled(!canRenderNow)
                     .onChange(of: settings.wordByWordInline) { _ in settings.hapticFeedback() }
 
-                Text("Lays the ayah out word by word, with each word's meaning written directly beneath it.")
+                Text("Lays the ayah out word by word, with each word's meaning written directly beneath it. List mode only: page mode keeps the mushaf layout, so this has no effect there.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.vertical, 2)
@@ -553,11 +568,14 @@ struct SettingsQuranView: View {
     @ViewBuilder
     private var arabicDisplayControls: some View {
         if settings.showArabicText {
-            cleanArabicTextGroup
             arabicFontPicker
+            hijaziMarkStylePicker
             arabicScriptStylePicker
             arabicFontSizeControls
             beginnerModeGroup
+            // Last on purpose (user rule): Hide Tashkeel is the section's most drastic, least
+            // recommended option, so it sits at the bottom of the list rather than leading it.
+            cleanArabicTextGroup
         }
     }
 
@@ -603,16 +621,70 @@ struct SettingsQuranView: View {
     }
 
     private var arabicFontPicker: some View {
-        Picker("Arabic Font", selection: $settings.fontArabic.animation(.easeInOut)) {
-            Text("Uthmani").tag(Settings.hafsUthmaniFontName)
-            Text("Indopak").tag(Settings.indopakFontName)
-            Text("Basic").tag(Settings.systemArabicFontName)
+        VStack(alignment: .leading, spacing: 8) {
+            // Every Hijazi mark style reads as "Hijazi" here; the style itself is chosen on the row
+            // below, which exists only while Hijazi is selected (five segments is all an iPhone
+            // width fits). Order: the two printed-mushaf hands, then the two historical scripts
+            // oldest first, then the system font.
+            Picker("Arabic Font", selection: Binding(
+                get: { Settings.pickerFaceName(for: settings.fontArabic) },
+                set: { settings.fontArabic = $0 }
+            ).animation(.easeInOut)) {
+                Text("Uthmani").tag(Settings.hafsUthmaniFontName)
+                Text("Indopak").tag(Settings.indopakFontName)
+                // The hand of the earliest mushafs themselves (Al-Islam Hijazi, built from hijazifont).
+                Text("Hijazi").tag(Settings.hijaziFontName)
+                // The angular script of the early Abbasid mushafs (Noto Kufi Arabic).
+                Text("Kufi").tag(Settings.kufiFontName)
+                Text("Basic").tag(Settings.systemArabicFontName)
+            }
+            #if os(iOS)
+            .pickerStyle(SegmentedPickerStyle())
+            #endif
+            .disabled(!settings.showArabicText)
+            .onChange(of: settings.fontArabic) { _ in settings.hapticFeedback() }
+
+            #if os(iOS)
+            // Where the chosen hand comes from, then the one thing every face shares.
+            if let face = Settings.arabicFace(forQuranFontName: settings.fontArabic) {
+                Text(face.historyCaption)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 2)
+            }
+
+            Text(Settings.uthmaniRasmCaption)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.vertical, 2)
+            #endif
         }
-        #if os(iOS)
-        .pickerStyle(SegmentedPickerStyle())
-        #endif
-        .disabled(!settings.showArabicText)
-        .onChange(of: settings.fontArabic) { _ in settings.hapticFeedback() }
+    }
+
+    /// The Hijazi face's three mark styles (`Settings.HijaziMarkStyle`): one typeface to the picker
+    /// above, three builds of it here. Shown only while Hijazi is the Quran face.
+    @ViewBuilder
+    private var hijaziMarkStylePicker: some View {
+        if Settings.isHijaziFontName(settings.fontArabic) {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Hijazi Marks", selection: $settings.fontArabic.animation(.easeInOut)) {
+                    ForEach(Settings.HijaziMarkStyle.allCases) { style in
+                        Text(style.label).tag(style.fontName)
+                    }
+                }
+                #if os(iOS)
+                .pickerStyle(SegmentedPickerStyle())
+                #endif
+                .disabled(!settings.showArabicText)
+
+                #if os(iOS)
+                Text("The letters are the same in all three; only the vowel marks change. Light and Bold are the usual marks at two weights. Dot Vowels writes them the way the earliest vocalised mushafs did: a dot above the letter is fatha, below it is kasra, in front of it is damma, and doubled dots are tanween.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 2)
+                #endif
+            }
+        }
     }
 
     /// Sits under the Arabic Font picker because it only refines the Uthmani choice - IndoPak
@@ -684,7 +756,7 @@ struct SettingsQuranView: View {
                 .font(.subheadline)
                 .onChange(of: settings.mushafFitPage) { _ in settings.hapticFeedback() }
 
-            Text("In reading mode, shrinks each mushaf page's Arabic just enough that all of its ayahs fit on one screen, the way a printed mushaf sets them. Never larger than your chosen font size. Turn this off to read at exactly the size above and scroll.")
+            Text("In reading mode, sets each mushaf page the way this riwayah's printed mushaf sets it: the same lines, broken at the same words, at the largest size that fits on one screen - larger or smaller than the size above, whatever the page allows - in your own font and colors. Turn this off to read at exactly the size above and scroll.")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .padding(.vertical, 2)
@@ -799,21 +871,23 @@ struct SettingsQuranView: View {
                 }
             }
         } header: {
+            // With riwayah/qiraah hidden the header carries no riwayah caption and the footer stays
+            // empty: the collapsed section is just the "Show Riwayah / Qiraah" entry point, not a pitch.
             HStack(spacing: 6) {
                 Text("RIWAYAH / QIRAAH")
-                Text("- \(settings.displayQiraahArabicCaption)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.65)
-                    .padding(.vertical, 2)
+                if settings.showQiraahDetails {
+                    Text("- \(settings.displayQiraahArabicCaption)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
+                        .padding(.vertical, 2)
+                }
                 Spacer(minLength: 0)
             }
         } footer: {
             if settings.showQiraahDetails {
                 Text("This app supports all 20 riwayat — 12 are in beta.\n\nThe riwayat printed in the Maghribi script use the official King Fahd Complex Warsh typeface; the others share the Uthmani (Madani) script typeface. You can override this under Arabic Text → Uthmani Script.\n\nPlay Ayahs is unsupported for other qiraat. For full surahs, you can choose reciters by riwayah. If you play a surah while viewing a different qiraah on screen, the reciter may be in another riwayah, so the audio may not match the text you see. For beginners, staying with Hafs an Asim for both reading and listening is recommended.")
-            } else {
-                Text("This app supports all 20 riwayat — 12 are in beta.")
             }
         }
     }

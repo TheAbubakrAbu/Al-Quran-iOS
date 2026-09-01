@@ -187,7 +187,9 @@ struct HighlightedSnippet: View {
     }()
 
     /// source → Allah highlight ranges: amortises the O(n) per-render Allah scan.
-    private static let allahRangeCache: NSCache<NSString, RangeEntry> = {
+    /// nonisolated(unsafe): NSCache is thread-safe by contract; `arabicAllahRanges` is nonisolated
+    /// because the word-by-word reader and the prewarm call it off the main actor.
+    nonisolated(unsafe) private static let allahRangeCache: NSCache<NSString, RangeEntry> = {
         let c = NSCache<NSString, RangeEntry>()
         c.countLimit = 7_000
         return c
@@ -446,7 +448,65 @@ struct HighlightedSnippet: View {
         if ranges.isEmpty, guaranteeMatch {
             ranges = closestMatchRanges(in: source, normalizedTerm: normalizedTerm)
         }
-        return ranges
+        // A one-letter term would snap every word it touches; below two letters the exact ranges stand.
+        return normalizedTerm.count >= 2 ? snappedToWholeWords(ranges, in: source) : ranges
+    }
+
+    /// Every match painted as WHOLE WORDS. The rungs above find substrings - "صلاة" inside
+    /// "وَٱلصَّلَوٰةِ", "believ" inside "believers", the alef-skeleton prefix "لصل" of a word the loose
+    /// rung could only half-match - and painting exactly the matched letters left words chopped in
+    /// two colors: the head of the word in the accent, its tail in the base color, which read as a
+    /// highlight that had been cut off mid-word. A word either matched or it didn't, so each range
+    /// grows outward to the whitespace on both sides, then sheds the punctuation it picked up at the
+    /// edges (a closing quote, the comma after "ease,") - the accent covers the word and nothing
+    /// else. Overlapping or touching ranges merge, so a phrase reads as one span. Shared by every
+    /// caller of the ladder (list rows, the mushaf page reader, the cross-language token lookup), so
+    /// the same query paints the same words everywhere.
+    nonisolated private static func snappedToWholeWords(
+        _ ranges: [Range<String.Index>],
+        in source: String
+    ) -> [Range<String.Index>] {
+        guard !ranges.isEmpty else { return ranges }
+        var snapped: [Range<String.Index>] = []
+        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            var start = range.lowerBound
+            while start > source.startIndex {
+                let previous = source.index(before: start)
+                if isWordBoundary(source[previous]) { break }
+                start = previous
+            }
+            var end = range.upperBound
+            while end < source.endIndex, !isWordBoundary(source[end]) {
+                end = source.index(after: end)
+            }
+            while start < end, !isWordCharacter(source[start]) { start = source.index(after: start) }
+            while end > start, !isWordCharacter(source[source.index(before: end)]) { end = source.index(before: end) }
+            guard start < end else { continue }
+            if let last = snapped.last, last.upperBound >= start {
+                snapped[snapped.count - 1] = last.lowerBound..<max(last.upperBound, end)
+            } else {
+                snapped.append(start..<end)
+            }
+        }
+        return snapped
+    }
+
+    /// Where a snapped range stops growing: whitespace, and the dashes that glue two words together
+    /// without a space (an em or en dash), so "mercy\u{2014}indeed" never paints its neighbour. A
+    /// hyphen is NOT a boundary: "All-Knowing" is one word.
+    nonisolated private static func isWordBoundary(_ character: Character) -> Bool {
+        character.isWhitespace || character == "\u{2014}" || character == "\u{2013}" || character == "/"
+    }
+
+    /// A character that belongs to a word for painting purposes: it carries a letter or a digit, or an
+    /// Arabic mark (a standalone tashkeel cluster after its letter). Quotes, brackets, commas, and the
+    /// like are not, so they are trimmed off the ends of a snapped range.
+    nonisolated private static func isWordCharacter(_ character: Character) -> Bool {
+        character.unicodeScalars.contains { scalar in
+            CharacterSet.letters.contains(scalar)
+                || CharacterSet.decimalDigits.contains(scalar)
+                || scalar.isArabicMarkScalar
+        }
     }
 
     /// Convenience for callers without a cached fold (the mushaf page reader): folds `source` fresh, then
@@ -791,19 +851,44 @@ struct HighlightedSnippet: View {
            let secondLam = nextNonMarkIndex(after: afterAlif, in: source),
            source[secondLam].allahBase == "ل",
            let heh = nextNonMarkIndex(after: secondLam, in: source),
-           source[heh].allahBase == "ه" {
+           source[heh].allahBase == "ه",
+           nameEndsTheWord(atHeh: heh, in: source) {
             return start..<rangeUpperBound(afterBaseAt: heh, in: source)
         }
 
         if source[start].allahBase == "ل",
+           nameStartsTheWord(atFirstLam: start, in: source),
            let secondLam = nextNonMarkIndex(after: start, in: source),
            source[secondLam].allahBase == "ل",
            let heh = nextNonMarkIndex(after: secondLam, in: source),
-           source[heh].allahBase == "ه" {
+           source[heh].allahBase == "ه",
+           nameEndsTheWord(atHeh: heh, in: source) {
             return start..<rangeUpperBound(afterBaseAt: heh, in: source)
         }
 
         return nil
+    }
+
+    /// The name must END its word - `ٱللَّهِ`, `لِلَّهِ` - with the one exception of the vocative `ٱللَّهُمَّ` (Allahumma).
+    /// Without this every word whose letters happen to run ل + ل + ه was painted red: `لَلۡهُدَىٰ` (92:12,
+    /// "the guidance" - Abu's report), `ٱللَّهۡوِ` (62:11, the amusement) and `ٱللَّهَبِ` (77:31, the flame).
+    /// A digit, a punctuation mark, an ayah medallion or a tatweel all count as the end of the word.
+    nonisolated private static func nameEndsTheWord(atHeh heh: String.Index, in source: String) -> Bool {
+        guard let next = nextNonMarkIndex(after: heh, in: source) else { return true }
+        guard let letter = source[next].arabicWordLetter else { return true }
+        guard letter == "م" else { return false }
+        guard let afterMeem = nextNonMarkIndex(after: next, in: source) else { return true }
+        return source[afterMeem].arabicWordLetter == nil
+    }
+
+    /// Alif-less `لله` is the name only where `لِ` is the word's own opening - `لِلَّهِ`, or that behind the
+    /// conjunctions و and ف (`وَلِلَّهِ`, `فَلِلَّهِ`). Every other preceding letter makes it an ordinary
+    /// doubled-lam word that the shadda-less spelling only looks like: `يُضۡلِلۡهُ`, `ظَلَّلَهُ`,
+    /// `خِلَٰلَهَا`. (Every preposition other than لِ keeps the alif - `بِٱللَّهِ` - so it lands in the alif branch.)
+    nonisolated private static func nameStartsTheWord(atFirstLam lam: String.Index, in source: String) -> Bool {
+        guard let previous = previousNonMarkIndex(before: lam, in: source) else { return true }
+        guard let letter = source[previous].arabicWordLetter else { return true }
+        return letter == "و" || letter == "ف"
     }
 
     nonisolated private static func nextNonMarkIndex(after index: String.Index, in source: String) -> String.Index? {
@@ -818,6 +903,21 @@ struct HighlightedSnippet: View {
                 return cursor
             }
             cursor = source.index(after: cursor)
+        }
+        return nil
+    }
+
+    nonisolated private static func previousNonMarkIndex(before index: String.Index, in source: String) -> String.Index? {
+        var cursor = index
+        while cursor > source.startIndex {
+            cursor = source.index(before: cursor)
+            // Same word boundary the forward walk keeps: what sits behind a space is a different word.
+            if source[cursor].isWhitespace {
+                return nil
+            }
+            if !source[cursor].isArabicMark {
+                return cursor
+            }
         }
         return nil
     }
@@ -924,7 +1024,9 @@ private extension Character {
     var allahBase: Character? {
         for scalar in unicodeScalars where !scalar.isArabicMarkScalar {
             switch scalar.value {
-            case 0x0627, 0x0671:
+            // Every alif spelling, hamza-carrying ones included: the hadith books write the questioning
+            // `آلله` and `ألله`, which have to reach the alif branch or the alif-less rule below rejects them.
+            case 0x0622, 0x0623, 0x0625, 0x0627, 0x0671...0x0673, 0x0675:
                 return "ا"
             case 0x0644:
                 return "ل"
@@ -940,6 +1042,23 @@ private extension Character {
 
     var isAllahAlif: Bool {
         self == "ا"
+    }
+
+    /// The Arabic letter this cluster is built on, marks ignored - nil when the cluster is not a letter
+    /// at all (a space, a digit, punctuation, an ayah medallion, a tatweel), which is what makes a word
+    /// end for the name scan.
+    var arabicWordLetter: Character? {
+        for scalar in unicodeScalars where !scalar.isArabicMarkScalar {
+            switch scalar.value {
+            case 0x0621...0x063F, 0x0641...0x064A, 0x066E, 0x066F, 0x0671...0x06D3,
+                 0x06EE, 0x06EF, 0x06FA...0x06FF, 0x0750...0x077F:
+                return Character(scalar)
+            default:
+                continue
+            }
+        }
+
+        return nil
     }
 
     var isArabicMark: Bool {

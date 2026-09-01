@@ -61,6 +61,8 @@ struct AyahRow: View, Equatable {
     @State private var showQiraahComparisonSheet = false
     @State private var showEnglishComparisonSheet = false
     @State private var showSelectTextSheet = false
+    /// The long-press ayah actions sheet - the same `AyahActionsSheet` page mode presents.
+    @State private var showAyahActionsSheet = false
     #endif
     #if os(watchOS)
     @State private var showWatchPlaybackDialog = false
@@ -112,11 +114,33 @@ struct AyahRow: View, Equatable {
         #if os(iOS)
         showingAyahSheet || showTafsirSheet || showingNoteSheet || showCustomRangeSheet
             || showQiraahComparisonSheet || showEnglishComparisonSheet || showSelectTextSheet
-            || tappedWord != nil || tappedRiwayahWord != nil
+            || showAyahActionsSheet || tappedWord != nil || tappedRiwayahWord != nil
         #else
         false
         #endif
     }
+
+    #if os(iOS)
+    /// Routes the actions sheet's "open another sheet" requests onto this row's own sheet states -
+    /// the list-mode twin of `MushafPageContent.requestSecondarySheet`. The actions sheet closes
+    /// first; UIKit can't present a second sheet while the first is still animating away.
+    private func requestRowSecondarySheet(_ kind: AyahSecondarySheet) {
+        showAyahActionsSheet = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            switch kind {
+            case .tafsir: showTafsirSheet = true
+            case .qiraah: showQiraahComparisonSheet = true
+            case .translations: showEnglishComparisonSheet = true
+            case .customRange: showCustomRangeSheet = true
+            case .note:
+                draftNote = currentNote
+                showingNoteSheet = true
+            case .share: showingAyahSheet = true
+            case .selectText: showSelectTextSheet = true
+            }
+        }
+    }
+    #endif
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.surah == rhs.surah &&
@@ -447,10 +471,18 @@ struct AyahRow: View, Equatable {
     private func arabicRiwayahTajweedText(displayText: String, beginner: Bool) -> AttributedString? {
         #if os(iOS)
         guard let tag = riwayahTajweedTag else { return nil }
+        // With "Hide Tashkeel and Signs" on, the store colors the FULL text and projects the runs
+        // onto the stripped rendering - so the print's coloring survives the strip, like Hafs's does.
+        let fullText: String? = {
+            guard settings.cleanArabicText else { return nil }
+            let full = ayah.displayArabicText(surahId: surah.id, clean: false, qiraahOverride: comparisonQiraahOverride)
+            return beginner ? full.beginnerSpaced : full
+        }()
         return QiraahTajweedStore.shared.attributedText(
             tag: tag, surah: surah.id, ayah: ayah.id, displayText: displayText,
             beginnerSpacing: beginner,
-            hiddenRules: settings.riwayahTajweedHiddenRuleSet
+            hiddenRules: settings.riwayahTajweedHiddenRuleSet,
+            fullText: fullText
         )
         #else
         return nil
@@ -952,8 +984,21 @@ struct AyahRow: View, Equatable {
             }
         }
         #if os(iOS)
-        .contextMenu {
-            menuBlock(isBookmarked: isBookmarked, includePlaybackOptions: true)
+        // Long press opens the SAME ayah actions sheet page mode's long press shows (user rule: one
+        // grammar for "act on this ayah" in both modes) - the old .contextMenu is retired. The row's
+        // ellipsis menu keeps the inline menu for discoverability.
+        .onLongPressGesture {
+            guard !isSelecting else { return }
+            settings.hapticFeedback()
+            showAyahActionsSheet = true
+        }
+        .sheet(isPresented: $showAyahActionsSheet) {
+            AyahActionsSheet(
+                surah: surah,
+                ayah: ayah,
+                onRequestSheet: { kind in requestRowSecondarySheet(kind) }
+            )
+            .smallMediumSheetPresentation()
         }
         // The tap-to-scroll jump, as a swipe too: while searching, swipe the result row to scroll down
         // to that ayah in the full list.
@@ -1269,6 +1314,25 @@ struct AyahRow: View, Equatable {
                         .id(tajweedAnimationKey)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                     }
+                    #if DEBUG
+                    // "-openWordCard N" on a HAFS row opens the meaning card instead - same one-shot,
+                    // same launch-target-row guard as the riwayah branch below.
+                    Color.clear
+                        .frame(height: 0)
+                        .onAppear {
+                            guard let target = Self.debugTargetAyah,
+                                  target.surah == surah.id, target.ayah == ayah.id,
+                                  let idx = Self.debugWordCardIndex else { return }
+                            Self.debugWordCardIndex = nil
+                            let tokens = WordTokens.tokens(in: arabicSource)
+                            guard tokens.indices.contains(idx), glosses.indices.contains(idx) else { return }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                tappedWord = TappedWord(
+                                    index: idx, word: tokens[idx], meaning: glosses[idx], total: glosses.count
+                                )
+                            }
+                        }
+                    #endif
 
                 } else if let riwayahTag = riwayahWordTapTag(beginner: beginner, highlightQuery: highlightQuery) {
                     // Non-Hafs word tap: same tappable TextKit rendering, no glosses - the tap opens

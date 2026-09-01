@@ -15,7 +15,19 @@ struct IslamView: View {
     @State private var islamDetailRefreshToken = 0
     /// Programmatic pushes for the grid tiles (a `NavigationLink` inside a List row drags the row chevron
     /// into each tile; a path append does not).
-    @State private var islamPath: [IslamDestination] = []
+    @State private var islamPath: [IslamDestination] = Self.launchDestination.map { [$0] } ?? []
+
+    /// DEBUG launch argument `-islamDestination <rawValue>` (e.g. `namesOfAllah`): the resource is
+    /// pushed as the tab appears, the only headless route into a resource page (see Settings.init).
+    private static var launchDestination: IslamDestination? {
+        #if DEBUG
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-islamDestination"),
+           ProcessInfo.processInfo.arguments.indices.contains(idx + 1) {
+            return IslamDestination(rawValue: ProcessInfo.processInfo.arguments[idx + 1])
+        }
+        #endif
+        return nil
+    }
 
     /// Two side-by-side columns only when the window is actually wide enough - the Hadith tab's rule.
     private var usesColumnNavigation: Bool {
@@ -37,14 +49,15 @@ struct IslamView: View {
     /// String-backed so favorites persist by raw value, CaseIterable so the resource list, the grid, and the
     /// favorites section all draw from one source of truth instead of three hand-maintained row lists.
     private enum IslamDestination: String, Hashable, CaseIterable {
+        /// The on-device chat. Listed only where Apple Intelligence can run it (`available`).
+        case askAI
         case arabicAlphabet
         case tajweedFoundations
         case commonAdhkar
         case commonDuas
         case tasbihCounter
-        // Zakah Calculator is built (ZakahView.swift) but hidden for now - uncomment this case and its
-        // title/systemImage/gridTitle/destination/resourceLink entries below to ship it.
-        // case zakahCalculator
+        case zakahCalculator
+        case inheritanceCalculator
         case namesOfAllah
         case hijriCalendarConverter
         case islamicWallpapers
@@ -53,12 +66,14 @@ struct IslamView: View {
 
         var title: String {
             switch self {
+            case .askAI: return "Ask AI"
             case .arabicAlphabet: return "Arabic Alphabet"
             case .tajweedFoundations: return "Tajweed Foundations"
             case .commonAdhkar: return "Dhikr & Remembrances"
             case .commonDuas: return "Dua & Supplications"
             case .tasbihCounter: return "Tasbih Counter"
-            // case .zakahCalculator: return "Zakah Calculator"
+            case .zakahCalculator: return "Zakah Calculator"
+            case .inheritanceCalculator: return "Inheritance Calculator"
             case .namesOfAllah: return "99 Names of Allah"
             case .hijriCalendarConverter: return "Hijri Date Converter"
             case .islamicWallpapers: return "Islamic Wallpapers"
@@ -69,12 +84,14 @@ struct IslamView: View {
 
         var systemImage: String {
             switch self {
+            case .askAI: return "sparkles"
             case .arabicAlphabet: return "textformat.size.ar"
             case .tajweedFoundations: return "waveform"
             case .commonAdhkar: return "book.closed"
             case .commonDuas: return "text.book.closed"
             case .tasbihCounter: return "circles.hexagonpath.fill"
-            // case .zakahCalculator: return "percent"
+            case .zakahCalculator: return "percent"
+            case .inheritanceCalculator: return "divide.circle"
             case .namesOfAllah: return "signature"
             case .hijriCalendarConverter: return "calendar"
             case .islamicWallpapers: return "photo.on.rectangle"
@@ -86,12 +103,14 @@ struct IslamView: View {
         /// One line of what lives behind the row - the Settings hub's caption column, here.
         var subtitle: String {
             switch self {
+            case .askAI: return "Ask anything about Islam, on device"
             case .arabicAlphabet: return "Letters, forms, diacritics, and signs"
             case .tajweedFoundations: return "The rules of beautiful recitation"
             case .commonAdhkar: return "Morning, evening, and daily remembrances"
             case .commonDuas: return "Authenticated supplications with sources"
             case .tasbihCounter: return "Count dhikr with a tap"
-            // case .zakahCalculator: return "Work out what you owe"
+            case .zakahCalculator: return "Work out what you owe"
+            case .inheritanceCalculator: return "Divide an estate by the Quranic shares"
             case .namesOfAllah: return "Asma ul-Husna with meanings"
             case .hijriCalendarConverter: return "Convert Hijri and Gregorian dates"
             case .islamicWallpapers: return "Beautiful wallpapers to save"
@@ -105,12 +124,14 @@ struct IslamView: View {
         /// one rhythm.
         var gridTitle: String {
             switch self {
+            case .askAI: return "Ask\nAI"
             case .arabicAlphabet: return "Arabic\nAlphabet"
             case .tajweedFoundations: return "Tajweed\nFoundations"
             case .commonAdhkar: return "Dhikr &\nRemembrances"
             case .commonDuas: return "Dua &\nSupplications"
             case .tasbihCounter: return "Tasbih\nCounter"
-            // case .zakahCalculator: return "Zakah\nCalculator"
+            case .zakahCalculator: return "Zakah\nCalculator"
+            case .inheritanceCalculator: return "Inheritance\nCalculator"
             case .namesOfAllah: return "99 Names\nof Allah"
             case .hijriCalendarConverter: return "Hijri Date\nConverter"
             case .islamicWallpapers: return "Islamic\nWallpapers"
@@ -118,13 +139,19 @@ struct IslamView: View {
             case .howToGuides: return "How-To\nGuides"
             }
         }
+
+        /// Every resource this device can show: all of them, minus Ask AI where Apple Intelligence
+        /// can't run it (a row that opens onto "not available here" is worse than no row).
+        static var available: [IslamDestination] {
+            allCases.filter { $0 != .askAI || OnDeviceAsk.isAvailable }
+        }
     }
 
     /// Collapse state for the favorites section, same as the Quran tab's Favorite Surahs.
     @AppStorage("showIslamFavorites") private var showIslamFavorites = true
 
     private var favoriteResources: [IslamDestination] {
-        IslamDestination.allCases.filter { settings.isIslamResourceFavorite($0.rawValue) }
+        IslamDestination.available.filter { settings.isIslamResourceFavorite($0.rawValue) }
     }
 
     private func favoriteToggleButton(_ item: IslamDestination) -> some View {
@@ -280,8 +307,8 @@ struct IslamView: View {
             }
         }
 
-        Section(header: SectionPillHeader(title: "ISLAMIC RESOURCES", count: IslamDestination.allCases.count)) {
-            resourceItems(IslamDestination.allCases)
+        Section(header: SectionPillHeader(title: "ISLAMIC RESOURCES", count: IslamDestination.available.count)) {
+            resourceItems(IslamDestination.available)
         }
     }
 
@@ -303,7 +330,10 @@ struct IslamView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.vertical, 4)
+            // 1, not 4: the section row already carries ~16pt of its own vertical inset, so 4
+            // put the tiles 20pt from the container's top and bottom edges against 17pt at the
+            // sides. Measured on the iPhone 17 Pro; 1 lands all four insets on 17pt.
+            .padding(.vertical, 1)
         } else {
             ForEach(items, id: \.self) { item in
                 NavigationLink(value: item) {
@@ -392,18 +422,33 @@ struct IslamView: View {
     @ViewBuilder
     private func destinationView(for destination: IslamDestination) -> some View {
         switch destination {
+        case .askAI:
+            AskAIChatView()
         case .arabicAlphabet:
             ArabicView()
         case .tajweedFoundations:
+            // `-showQiraatAnalysis` opens the buried textual-comparison page directly: it normally
+            // takes seven taps at the bottom of the Qiraat guide, and taps aren't scriptable in the
+            // simulator, so headless verification needs a way in.
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-showQiraatAnalysis") {
+                QiraatTextAnalysisView()
+            } else {
+                TajweedFoundationsView()
+            }
+            #else
             TajweedFoundationsView()
+            #endif
         case .commonAdhkar:
             AdhkarView()
         case .commonDuas:
             DuaView()
         case .tasbihCounter:
             TasbihView()
-        // case .zakahCalculator:
-        //     ZakahCalculatorView()
+        case .zakahCalculator:
+            ZakahCalculatorView()
+        case .inheritanceCalculator:
+            InheritanceCalculatorView()
         case .namesOfAllah:
             NamesView()
         case .hijriCalendarConverter:
@@ -440,11 +485,15 @@ struct IslamView: View {
                 TasbihView()
             }
 
-            // #if os(iOS)
-            // resourceLink(title: "Zakah Calculator", systemImage: "percent") {
-            //     ZakahCalculatorView()
-            // }
-            // #endif
+            #if os(iOS)
+            resourceLink(title: "Zakah Calculator", systemImage: "percent") {
+                ZakahCalculatorView()
+            }
+
+            resourceLink(title: "Inheritance Calculator", systemImage: "divide.circle") {
+                InheritanceCalculatorView()
+            }
+            #endif
 
             resourceLink(title: "99 Names of Allah", systemImage: "signature") {
                 NamesView()
@@ -484,7 +533,7 @@ struct IslamView: View {
         }
 
         Section(header: Text("ISLAMIC RESOURCES")) {
-            ForEach(IslamDestination.allCases, id: \.self) { splitResourceLink($0) }
+            ForEach(IslamDestination.available, id: \.self) { splitResourceLink($0) }
         }
     }
 

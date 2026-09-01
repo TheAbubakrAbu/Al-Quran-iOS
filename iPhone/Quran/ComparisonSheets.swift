@@ -28,6 +28,10 @@ struct AyahQiraahComparisonSheet: View {
     /// is exactly what this sheet exists to show. Persisted so the exploration survives reopening.
     @AppStorage("qiraahCompareHideTashkeel") private var compareHideTashkeel = false
     @AppStorage("qiraahCompareHideDots") private var compareHideDots = false
+    /// The rows' tajweed coloring (each print's khilaf wash). On by default, persisted, and
+    /// independent of Hide Tashkeel / Hide Dots: the colors are painted over the full text and
+    /// projected onto the stripped skeleton, so hiding the marks no longer hides the coloring.
+    @AppStorage("qiraahCompareShowTajweed") private var compareShowTajweed = true
 
     private struct QiraahDisplay: Identifiable {
         let label: String
@@ -116,6 +120,19 @@ struct AyahQiraahComparisonSheet: View {
                         }
 
                         Section {
+                            Toggle(isOn: $compareShowTajweed.animation(.easeInOut)) {
+                                Text("Show Tajweed")
+                                    .font(.subheadline.weight(.semibold))
+                            }
+                            .tint(settings.accentColor.color)
+                            .onChange(of: compareShowTajweed) { _ in settings.hapticFeedback() }
+                        } footer: {
+                            Text("Each riwayah's print-derived tajweed coloring (the khilaf wash marking what differs from Hafs) paints on every row - and stays on even with tashkeel or dots hidden below.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Section {
                             Toggle(isOn: $compareHideTashkeel.animation(.easeInOut)) {
                                 Text("Hide Tashkeel and Signs")
                                     .font(.subheadline.weight(.semibold))
@@ -167,9 +184,7 @@ struct AyahQiraahComparisonSheet: View {
                             }
                         } footer: {
                             if duelMode {
-                                Text(duelTextsIdentical
-                                     ? "These two riwayat read this ayah with identical wording."
-                                     : "Pick any two riwayat and read them directly against each other. Words tinted in the accent color differ between the two.")
+                                Text(duelFooterText)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -389,31 +404,34 @@ struct AyahQiraahComparisonSheet: View {
     /// cleanup applied here, so unchecking them restores tashkeel even when the reader's global
     /// Hide Tashkeel is on.
     private func resolvedText(for option: QiraahDisplay) -> ResolvedQiraahText? {
-        let resolved: ResolvedQiraahText?
+        guard let resolved = resolvedBase(for: option) else { return nil }
+        guard compareHideTashkeel || compareHideDots else { return resolved }
+        return ResolvedQiraahText(
+            text: compareTransformed(resolved.text),
+            ownNumber: resolved.ownNumber,
+            mergedSpan: resolved.mergedSpan
+        )
+    }
+
+    /// The resolver's full (untransformed) text - what `resolvedText` strips its sheet toggles
+    /// from, and the projection source that keeps the khilaf wash painting on stripped rows.
+    private func resolvedBase(for option: QiraahDisplay) -> ResolvedQiraahText? {
         if smartComparison {
-            resolved = QiraahAyahResolver.resolve(
+            return QiraahAyahResolver.resolve(
                 surahNumber: surahNumber,
                 ayahNumber: ayahNumber,
                 anchorHafsAyah: anchorHafsAyah,
                 optionTag: option.tag,
                 clean: false
             )
-        } else {
-            let tag = Settings.Riwayah.canonicalTag(option.tag)
-            guard let ayah = quranData.ayah(surah: surahNumber, ayah: ayahNumber),
-                  tag.isEmpty || ayah.existsInQiraah(tag, surahID: surahNumber) else { return nil }
-            resolved = ResolvedQiraahText(
-                text: ayah.displayArabicText(surahId: surahNumber, clean: false, qiraahOverride: tag),
-                ownNumber: nil,
-                mergedSpan: nil
-            )
         }
-        guard let resolved else { return nil }
-        guard compareHideTashkeel || compareHideDots else { return resolved }
+        let tag = Settings.Riwayah.canonicalTag(option.tag)
+        guard let ayah = quranData.ayah(surah: surahNumber, ayah: ayahNumber),
+              tag.isEmpty || ayah.existsInQiraah(tag, surahID: surahNumber) else { return nil }
         return ResolvedQiraahText(
-            text: compareTransformed(resolved.text),
-            ownNumber: resolved.ownNumber,
-            mergedSpan: resolved.mergedSpan
+            text: ayah.displayArabicText(surahId: surahNumber, clean: false, qiraahOverride: tag),
+            ownNumber: nil,
+            mergedSpan: nil
         )
     }
 
@@ -457,15 +475,20 @@ struct AyahQiraahComparisonSheet: View {
 
     /// Layers the print's KHILAF wash onto a diff-tinted base (or a plain-primary base) - shared by
     /// the current-vs-all rows and the Head-to-Head cards, so both color khilaf identically.
+    /// Stands down entirely while the sheet's Show Tajweed toggle is off.
     private func khilafOverlaid(_ diff: AttributedString?, option: QiraahDisplay, resolved: ResolvedQiraahText) -> AttributedString? {
+        guard compareShowTajweed else { return diff }
         let tag = Settings.Riwayah.canonicalTag(option.tag)
         guard !tag.isEmpty else { return diff }
         let ownAyah = resolved.ownNumber ?? ayahNumber
         let allRules = Set(QiraahTajweedStore.shared.legend(for: tag).map(\.key))
         let hidden = allRules.subtracting(["khilaf_word", "khilaf_harf"])
+        // With the sheet's Hide Tashkeel / Hide Dots on, `resolved.text` is the stripped skeleton;
+        // the full resolved text lets the store paint the real print and project the runs onto it.
         guard let khilaf = QiraahTajweedStore.shared.attributedText(
             tag: tag, surah: surahNumber, ayah: ownAyah, displayText: resolved.text,
-            hiddenRules: hidden
+            hiddenRules: hidden,
+            fullText: (compareHideTashkeel || compareHideDots) ? resolvedBase(for: option)?.text : nil
         ) else { return diff }
 
         // Overlay the khilaf runs onto the diff-tinted base (or a plain-primary base). Both strings
@@ -509,6 +532,20 @@ struct AyahQiraahComparisonSheet: View {
         guard let a = duelOptionA, let b = duelOptionB,
               let aText = qiraahText(for: a), let bText = qiraahText(for: b) else { return false }
         return aText == bText
+    }
+
+    /// The caption under the two picked riwayat. Two riwayat agreeing on ONE ayah is ordinary and the
+    /// generic line covers it; two riwayat that agree on EVERY ayah is a fact about the transmission,
+    /// and saying so is the difference between the sheet looking broken and the sheet teaching
+    /// something. See `QiraatProfiles.sharedTextRiwayat`.
+    private var duelFooterText: String {
+        if let a = duelOptionA?.tag, let b = duelOptionB?.tag,
+           QiraatProfiles.shareOneText(a, b) {
+            return QiraatProfiles.sharedTextExplanation
+        }
+        return duelTextsIdentical
+            ? "These two riwayat read this ayah with identical wording."
+            : "Pick any two riwayat and read them directly against each other. Words tinted in the accent color differ between the two."
     }
 
     private var duelPickerRow: some View {
@@ -698,6 +735,14 @@ struct AyahQiraahComparisonSheet: View {
             // it with a neighbor), say so plainly - the words below are still the SAME ayah.
             if let resolved, let note = numberNote(resolved) {
                 Text(note)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(settings.accentColor.color)
+            }
+
+            // Scanning the rows, one of them matches the current riwayah word for word in every
+            // ayah. Name the reason on the row where it is noticed.
+            if QiraatProfiles.shareOneText(option.tag, originTag) {
+                Text("Same transmitted text as \(QiraatProfiles.shortName(of: originTag)): al-Durrah reports no difference between the two narrators.")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(settings.accentColor.color)
             }
@@ -1175,6 +1220,10 @@ struct ResolvedQiraahText {
     let ownNumber: Int?
     /// The Hafs ayahs this riwayah ayah spans (more than one = it joins neighbors).
     let mergedSpan: ClosedRange<Int>?
+    /// The riwayah's own ayah numbers this ONE Hafs ayah is divided into there (a split - al-Fatiha's
+    /// last ayah is two in the Madani count). `text` carries every piece, so the row still shows
+    /// the same words; nil when the ayah is one ayah there too.
+    var splitSpan: ClosedRange<Int>? = nil
 }
 
 /// How a given riwayah renders ayah (`surahNumber`, `ayahNumber` in the ORIGIN riwayah's numbering) -
@@ -1207,15 +1256,29 @@ enum QiraahAyahResolver {
             )
         }
 
-        if let alignment = QiraahComparison.alignment(surahID: surahNumber, tag: tag, quranData: quranData),
-           let ownNumber = alignment.riwayahNumberForHafs[anchor],
-           let ayah = quranData.ayah(surah: surahNumber, ayah: ownNumber),
-           ayah.existsInQiraah(tag, surahID: surahNumber) {
+        if let alignment = QiraahComparison.alignment(surahID: surahNumber, tag: tag, quranData: quranData) {
+            // The alignment is the authority: a Hafs ayah it maps to nothing is one this riwayah
+            // does not number at all (the basmalah in the Madani count of al-Fatiha) - unavailable
+            // here, never the unrelated text that happens to carry the same number.
+            guard let ownNumber = alignment.riwayahNumberForHafs[anchor],
+                  let ayah = quranData.ayah(surah: surahNumber, ayah: ownNumber),
+                  ayah.existsInQiraah(tag, surahID: surahNumber) else { return nil }
             let span = alignment.hafsRangeForRiwayah[ownNumber]
+            // A split: `ownNumber` is only the piece that STARTS this Hafs ayah. Every following
+            // riwayah ayah that maps to exactly this Hafs ayah is the rest of it.
+            var text = ayah.displayArabicText(surahId: surahNumber, clean: clean, qiraahOverride: tag)
+            var lastPiece = ownNumber
+            while alignment.hafsRangeForRiwayah[lastPiece + 1] == anchor...anchor,
+                  let piece = quranData.ayah(surah: surahNumber, ayah: lastPiece + 1),
+                  piece.existsInQiraah(tag, surahID: surahNumber) {
+                lastPiece += 1
+                text += " " + piece.displayArabicText(surahId: surahNumber, clean: clean, qiraahOverride: tag)
+            }
             return ResolvedQiraahText(
-                text: ayah.displayArabicText(surahId: surahNumber, clean: clean, qiraahOverride: tag),
+                text: text,
                 ownNumber: ownNumber == ayahNumber ? nil : ownNumber,
-                mergedSpan: (span.map { $0.count } ?? 1) > 1 ? span : nil
+                mergedSpan: (span.map { $0.count } ?? 1) > 1 ? span : nil,
+                splitSpan: lastPiece > ownNumber ? ownNumber...lastPiece : nil
             )
         }
 
@@ -1232,6 +1295,9 @@ enum QiraahAyahResolver {
 
     /// "Ayah 285 in this riwayah (spans 285\u{2013}286)" - the numbering note under a row's header.
     static func numberNote(_ resolved: ResolvedQiraahText) -> String? {
+        if let split = resolved.splitSpan {
+            return "Ayahs \(split.lowerBound)\u{2013}\(split.upperBound) in this riwayah (divided there)"
+        }
         if let own = resolved.ownNumber {
             if let span = resolved.mergedSpan {
                 return "Ayah \(own) in this riwayah (spans \(span.lowerBound)\u{2013}\(span.upperBound))"

@@ -107,6 +107,12 @@ struct ShareAyahSheet: View {
 
     // Tajweed data is Hafs-only, so it keys off the sheet's riwayah, not the reader's.
     private var isHafsShare: Bool { shareQiraah.isEmpty }
+
+    /// Smart Ayah Matching only matters once the sheet's riwayah has moved away from the one the ayah
+    /// was tapped under - on the same riwayah the resolution is the identity, so the toggle is noise.
+    private var shareQiraahDiffersFromOrigin: Bool {
+        Settings.Riwayah.canonicalTag(shareQiraah) != Settings.Riwayah.canonicalTag(originQiraah)
+    }
     private var ayahExistsInShareQiraah: Bool { ayah?.existsInQiraah(shareQiraah, surahID: surahNumber) ?? true }
     private var effectiveCleanArabic: Bool { shareSettings.cleanArabic }
     private var effectiveHideArabicDots: Bool { shareSettings.hideArabicDots }
@@ -190,11 +196,9 @@ struct ShareAyahSheet: View {
             englishStart = match.upperBound
         }
 
-        for start in source.indices {
-            if let range = arabicAllahRange(startingAt: start, in: source) {
-                ranges.append(range)
-            }
-        }
+        // One scanner for the whole app: `HighlightedSnippet` owns the rules for what counts as the
+        // name (see `arabicAllahRange`), and the share card must paint exactly what the reader paints.
+        ranges.append(contentsOf: HighlightedSnippet.arabicAllahRanges(in: source))
 
         return ranges
     }
@@ -213,161 +217,11 @@ struct ShareAyahSheet: View {
             englishStart = match.upperBound
         }
 
-        for start in source.indices {
-            if let range = arabicAllahNSRange(startingAt: start, in: source) {
-                ranges.append(range)
-            }
+        for range in HighlightedSnippet.arabicAllahRanges(in: source) {
+            ranges.append(NSRange(range, in: source))
         }
 
         return ranges
-    }
-
-    private static func arabicAllahRange(startingAt start: String.Index, in source: String) -> Range<String.Index>? {
-        if allahBase(for: source[start]) == "ا",
-           let afterAlif = nextNonArabicMarkIndex(after: start, in: source),
-           allahBase(for: source[afterAlif]) == "ل",
-           let secondLam = nextNonArabicMarkIndex(after: afterAlif, in: source),
-           allahBase(for: source[secondLam]) == "ل",
-           let heh = nextNonArabicMarkIndex(after: secondLam, in: source),
-           allahBase(for: source[heh]) == "ه" {
-            return start..<rangeUpperBound(afterBaseAt: heh, in: source)
-        }
-
-        if allahBase(for: source[start]) == "ل",
-           let secondLam = nextNonArabicMarkIndex(after: start, in: source),
-           allahBase(for: source[secondLam]) == "ل",
-           let heh = nextNonArabicMarkIndex(after: secondLam, in: source),
-           allahBase(for: source[heh]) == "ه" {
-            return start..<rangeUpperBound(afterBaseAt: heh, in: source)
-        }
-
-        return nil
-    }
-
-    private static func arabicAllahNSRange(startingAt start: String.Index, in source: String) -> NSRange? {
-        if allahBase(for: source[start]) == "ا",
-           let afterAlif = nextNonArabicMarkIndex(after: start, in: source),
-           allahBase(for: source[afterAlif]) == "ل",
-           let secondLam = nextNonArabicMarkIndex(after: afterAlif, in: source),
-           allahBase(for: source[secondLam]) == "ل",
-           let heh = nextNonArabicMarkIndex(after: secondLam, in: source),
-           allahBase(for: source[heh]) == "ه" {
-            return allahNSRange(from: start, throughHehAt: heh, in: source)
-        }
-
-        if allahBase(for: source[start]) == "ل",
-           let secondLam = nextNonArabicMarkIndex(after: start, in: source),
-           allahBase(for: source[secondLam]) == "ل",
-           let heh = nextNonArabicMarkIndex(after: secondLam, in: source),
-           allahBase(for: source[heh]) == "ه" {
-            return allahNSRange(from: start, throughHehAt: heh, in: source)
-        }
-
-        return nil
-    }
-
-    private static func allahNSRange(from start: String.Index, throughHehAt heh: String.Index, in source: String) -> NSRange? {
-        guard var scalarCursor = heh.samePosition(in: source.unicodeScalars) else { return nil }
-
-        let lower = source.utf16.distance(from: source.startIndex, to: start)
-        var upper = source.utf16.distance(from: source.startIndex, to: heh)
-        var foundHeh = false
-
-        while scalarCursor < source.unicodeScalars.endIndex {
-            let scalar = source.unicodeScalars[scalarCursor]
-            if !foundHeh {
-                guard scalar.value == 0x0647 else { break }
-                foundHeh = true
-                upper += scalar.utf16.count
-                scalarCursor = source.unicodeScalars.index(after: scalarCursor)
-                continue
-            }
-            guard isArabicAllahHighlightMarkScalar(scalar) else { break }
-            upper += scalar.utf16.count
-            scalarCursor = source.unicodeScalars.index(after: scalarCursor)
-        }
-
-        guard upper > lower else { return nil }
-        return NSRange(location: lower, length: upper - lower)
-    }
-
-    private static func nextNonArabicMarkIndex(after index: String.Index, in source: String) -> String.Index? {
-        var cursor = source.index(after: index)
-        while cursor < source.endIndex {
-            if !isArabicMark(source[cursor]) {
-                return cursor
-            }
-            cursor = source.index(after: cursor)
-        }
-        return nil
-    }
-
-    private static func rangeUpperBound(afterBaseAt index: String.Index, in source: String) -> String.Index {
-        guard var scalarCursor = index.samePosition(in: source.unicodeScalars) else {
-            return source.index(after: index)
-        }
-
-        var foundBase = false
-        while scalarCursor < source.unicodeScalars.endIndex {
-            let scalar = source.unicodeScalars[scalarCursor]
-            if !foundBase {
-                foundBase = scalar.value == 0x0647
-                scalarCursor = source.unicodeScalars.index(after: scalarCursor)
-                continue
-            }
-            guard isArabicAllahHighlightMarkScalar(scalar) else { break }
-            scalarCursor = source.unicodeScalars.index(after: scalarCursor)
-        }
-
-        return scalarCursor.samePosition(in: source) ?? source.index(after: index)
-    }
-
-    private static func allahBase(for character: Character) -> Character? {
-        for scalar in character.unicodeScalars where !isArabicMarkScalar(scalar) {
-            switch scalar.value {
-            case 0x0627, 0x0671:
-                return "ا"
-            case 0x0644:
-                return "ل"
-            case 0x0647:
-                return "ه"
-            default:
-                continue
-            }
-        }
-
-        return nil
-    }
-
-    private static func isArabicMark(_ character: Character) -> Bool {
-        character.unicodeScalars.allSatisfy(isArabicMarkScalar)
-    }
-
-    private static func isArabicAllahHighlightMark(_ character: Character) -> Bool {
-        character.unicodeScalars.allSatisfy(isArabicAllahHighlightMarkScalar)
-    }
-
-    private static func isArabicMarkScalar(_ scalar: UnicodeScalar) -> Bool {
-        switch scalar.value {
-        case 0x0610...0x061A,
-             0x064B...0x065F,
-             0x0670,
-             0x06D6...0x06ED:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private static func isArabicAllahHighlightMarkScalar(_ scalar: UnicodeScalar) -> Bool {
-        switch scalar.value {
-        case 0x0610...0x061A,
-             0x064B...0x065F,
-             0x0670:
-            return true
-        default:
-            return false
-        }
     }
 
     // Internal (not private): HadithShareSheet applies the SAME Allah-name reddening to its share card
@@ -687,12 +541,15 @@ struct ShareAyahSheet: View {
                             if actionMode == .image {
                                 Picker("Arabic Font", selection: Binding(
                                     get: {
-                                        Settings.normalizedArabicFontName(
+                                        // Every Hijazi mark style reads as "Hijazi" in a segmented picker.
+                                        Settings.pickerFaceName(for: Settings.normalizedArabicFontName(
                                             shareSettings.shareArabicFont.isEmpty ? settings.fontArabic : shareSettings.shareArabicFont
-                                        )
+                                        ))
                                     },
                                     set: { val in
-                                        let normalizedFont = Settings.normalizedArabicFontName(val)
+                                        // "Hijazi" means the mark style the reader is on (or the default one).
+                                        let chosen = val == Settings.hijaziFontName ? Settings.currentHijaziFontName : val
+                                        let normalizedFont = Settings.normalizedArabicFontName(chosen)
                                         storedShareArabicFont = normalizedFont
                                         shareSettings = ShareSettings(
                                             arabic: shareSettings.arabic,
@@ -709,6 +566,8 @@ struct ShareAyahSheet: View {
                                 ).animation(.easeInOut)) {
                                     Text("Uthmani").tag(Settings.hafsUthmaniFontName)
                                     Text("Indopak").tag(Settings.indopakFontName)
+                                    Text("Hijazi").tag(Settings.hijaziFontName)
+                                    Text("Kufi").tag(Settings.kufiFontName)
                                     Text("Basic").tag(Settings.systemArabicFontName)
                                 }
                                 .pickerStyle(SegmentedPickerStyle())
@@ -796,22 +655,26 @@ struct ShareAyahSheet: View {
                             .padding(.bottom, 4)
 
                             // The same words across riwayat (anchored through Hafs, like the comparison
-                            // sheet) vs. whatever verse sits at the raw tapped number.
-                            Toggle(isOn: $smartAyahMatching.animation(.easeInOut)) {
-                                Label("Smart Ayah Matching", systemImage: "wand.and.stars")
-                            }
-                            .tint(settings.accentColor.color)
-                            .scaleEffect(0.8)
-                            .padding(.horizontal, -24)
-                            .padding(.vertical, 2)
+                            // sheet) vs. whatever verse sits at the raw tapped number. Only shown once the
+                            // picker has moved off the riwayah the ayah was tapped under - on the same
+                            // riwayah the resolution is the identity.
+                            if shareQiraahDiffersFromOrigin {
+                                Toggle(isOn: $smartAyahMatching.animation(.easeInOut)) {
+                                    Label("Smart Ayah Matching", systemImage: "wand.and.stars")
+                                }
+                                .tint(settings.accentColor.color)
+                                .scaleEffect(0.8)
+                                .padding(.horizontal, -24)
+                                .padding(.vertical, 2)
 
-                            Text(riwayahFooterText)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 20)
-                                .padding(.bottom, 4)
+                                Text(riwayahFooterText)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 20)
+                                    .padding(.bottom, 4)
+                            }
                         }
                     }
                 }

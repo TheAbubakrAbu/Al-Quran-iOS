@@ -71,6 +71,14 @@ final class Settings: ObservableObject {
 
         loadKhatmProgressCacheFromStorage()
 
+        // Comparison mode is a riwayah feature: with riwayah/qiraah hidden it must be off. The
+        // showOtherQiraatReciters didSet enforces this on every change; this covers installs that
+        // stored the stale pair before the rule existed. Raw write - didSets must not fire in init.
+        if !UserDefaults.standard.bool(forKey: "showOtherQiraatReciters"),
+           UserDefaults.standard.bool(forKey: "qiraatComparisonMode") {
+            UserDefaults.standard.set(false, forKey: "qiraatComparisonMode")
+        }
+
         #if DEBUG
         // Headless riwayah forcing for simulator verification: `-displayQiraah <tag>` seeds the
         // riwayah + beta unlock BEFORE anything derives from them. Raw UserDefaults writes on
@@ -82,6 +90,15 @@ final class Settings: ObservableObject {
             UserDefaults.standard.set(true, forKey: "acceptedBetaQiraatNotice")
             UserDefaults.standard.set(true, forKey: "showOtherQiraatReciters")
             UserDefaults.standard.set(ProcessInfo.processInfo.arguments[idx + 1], forKey: "displayQiraah")
+        }
+        // The counterpart, for verifying the beta GATE: qiraat surfaces on, beta text locked,
+        // reading Hafs. `simctl spawn defaults write` cannot be used for this - cfprefsd serves
+        // the app its cached copy, so a run "with beta off" quietly kept showing the beta twelve.
+        if ProcessInfo.processInfo.arguments.contains("-betaQiraatLocked") {
+            UserDefaults.standard.set(false, forKey: "betaQiraatEnabled")
+            UserDefaults.standard.set(false, forKey: "acceptedBetaQiraatNotice")
+            UserDefaults.standard.set(true, forKey: "showOtherQiraatReciters")
+            UserDefaults.standard.set("", forKey: "displayQiraah")
         }
         if ProcessInfo.processInfo.arguments.contains("-quranPageMode") {
             UserDefaults.standard.set(true, forKey: "quranPageMode")
@@ -110,6 +127,9 @@ final class Settings: ObservableObject {
             }
         }
         if ProcessInfo.processInfo.arguments.contains("-qiraatComparisonMode") {
+            // Comparison requires riwayah/qiraah shown (the init reconcile above would otherwise
+            // clear it on the next launch), so the seed sets the pair.
+            UserDefaults.standard.set(true, forKey: "showOtherQiraatReciters")
             UserDefaults.standard.set(true, forKey: "qiraatComparisonMode")
         }
         // Same headless-verification pattern for the facsimile: `-mushafPageLanguage pdf` puts page
@@ -132,6 +152,31 @@ final class Settings: ObservableObject {
                 let kv = pair.split(separator: "=", maxSplits: 1)
                 if kv.count == 2, let value = Int(kv[1]) {
                     UserDefaults.standard.set(value != 0, forKey: String(kv[0]))
+                }
+            }
+        }
+        // "-seedBool key=1[,key=0…]" - raw UserDefaults bool seeds BEFORE anything derives from
+        // them, for headless verification of boolean @AppStorage settings (external `defaults
+        // write` between launches is unreliable - the app's cached prefs resurrect old values).
+        // E.g. `-seedBool cleanArabicText=1,removeArabicDots=1` or `-seedBool wordByWordInline=1`.
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-seedBool"),
+           ProcessInfo.processInfo.arguments.indices.contains(idx + 1) {
+            for pair in ProcessInfo.processInfo.arguments[idx + 1].split(separator: ",") {
+                let kv = pair.split(separator: "=", maxSplits: 1)
+                if kv.count == 2, let value = Int(kv[1]) {
+                    UserDefaults.standard.set(value != 0, forKey: String(kv[0]))
+                }
+            }
+        }
+        // "-seedString key=value[,key=value…]" - the string twin of -seedBool, for raw-string
+        // @AppStorage settings (e.g. `-seedString islamArabicFontFace=kufi`). Values may not contain
+        // commas or "=".
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-seedString"),
+           ProcessInfo.processInfo.arguments.indices.contains(idx + 1) {
+            for pair in ProcessInfo.processInfo.arguments[idx + 1].split(separator: ",") {
+                let kv = pair.split(separator: "=", maxSplits: 1)
+                if kv.count == 2 {
+                    UserDefaults.standard.set(String(kv[1]), forKey: String(kv[0]))
                 }
             }
         }
@@ -563,8 +608,9 @@ final class Settings: ObservableObject {
     /// Reads a surah as swipeable mushaf pages instead of a scrolling ayah list. Toggled from the Quran tab's
     /// toolbar, but only takes effect inside SurahView - the surah browse list itself is unchanged.
     @AppStorage("quranPageMode") var quranPageMode = false
-    /// Reading mode shrinks each mushaf page's Arabic until the whole page fits on screen, the way a printed
-    /// mushaf sets it. Off, the page renders at the chosen font size and scrolls.
+    /// Reading mode sets each mushaf page the way its printed mushaf does: every line breaks where the
+    /// displayed riwayah's print breaks it (`MushafPrintLineTable`), at the largest size whose widest
+    /// printed line fits the screen. Off, the page renders at the chosen font size and scrolls.
     @AppStorage("mushafFitPage") var mushafFitPage = true
 
     /// What page mode draws as each page's BODY text. "arabic" (default) is the mushaf itself; the English
@@ -737,7 +783,16 @@ final class Settings: ObservableObject {
 
 
     /// When on, ReciterListView reveals non-Hafs qiraat reciters.
-    @AppStorage("showOtherQiraatReciters") var showOtherQiraatReciters: Bool = false
+    /// Hiding riwayah/qiraah also switches comparison mode off: comparison is a riwayah feature, and
+    /// leaving it on would keep riwayah pickers in the reader after the user asked for none of it.
+    @AppStorage("showOtherQiraatReciters") var showOtherQiraatReciters: Bool = false {
+        didSet {
+            guard oldValue != showOtherQiraatReciters else { return }
+            if !showOtherQiraatReciters && qiraatComparisonMode {
+                qiraatComparisonMode = false
+            }
+        }
+    }
 
     /// Unlocks the 12 machine-extracted riwayat (Ibn Amir, Hamzah, al-Kisai, Abu Jafar,
     /// Yaqub, Khalaf al-Ashir). Their text is BETA - digitized from a printed mushaf set
@@ -996,9 +1051,11 @@ final class Settings: ObservableObject {
     @AppStorage("quranArabicScriptStyle") var arabicScriptStyleRaw: String = ""
 
     /// The Arabic face for the NON-Quran Arabic screens (Hadith, Adhkar, Duas, 99 Names, Arabic Alphabet).
-    /// Independent of the Quran's own font picker.
+    /// Independent of the Quran's own font picker. Kufi and Hijazi are the same faces the Quran picker
+    /// offers (`kufiFontName` / `hijaziFontName`); the watch never sees them - this choice reaches the
+    /// watch only through the legacy Quranic-vs-Basic flag, and the watch bundles neither face.
     enum IslamArabicFace: String, CaseIterable {
-        case uthmani, indopak, basic
+        case uthmani, indopak, kufi, hijazi, basic
 
         /// Outside the Quran, "Uthmani" is the Hafs face - the same one the mushaf uses. It ships
         /// no precomposed آ, which plain Arabic prose leans on constantly (5,616 times in six hadith
@@ -1008,10 +1065,35 @@ final class Settings: ObservableObject {
             switch self {
             case .uthmani: return Settings.hafsUthmaniFontName
             case .indopak: return Settings.indopakFontName
+            case .kufi: return Settings.kufiFontName
+            // "Hijazi" follows whichever mark style the Quran font picker is on (light, bold or dot
+            // vowels), so the 99 Names / Duas screens match the reader instead of needing a second picker.
+            case .hijazi: return Settings.currentHijaziFontName
             case .basic: return Settings.systemArabicFontName
             }
         }
+
+        /// The pickers' caption for the face: what hand it is, where and when it arose, and where it
+        /// was read. Dates are given AH first, the way the rest of the app does.
+        var historyCaption: String {
+            switch self {
+            case .uthmani:
+                return "Uthmani is the Naskh of the Madinah Mushaf, the hand of the calligrapher Uthman Taha as digitized by the King Fahd Complex. Naskh was systematized in Baghdad by Ibn Muqla in the 4th century AH (10th century CE), became the main script of the mushaf from about the 5th century AH (11th century CE), and was perfected by the Ottoman masters of Istanbul; nearly every printed mushaf today, from Cairo to Madinah, uses it."
+            case .indopak:
+                return "Indopak is the mushaf hand of the Indian subcontinent: a Naskh shaped by Nastaliq, the Persian script developed in Iran in the 8th and 9th centuries AH (14th and 15th centuries CE) and credited to Mir Ali Tabrizi. It came east with the Mughals and became the standard printed mushaf of India, Pakistan and Bangladesh, and of South Asian communities everywhere."
+            case .hijazi:
+                return "Hijazi is the hand of the earliest mushafs, written in the Hijaz (Makkah and Madinah) in the 1st century AH (7th century CE) by the generation of the Companions, most likely including Uthman's own copies. Tall alifs leaning to the right, no dots or vowels, and words that run on across lines: the Birmingham and Sanaa manuscripts are written in it. Kufi overtook it within about a century."
+            case .kufi:
+                return "Kufi is the angular script named after Kufa in Iraq (founded 17 AH, 638 CE). It grew out of Hijazi late in the 1st century AH (7th century CE), spells out the mosaics of the Dome of the Rock (72 AH, 691 CE), and was the script of the Quran for some three centuries across the Abbasid world, from Baghdad to Cairo and Qayrawan: wide parchment pages, vowels as coloured dots. When Naskh took over the text in the 5th century AH (11th century CE) it lived on in headings and inscriptions. This face is a modern digitization, Noto Kufi Arabic."
+            case .basic:
+                return "Basic is Apple's standard Arabic system font (SF Arabic) in the app's rounded design: a modern screen face with no historical script behind it, the same look as the rest of iOS."
+            }
+        }
     }
+
+    /// The one thing every Arabic face shares, shown under each face's caption: the letters are the
+    /// Uthmani rasm whichever hand writes them.
+    static let uthmaniRasmCaption = "Every face writes the same Uthmani rasm: the consonantal text compiled within a year or two of the death of the Prophet (peace be upon him), under Abu Bakr in 12 AH (633 CE), and standardized by Uthman in the copies he sent to the main cities around 25 AH (645 CE), which is why it is called the Uthmani rasm. Only the hand the letters are written in changes."
 
     /// Raw storage for `islamArabicFace`. Empty means "not chosen yet" - the legacy two-way
     /// Quranic-vs-Basic toggle (`useFontArabic`) seeds the richer choice on first read.
@@ -1038,10 +1120,10 @@ final class Settings: ObservableObject {
     var quranUsesCustomArabicFace: Bool { !quranUsesSystemArabicFont }
 
     /// Same question for the non-Quran Arabic screens (Hadith, Adhkar, Duas, 99 Names, Arabic Alphabet):
-    /// true whenever their three-way face picker is on a real bundled face rather than "Basic".
+    /// true whenever their face picker is on a real bundled face rather than "Basic".
     var islamUsesCustomArabicFace: Bool { islamArabicFace != .basic }
 
-    /// The Arabic font for the non-Quran Arabic screens, straight from the three-way face choice:
+    /// The Arabic font for the non-Quran Arabic screens, straight from the face choice:
     /// Uthmani (the Qiraat face - never the Hafs Quran face), IndoPak, or Basic (system).
     var nonQuranArabicFontName: String { islamArabicFace.fontName }
 
@@ -1054,6 +1136,54 @@ final class Settings: ObservableObject {
     /// `fontArabic` still holding this name is migrated to the Hafs face at launch.
     static let legacyQiraatFontName = "KFGQPCQUMBULUthmanicScript-Regu"
     static let indopakFontName = "Al_Mushaf"
+    /// KUFI - Noto Kufi Arabic (SIL OFL, `Resources/Fonts/Kufi.ttf`), the classic angular script of
+    /// the earliest written mushafs in a modern digitization. Full harakat + Quranic annotation
+    /// coverage except U+06EC (the round wasl dot some non-Hafs texts use), and real dotless
+    /// skeleton glyphs (U+066E/066F/06A1/06BA) for Hide Arabic Dots. U+06EC (the wasl dot of the
+    /// dot-wasl riwayat) was added by `Scripts/patch_quran_font_coverage.py`.
+    static let kufiFontName = "NotoKufiArabic-Regular"
+    /// HIJAZI - the hand of the earliest mushafs themselves (`Resources/Fonts/Hijazi.ttf`, "Al-Islam
+    /// Hijazi"), built by `Scripts/build_hijazi_font.py` from Khalid Alabdullah's hijazifont (CC BY-NC
+    /// 4.0, licence in `Resources/Fonts/Hijazi-CC-BY-NC.txt`). The upstream models the manuscripts
+    /// faithfully - dotless letters, no hamza, every tashkeel codepoint an EMPTY glyph - so the build
+    /// draws the full Quran mark set, hamza, digits and mark positioning from the face's own stems.
+    /// The letters stay dotless by design: "Hide Arabic Dots" changes nothing in this face, and its
+    /// U+066E/066F/06A1/06BA simply share the letters' glyphs.
+    static let hijaziFontName = HijaziMarkStyle.light.fontName
+    /// The Hijazi face ships in three MARK STYLES, all from `Scripts/build_hijazi_font.py` (`--variant
+    /// 2/3/4`) and one typeface to every picker ("Hijazi"); the style is chosen on the row beneath the
+    /// Quran font picker. The letters are identical in all three, only the marks differ:
+    ///   light  `Hijazi.ttf`  light monoline marks (the default, `hijaziFontName`)
+    ///   bold   `Hijazi3.ttf` the marks at the letters' own stroke weight
+    ///   dots   `Hijazi4.ttf` the vowels as the dots of the earliest vocalised mushafs (Abu al-Aswad's
+    ///                        system: a dot above = fatha, below = kasra, before the letter = damma,
+    ///                        doubled for tanween; shadda, sukun, madd and hamza as in light)
+    /// The raw value is the PostScript name, which is what `fontArabic` stores.
+    enum HijaziMarkStyle: String, CaseIterable, Identifiable {
+        case light = "AlIslamHijazi-Regular"
+        case bold = "AlIslamHijazi3-Regular"
+        case dots = "AlIslamHijazi4-Regular"
+
+        var id: String { rawValue }
+        var fontName: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .light: return "Light Marks"
+            case .bold: return "Bold Marks"
+            case .dots: return "Dot Vowels"
+            }
+        }
+    }
+    static func isHijaziFontName(_ name: String) -> Bool { HijaziMarkStyle(rawValue: name) != nil }
+    /// What a five-way face picker shows for a stored name: every Hijazi mark style reads as "Hijazi".
+    static func pickerFaceName(for name: String) -> String { isHijaziFontName(name) ? hijaziFontName : name }
+    /// The Hijazi mark style the Quran font picker is on, or the default (light) one when it is on
+    /// another face: what "Hijazi" means everywhere that offers a single Hijazi entry.
+    static var currentHijaziFontName: String {
+        let name = Settings.shared.fontArabic
+        return isHijaziFontName(name) ? name : hijaziFontName
+    }
     /// Migration sentinels: names the IndoPak face briefly shipped under during testing. A stored
     /// value matching one is rewritten at launch, or the reader keeps a name no font answers to.
     static let legacyIndopakFontNames = ["KFGQPCNastaleeq-Regular", "AlQuranIndoPakbyQuranWBW"]

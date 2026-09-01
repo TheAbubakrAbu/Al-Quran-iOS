@@ -7,7 +7,7 @@ import Compression
 // you can hear in place.
 //
 // The curriculum was written by Jamil Hammoudeh for Tilawa and is ported with his
-// permission (see CreditsView). Content ships as TajweedLessons.json.deflate, built by
+// permission (see CreditsView). Content ships as TajweedLessons.json.xz, built by
 // Scripts/build_tajweed_lessons.py straight from Tilawa's source file and gated by
 // Scripts/verify_tajweed_lessons.py - a content fix there is a rebuild away here.
 
@@ -91,9 +91,9 @@ final class TajweedLessonsStore: @unchecked Sendable {
     }
 
     private static func packURL() -> URL? {
-        Bundle.main.url(forResource: "TajweedLessons", withExtension: "json.deflate", subdirectory: "Data/Quran")
-            ?? Bundle.main.url(forResource: "TajweedLessons", withExtension: "json.deflate", subdirectory: "Quran")
-            ?? Bundle.main.url(forResource: "TajweedLessons", withExtension: "json.deflate")
+        Bundle.main.url(forResource: "TajweedLessons", withExtension: "json.xz", subdirectory: "Data/Quran")
+            ?? Bundle.main.url(forResource: "TajweedLessons", withExtension: "json.xz", subdirectory: "Quran")
+            ?? Bundle.main.url(forResource: "TajweedLessons", withExtension: "json.xz")
     }
 
     private static func load() -> [TajweedLessonChapter]? {
@@ -147,18 +147,9 @@ final class TajweedLessonsStore: @unchecked Sendable {
         return chapters.isEmpty ? nil : chapters
     }
 
+    /// The payload is an xz stream; `COMPRESSION_LZMA` reads that container directly.
     private static func inflate(_ data: Data) -> Data? {
-        let capacity = max(data.count * 14, 1 << 20)
-        var out = Data()
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
-        defer { buffer.deallocate() }
-        let written = data.withUnsafeBytes { (rawBuffer: UnsafeRawBufferPointer) -> Int in
-            guard let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return 0 }
-            return compression_decode_buffer(buffer, capacity, base, data.count, nil, COMPRESSION_ZLIB)
-        }
-        guard written > 0 else { return nil }
-        out.append(buffer, count: written)
-        return out
+        SolidPack.xzDecompress(data)
     }
 }
 
@@ -207,7 +198,7 @@ struct TajweedLessonsView: View {
             }
 
             Section(footer:
-                Text("Curriculum written by Jamil Hammoudeh for Tilawa, ported with permission. Example recitations: the app's current reciter.")
+                Text("Example recitations: the app's current reciter.")
                     .font(.caption2)
             ) { EmptyView() }
         }
@@ -251,8 +242,8 @@ struct TajweedLessonDetailView: View {
                     ForEach(card.fragments) { fragment in
                         VStack(alignment: .trailing, spacing: 4) {
                             Text(fragment.text)
-                                .font(.custom(Settings.hafsUthmaniFontName, size: CGFloat(settings.fontArabicSize)))
-                                .arabicFontDesign(custom: true)
+                                .font(Font.arabic(settings.quranArabicFontName(for: nil), size: CGFloat(settings.fontArabicSize)))
+                                .arabicFontDesign(custom: settings.quranUsesCustomArabicFace)
                                 .frame(maxWidth: .infinity, alignment: .trailing)
                             if !fragment.caption.isEmpty {
                                 Text(fragment.caption)
@@ -278,8 +269,8 @@ struct TajweedLessonDetailView: View {
                     ForEach(lesson.drills) { drill in
                         VStack(alignment: .trailing, spacing: 4) {
                             Text(drill.text)
-                                .font(.custom(Settings.hafsUthmaniFontName, size: CGFloat(settings.fontArabicSize)))
-                                .arabicFontDesign(custom: true)
+                                .font(Font.arabic(settings.quranArabicFontName(for: nil), size: CGFloat(settings.fontArabicSize)))
+                                .arabicFontDesign(custom: settings.quranUsesCustomArabicFace)
                                 .frame(maxWidth: .infinity, alignment: .trailing)
                             if !drill.caption.isEmpty {
                                 Text(drill.caption)

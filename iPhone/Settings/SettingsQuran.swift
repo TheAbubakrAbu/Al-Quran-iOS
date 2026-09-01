@@ -261,14 +261,23 @@ extension Settings {
         ]
 
         static var groups: [Group] {
-            let live = options
+            grouped(options)
+        }
+
+        /// The riwayah PICKER's groups: the 4 verified qiraat (8 riwayat) always, the beta 12
+        /// only once beta text is unlocked (they then carry a "(Beta)" marker in the menu).
+        static var textGroups: [Group] {
+            grouped(textOptions)
+        }
+
+        private static func grouped(_ live: [Option]) -> [Group] {
             var result = teacherOrder.compactMap { teacher -> Group? in
                 let opts = live.filter { $0.teacher == teacher }
                 guard let first = opts.first else { return nil }
                 return Group(teacher: teacher, teacherArabic: first.teacherArabic, options: opts)
             }
-            // All ten qiraat always show now, and at ten the classical ordering reads
-            // as arbitrary in a menu - alphabetical (ignoring "al-") scans better.
+            // The classical ordering reads as arbitrary in a menu - alphabetical
+            // (ignoring "al-") scans better.
             result.sort { alphaKey($0.teacher) < alphaKey($1.teacher) }
             return result
         }
@@ -325,6 +334,13 @@ extension Settings {
         // selected keeps a name no installed font answers to and silently drops to the system face.
         if Self.legacyIndopakFontNames.contains(fontArabic) {
             fontArabic = Self.indopakFontName
+        }
+
+        // "Hijazi 1" of the 2026-08-26 comparison builds (the upstream face as drawn, so no
+        // tashkeel at all) was dropped before release; a reader who had it selected lands on the
+        // light-mark style, the same letters with marks.
+        if fontArabic == "AlIslamHijazi1-Regular" {
+            fontArabic = Self.hijaziFontName
         }
 
         if defaults?.object(forKey: "quranSortMode") == nil,
@@ -592,6 +608,19 @@ extension Settings {
 
     static func normalizedArabicFontName(_ fontName: String) -> String {
         fontName == legacyQiraatFontName ? hafsUthmaniFontName : fontName
+    }
+
+    /// The face behind a Quran font name (`fontArabic`), for the history caption under the Quran
+    /// font picker. The Warsh face is the same KFGQPC Naskh family as Hafs (the Maghribi script has
+    /// its own captions on the script-style row); every Hijazi mark style is the Hijazi face.
+    static func arabicFace(forQuranFontName fontName: String) -> IslamArabicFace? {
+        switch normalizedArabicFontName(fontName) {
+        case hafsUthmaniFontName, warshUthmaniFontName: return .uthmani
+        case indopakFontName: return .indopak
+        case kufiFontName: return .kufi
+        case systemArabicFontName: return .basic
+        default: return isHijaziFontName(fontName) ? .hijazi : nil
+        }
     }
 
     static func isUthmaniArabicFont(_ fontName: String) -> Bool {
