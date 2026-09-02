@@ -161,10 +161,17 @@ private struct MainTabView: View {
             .task { Task.detached(priority: .utility) { SemanticSearchEngine.prewarmOffMain() } }
             // "-auditPacks" - fingerprint every bundled pack and loose payload through the app's own
             // readers (see PackAudit); run before and after a repack and diff Documents/packaudit.txt.
+            //
+            // The #if DEBUG is load-bearing, not decoration: PackAudit.swift is itself
+            // `#if DEBUG && os(iOS)`, so in a Release archive the type does not exist and an
+            // unguarded call site fails with "Cannot find 'PackAudit' in scope". Al-Islam's twin
+            // sits inside that app's big DEBUG-only block, which is why it never needed its own.
+            #if DEBUG
             .task {
                 guard ProcessInfo.processInfo.arguments.contains("-auditPacks") else { return }
                 await Task.detached(priority: .utility) { PackAudit.run() }.value
             }
+            #endif
     }
 
     /// Build + retain the Quran tab behind the launch cover, settle back on Adhan, then signal `LaunchWarmup`
