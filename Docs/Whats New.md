@@ -1,3 +1,40 @@
+# Version 2.6.4
+
+A daily reminder card, a journal, the 99 Names in depth, the miracles of the Quran, and Sunnah reminders rooted in hadith.
+
+Reminder of the Day:
+- One card a day at the top of the Islam tab: a verse, a hadith, a sunnah, a dua, a dhikr, or a Name of Allah.
+- It opens once when you first open the app that day, and you can keep any card as a saved reflection.
+- New Ayah of the Day, Reminder of the Day and Name of Allah widgets for the home and lock screens.
+
+Journal:
+- Write what you are sitting with, tag it, and find it again by tag or by search.
+- Attach an ayah by reference, a bookmarked hadith, or a dua from the app's collections.
+- Notes you left on bookmarked ayahs and hadiths gather here as margin notes.
+
+Sunnah Reminders:
+- Al-Kahf on Friday, al-Mulk before sleep, the Mu'awwidhat, and more, each at the time you choose.
+- Every reminder cites the hadith it is rooted in, and opening it takes you to the surah.
+- Reminders for your last-read position, your reading streak, and a daily dua, each with its own switch.
+
+Al-Quran:
+- Word of the Day: one Quranic word a day, with its root and where it appears.
+- Similar Ayahs and Mutashabihat: the verses that echo each other, with the shared words tinted.
+- Morphology for any word, and a Qiraat Explorer that walks the places the readings differ, with audio.
+- Browse by theme from four corpora, and light a theme up so it stays marked as you read.
+- Tap a word twice for its meaning, and search inside the word-by-word layout.
+
+Islamic Tools:
+- The 99 Names in depth: what each name means, what living by it asks, and every verse that names it.
+- Miracles of the Quran: a library of articles on what the Quran said before it could be known.
+- Hisn al-Muslim, the fortress of the Muslim, with audio for every dua.
+- Search the whole Islam tab at once.
+
+Your Progress:
+- A daily activity dashboard: reading, listening and dhikr as rings, with a streak.
+
+Bug fixes and optimizations throughout.
+
 # Version 2.6.3
 
 Ask AI: a real conversation about the Quran, two new Arabic faces, tajweed on every riwayah comparison, and a much deeper Islam tab.

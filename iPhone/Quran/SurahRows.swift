@@ -216,7 +216,7 @@ struct SurahRow: View, Equatable {
             )
             .onTapGesture {
                 settings.hapticFeedback()
-                settings.toggleSurahFavorite(surah: surah.id)
+                settings.toggleSurahFavoriteOrConfirm(surah: surah.id)
             }
             .accessibilityLabel("Surah \(surah.id)\(isLastRead ? ", last read" : isLastListened ? ", last listened" : "")")
             // The favourite star keeps the RIGHT corner - that is where favouriting a surah has always
@@ -257,7 +257,10 @@ struct SurahRow: View, Equatable {
         if grid { gridBody } else { listBody }
         #else
         VStack {
-            HStack {
+            if WatchScreen.isNarrow {
+                // The 40 mm face splits a 140 pt line between the two names, and the Arabic lost its
+                // first letters to a leading ellipsis ("...آل عمران"); there each name takes a line of
+                // its own at full size, the Arabic on the trailing edge where the wide layout keeps it.
                 Text("\(surah.id) - \(surah.nameTransliteration)")
                     .font(.subheadline)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -267,6 +270,18 @@ struct SurahRow: View, Equatable {
                     .foregroundColor(settings.accentColor.color)
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .minimumScaleFactor(0.9)
+            } else {
+                HStack {
+                    Text("\(surah.id) - \(surah.nameTransliteration)")
+                        .font(.subheadline)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text("\(Settings.shared.cleanedQuranArabic(surah.nameArabic)) - \(surah.idArabic)")
+                        .font(.headline)
+                        .foregroundColor(settings.accentColor.color)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .minimumScaleFactor(0.9)
+                }
             }
 
             Text("\(revelationEmoji) • \(surah.numberOfAyahs) Ayahs • \(pageLine)")
@@ -511,8 +526,9 @@ struct SurahRow: View, Equatable {
 }
 
 struct SurahAyahRow: View, Equatable {
+    /// Bumped when an off-main tajweed paint for this row lands (see `arabicTajweedText`).
+    @State private var tajweedPaintGeneration = 0
     @ObservedObject var settings = Settings.shared
-    @State private var confirmRemoveNote = false
 
     var surah: Surah
     var ayah: Ayah
@@ -554,10 +570,8 @@ struct SurahAyahRow: View, Equatable {
         settings.bookmarkHighlight(surah: surah.id, ayah: ayah.id)?.color ?? settings.accentColor.color
     }
 
-    private func toggleBookmarkWithNoteGuard() {
-        if !settings.toggleBookmarkIfNoNoteLoss(surah: surah.id, ayah: ayah.id) {
-            confirmRemoveNote = true
-        }
+    private func toggleBookmarkOrConfirm() {
+        settings.toggleBookmarkOrConfirm(surah: surah.id, ayah: ayah.id)
     }
 
     private func arabicDisplayText() -> String {
@@ -578,14 +592,37 @@ struct SurahAyahRow: View, Equatable {
         let text = ayah.displayArabicText(surahId: surah.id, clean: false)
         let displayText = settings.cleanArabicText ? ayah.displayArabicText(surahId: surah.id, clean: true) : text
         let renderedDisplayText = settings.beginnerMode ? displayText.beginnerSpaced : displayText
-        return TajweedStore.shared.attributedText(
+        // The paint completion bumps `tajweedPaintGeneration`, but SwiftUI re-evaluates a body only
+        // for state the body READ: a bumped-but-never-read @State is a silent no-op, and the row kept
+        // its plain first paint until something else re-rendered it (a tap, a font change, even the
+        // screenshot that "verified" this path). Reading it here, inside the body pass, is the
+        // dependency (2026-09-05, Abu: "some ayahs have tajweed off unless I tap a word or an ayah").
+        _ = tajweedPaintGeneration
+        switch TajweedStore.shared.cachedAttributedText(
             surah: surah.id,
             ayah: ayah.id,
             text: text,
             displayText: renderedDisplayText,
             cleanDisplayText: settings.cleanArabicText,
             beginnerSpacing: settings.beginnerMode
-        )
+        ) {
+        case .painted(let styled):
+            return styled
+        case .nothing:
+            return nil
+        case nil:
+            // Ahead of the warm: never the cluster analysis in body. Paint off main and re-render
+            // this one row (the @State bump) when the cache holds it (see `AyahRow`).
+            TajweedStore.shared.paintOffMain(
+            surah: surah.id,
+            ayah: ayah.id,
+            text: text,
+            displayText: renderedDisplayText,
+            cleanDisplayText: settings.cleanArabicText,
+            beginnerSpacing: settings.beginnerMode
+            ) { tajweedPaintGeneration &+= 1 }
+            return nil
+        }
     }
 
     private var tajweedAnimationKey: String {
@@ -629,7 +666,7 @@ struct SurahAyahRow: View, Equatable {
                         )
                         .onTapGesture {
                             settings.hapticFeedback()
-                            toggleBookmarkWithNoteGuard()
+                            toggleBookmarkOrConfirm()
                         }
 
                     if isBookmarked {
@@ -751,7 +788,7 @@ struct SurahAyahRow: View, Equatable {
                 .contentShape(Rectangle())
                 .onTapGesture {
                     settings.hapticFeedback()
-                    withAnimation(.easeInOut) { toggleBookmarkWithNoteGuard() }
+                    withAnimation(.easeInOut) { toggleBookmarkOrConfirm() }
                 }
                 .padding(.top, 1)
                 .padding(.trailing, 2)
@@ -770,17 +807,6 @@ struct SurahAyahRow: View, Equatable {
             #endif
         }
         .contentShape(Rectangle())
-        .confirmationDialog(Settings.bookmarkNoteRemovalDialogTitle, isPresented: $confirmRemoveNote, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) {
-                settings.hapticFeedback()
-                withAnimation(.easeInOut) {
-                    settings.toggleBookmark(surah: surah.id, ayah: ayah.id)
-                }
-            }
-            Button("Cancel") {}
-        } message: {
-            Text(Settings.bookmarkNoteRemovalDialogMessage)
-        }
     }
 }
 
@@ -788,6 +814,8 @@ struct SurahAyahRow: View, Equatable {
 /// tajweed colors, beginner-mode spacing, and Allah highlighting - sized by `scale`. Used for compact
 /// previews such as the page/juz dividers in SurahView.
 struct AyahArabicSnippet: View, Equatable {
+    /// Bumped when an off-main tajweed paint for this row lands (see `arabicTajweedText`).
+    @State private var tajweedPaintGeneration = 0
     @ObservedObject var settings = Settings.shared
 
     let surah: Surah
@@ -821,14 +849,37 @@ struct AyahArabicSnippet: View, Equatable {
         let text = ayah.displayArabicText(surahId: surah.id, clean: false)
         let displayText = settings.cleanArabicText ? ayah.displayArabicText(surahId: surah.id, clean: true) : text
         let renderedDisplayText = settings.beginnerMode ? displayText.beginnerSpaced : displayText
-        return TajweedStore.shared.attributedText(
+        // The paint completion bumps `tajweedPaintGeneration`, but SwiftUI re-evaluates a body only
+        // for state the body READ: a bumped-but-never-read @State is a silent no-op, and the row kept
+        // its plain first paint until something else re-rendered it (a tap, a font change, even the
+        // screenshot that "verified" this path). Reading it here, inside the body pass, is the
+        // dependency (2026-09-05, Abu: "some ayahs have tajweed off unless I tap a word or an ayah").
+        _ = tajweedPaintGeneration
+        switch TajweedStore.shared.cachedAttributedText(
             surah: surah.id,
             ayah: ayah.id,
             text: text,
             displayText: renderedDisplayText,
             cleanDisplayText: settings.cleanArabicText,
             beginnerSpacing: settings.beginnerMode
-        )
+        ) {
+        case .painted(let styled):
+            return styled
+        case .nothing:
+            return nil
+        case nil:
+            // Ahead of the warm: never the cluster analysis in body. Paint off main and re-render
+            // this one row (the @State bump) when the cache holds it (see `AyahRow`).
+            TajweedStore.shared.paintOffMain(
+            surah: surah.id,
+            ayah: ayah.id,
+            text: text,
+            displayText: renderedDisplayText,
+            cleanDisplayText: settings.cleanArabicText,
+            beginnerSpacing: settings.beginnerMode
+            ) { tajweedPaintGeneration &+= 1 }
+            return nil
+        }
     }
 
     var body: some View {
@@ -912,7 +963,7 @@ struct AyahSearchResultRow: View {
                 .buttonStyle(.plain)
                 .contentShape(Rectangle())
             } else {
-                NavigationLink(destination: SurahView(surah: surah, ayah: ayah.id)) {
+                NavigationLink(destination: LazyDestination { SurahView(surah: surah, ayah: ayah.id) }) {
                     row
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
@@ -946,8 +997,9 @@ struct AyahSearchResultRow: View {
 }
 
 struct AyahSearchRow: View, Equatable {
+    /// Bumped when an off-main tajweed paint for this row lands (see `arabicTajweedText`).
+    @State private var tajweedPaintGeneration = 0
     @ObservedObject private var settings = Settings.shared
-    @State private var confirmRemoveNote = false
 
     
     let surahName: String
@@ -1050,10 +1102,8 @@ struct AyahSearchRow: View, Equatable {
         }
     }
 
-    private func toggleBookmarkWithNoteGuard() {
-        if !settings.toggleBookmarkIfNoNoteLoss(surah: surah, ayah: ayah) {
-            confirmRemoveNote = true
-        }
+    private func toggleBookmarkOrConfirm() {
+        settings.toggleBookmarkOrConfirm(surah: surah, ayah: ayah)
     }
 
     @ViewBuilder
@@ -1074,7 +1124,7 @@ struct AyahSearchRow: View, Equatable {
                 )
                 .onTapGesture {
                     settings.hapticFeedback()
-                    toggleBookmarkWithNoteGuard()
+                    toggleBookmarkOrConfirm()
                 }
 
             if isBookmarked {
@@ -1104,14 +1154,37 @@ struct AyahSearchRow: View, Equatable {
 
     private func arabicTajweedText() -> AttributedString? {
         guard shouldShowTajweedColors else { return nil }
-        return TajweedStore.shared.attributedText(
+        // The paint completion bumps `tajweedPaintGeneration`, but SwiftUI re-evaluates a body only
+        // for state the body READ: a bumped-but-never-read @State is a silent no-op, and the row kept
+        // its plain first paint until something else re-rendered it (a tap, a font change, even the
+        // screenshot that "verified" this path). Reading it here, inside the body pass, is the
+        // dependency (2026-09-05, Abu: "some ayahs have tajweed off unless I tap a word or an ayah").
+        _ = tajweedPaintGeneration
+        switch TajweedStore.shared.cachedAttributedText(
             surah: surah,
             ayah: ayah,
             text: arabic,
             displayText: arabicDisplayText(),
             cleanDisplayText: settings.cleanArabicText,
             beginnerSpacing: settings.beginnerMode
-        )
+        ) {
+        case .painted(let styled):
+            return styled
+        case .nothing:
+            return nil
+        case nil:
+            // Ahead of the warm: never the cluster analysis in body. Paint off main and re-render
+            // this one row (the @State bump) when the cache holds it (see `AyahRow`).
+            TajweedStore.shared.paintOffMain(
+            surah: surah,
+            ayah: ayah,
+            text: arabic,
+            displayText: arabicDisplayText(),
+            cleanDisplayText: settings.cleanArabicText,
+            beginnerSpacing: settings.beginnerMode
+            ) { tajweedPaintGeneration &+= 1 }
+            return nil
+        }
     }
 
     private var tajweedAnimationKey: String {
@@ -1355,17 +1428,6 @@ struct AyahSearchRow: View, Equatable {
             }
 
             pageJuzMetadata
-        }
-        .confirmationDialog(Settings.bookmarkNoteRemovalDialogTitle, isPresented: $confirmRemoveNote, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) {
-                settings.hapticFeedback()
-                withAnimation(.easeInOut) {
-                    settings.toggleBookmark(surah: surah, ayah: ayah)
-                }
-            }
-            Button("Cancel") {}
-        } message: {
-            Text(Settings.bookmarkNoteRemovalDialogMessage)
         }
     }
 

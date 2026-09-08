@@ -72,6 +72,94 @@ enum QiraatProfiles {
         narrators.filter { $0.masterID == id }
     }
 
+    // MARK: - The seven and the three
+
+    /// The seven readings Ibn Mujahid (d. 324 AH) collected in his Kitab al-Sab'ah, in his order: one
+    /// each from Madinah, Makkah, Basra and Damascus, then the three Kufans.
+    static let sevenIDs: [String] = [
+        Settings.Riwayah.nafiTeacher, Settings.Riwayah.ibnKathirTeacher, Settings.Riwayah.abiAmrTeacher,
+        Settings.Riwayah.ibnAmirTeacher, Settings.Riwayah.asimTeacher, Settings.Riwayah.hamzahTeacher,
+        Settings.Riwayah.kisaiTeacher,
+    ]
+
+    /// The three Ibn al-Jazari (d. 833 AH) established as equally mutawatir in al-Durrah
+    /// al-Mutammimah, completing the ten, in his order.
+    static let threeIDs: [String] = [
+        Settings.Riwayah.abiJafarTeacher, Settings.Riwayah.yaqubTeacher, Settings.Riwayah.khalafAshirTeacher,
+    ]
+
+    static func masters(in ids: [String]) -> [QiraahMasterProfile] {
+        ids.compactMap { master(id: $0) }
+    }
+
+    // MARK: - Where each reading is recited today
+
+    /// Where a reading is actually recited in public worship today, as opposed to where its imam
+    /// lived. Only four narrations have a living regional following (Hafs almost everywhere, Warsh
+    /// and Qalun in North and West Africa, ad-Duri of Abu Amr in the Sudan belt); the rest are kept
+    /// alive by teachers with ijazah, by recordings and by the printed mushafs, which is what
+    /// "taught by specialists" means below. Shown on the guide's rows and on every profile page
+    /// (Abu, 2026-09-04: "mention where each riwayah/qiraah is generally recited").
+    static let specialistsNote = "Taught by specialists with ijazah and heard in recordings; no region recites it in public worship today."
+
+    private static let masterRegions: [String: String] = [
+        Settings.Riwayah.nafiTeacher: "The Maghreb and West Africa through Warsh, Libya and Tunisia through Qalun. The second most recited reading in the world.",
+        Settings.Riwayah.ibnKathirTeacher: "Historically the reading of Makkah. Today taught by specialists and heard in recordings; no region recites it in public worship.",
+        Settings.Riwayah.abiAmrTeacher: "Sudan, Chad and Somalia through ad-Duri, with pockets of Nigeria. As-Susi is studied rather than recited regionally.",
+        Settings.Riwayah.ibnAmirTeacher: "Historically Damascus and greater Syria. Today taught by specialists and heard in recordings.",
+        Settings.Riwayah.asimTeacher: "Most of the Muslim world, through Hafs. That means the Middle East, Turkey, South and Southeast Asia and the diaspora; Shu'bah is taught by specialists.",
+        Settings.Riwayah.hamzahTeacher: "Historically Kufa. Today taught by specialists and heard in recordings.",
+        Settings.Riwayah.kisaiTeacher: "Historically Kufa and Baghdad. Today taught by specialists and heard in recordings.",
+        Settings.Riwayah.abiJafarTeacher: "Historically Madinah. Today taught by specialists and heard in recordings.",
+        Settings.Riwayah.yaqubTeacher: "Historically Basra. Today taught by specialists and heard in recordings.",
+        Settings.Riwayah.khalafAshirTeacher: "Historically Kufa and Baghdad. Today taught by specialists and heard in recordings.",
+    ]
+
+    private static let narratorRegions: [String: String] = [
+        Settings.Riwayah.hafsTag: "Most of the Muslim world: the Middle East, Turkey, South and Southeast Asia and the diaspora, and the text of most printed mushafs.",
+        Settings.Riwayah.shubah: specialistsNote,
+        Settings.Riwayah.warsh: "Morocco, Algeria, Mauritania and much of West Africa (Senegal, Mali, Niger), with a presence in Tunisia, Libya and Sudan.",
+        Settings.Riwayah.qaloon: "Libya and Tunisia, and parts of the wider Maghreb.",
+        Settings.Riwayah.buzzi: "Historically Makkah. " + specialistsNote,
+        Settings.Riwayah.qunbul: "Historically Makkah. " + specialistsNote,
+        Settings.Riwayah.duri: "Sudan, Chad and Somalia, with pockets of Nigeria and the Sahel.",
+        Settings.Riwayah.susi: specialistsNote,
+        Settings.Riwayah.hisham: "Historically Damascus and greater Syria. " + specialistsNote,
+        Settings.Riwayah.ibnDhakwan: "Historically Damascus and greater Syria. " + specialistsNote,
+        Settings.Riwayah.khalaf: "Historically Kufa. " + specialistsNote,
+        Settings.Riwayah.khallad: "Historically Kufa. " + specialistsNote,
+        Settings.Riwayah.abuHarith: "Historically Kufa and Baghdad. " + specialistsNote,
+        Settings.Riwayah.duriKisai: "Historically Kufa and Baghdad. " + specialistsNote,
+        Settings.Riwayah.ibnWardan: "Historically Madinah. " + specialistsNote,
+        Settings.Riwayah.ibnJammaz: "Historically Madinah. " + specialistsNote,
+        Settings.Riwayah.ruways: "Historically Basra. " + specialistsNote,
+        Settings.Riwayah.rawh: "Historically Basra. " + specialistsNote,
+        Settings.Riwayah.ishaq: "Historically Baghdad. " + specialistsNote,
+        Settings.Riwayah.idris: "Historically Baghdad. " + specialistsNote,
+    ]
+
+    static func recitedToday(master id: String) -> String {
+        masterRegions[id] ?? specialistsNote
+    }
+
+    static func recitedToday(narrator tag: String) -> String {
+        narratorRegions[tag] ?? specialistsNote
+    }
+
+    /// The short form for a list row: the text up to its first full stop.
+    static func recitedTodayShort(master id: String) -> String {
+        firstSentence(recitedToday(master: id))
+    }
+
+    static func recitedTodayShort(narrator tag: String) -> String {
+        firstSentence(recitedToday(narrator: tag))
+    }
+
+    private static func firstSentence(_ text: String) -> String {
+        guard let end = text.firstIndex(of: ".") else { return text }
+        return String(text[..<end])
+    }
+
     // MARK: - Narrations that share one transmitted text
 
     /// Riwayat whose texts match because the transmission does not separate them.
@@ -198,7 +286,7 @@ enum QiraatProfiles {
             paragraphs: [
                 "Hamzah was called az-Zayyat because he traded in oil between Kufa and Hulwan. He became the imam of recitation in Kufa after Asim, and his reading is among the most distinctive of the ten.",
                 "He was known for long night prayer and for an exacting devotion to tajwid. His reading asks more of the reciter than most: the elongations are the longest of the ten, and the treatment of the hamzah when pausing is a subject studied on its own.",
-                "His student Khalaf later made his own selection from Hamzah's reading and became the tenth imam in his own right - which is why Khalaf appears twice in the guide, once as a narrator and once as a master.",
+                "His student Khalaf later made his own selection from Hamzah's reading and became the tenth imam in his own right, which is why Khalaf appears twice in the guide, once as a narrator and once as a master.",
             ],
             hallmarks: [
                 "The longest madd (elongation) of the ten readings.",
@@ -252,7 +340,7 @@ enum QiraatProfiles {
             summary: "A narrator of Hamzah who became the tenth imam in his own right.",
             paragraphs: [
                 "Khalaf memorised the Quran as a boy and read on Sulaym, the student of Hamzah, becoming one of Hamzah's two canonical narrators. He then made his own considered selection (ikhtiyar) from the readings he had received, and that selection is the tenth of the ten Qiraat.",
-                "This is why his name appears twice in the guide: Khalaf an Hamzah is a riwayah of the sixth reading, while Khalaf al-Ashir - Khalaf the Tenth - is a reading of its own, with its own two narrators, Ishaq and Idris.",
+                "This is why his name appears twice in the guide: Khalaf an Hamzah is a riwayah of the sixth reading, while Khalaf al-Ashir (Khalaf the Tenth) is a reading of its own, with its own two narrators, Ishaq and Idris.",
                 "He was a scholar of Baghdad known for his precision and his asceticism, and his selection was recognised as canonical because it met the same three conditions as the rest: the Uthmanic rasm, sound Arabic, and authentic mass transmission.",
             ],
             hallmarks: [
@@ -270,7 +358,7 @@ enum QiraatProfiles {
             summary: "Imam of Madinah for seventy years; the reading of North and West Africa.",
             paragraphs: [
                 "Nafi was of Isfahani descent and lived in Madinah, where he led recitation in the Prophet's Mosque for some seventy years. He is reported to have read on around seventy of the Successors, Abu Ja'far al-Madani among them.",
-                "He was asked which of his teachers he followed and answered that he took what at least two of them agreed upon - a method that gives his reading its particular authority, since it represents the settled practice of Madinah rather than one chain.",
+                "He was asked which of his teachers he followed and answered that he took what at least two of them agreed upon, a method that gives his reading its particular authority, since it represents the settled practice of Madinah rather than one chain.",
                 "Through Warsh his reading became the recitation of North and West Africa, where it remains dominant; through Qalun it is the reading of Libya and parts of Tunisia.",
             ],
             hallmarks: [
@@ -311,7 +399,7 @@ enum QiraatProfiles {
             summary: "The narration almost the entire Muslim world recites from today.",
             paragraphs: [
                 "Hafs was the stepson of Asim and read on him over many years. Of the two narrators of Asim, Hafs is the one described as the more precise in conveying exactly what Asim taught.",
-                "His narration became the basis of the Ottoman printed mushaf and then of the Madinah mushaf, and through printing it spread until it became the recitation of the overwhelming majority of Muslims - commonly estimated at more than nine in ten.",
+                "His narration became the basis of the Ottoman printed mushaf and then of the Madinah mushaf, and through printing it spread until it became the recitation of the overwhelming majority of Muslims, commonly estimated at more than nine in ten.",
                 "That dominance is a fact of history and printing, not of rank: every one of the twenty riwayat is equally the Quran.",
             ],
             hallmarks: [
@@ -326,7 +414,7 @@ enum QiraatProfiles {
             summary: "Asim's other narrator, famed for caution and for long worship.",
             paragraphs: [
                 "Shu'bah read the Quran on Asim three times over and was one of the great worshippers of his age; the reports say he completed the Quran in prayer regularly for decades.",
-                "He was so cautious about transmitting that he is said to have wished he had never narrated at all rather than risk a single error - a scrupulousness that is itself part of why his narration is trusted.",
+                "He was so cautious about transmitting that he is said to have wished he had never narrated at all rather than risk a single error, a scrupulousness that is itself part of why his narration is trusted.",
                 "His riwayah differs from Hafs in a few hundred places, most of them small differences of vowel or of assimilation.",
             ],
             hallmarks: [
@@ -358,7 +446,7 @@ enum QiraatProfiles {
             summary: "Nafi's closest Madinan student; the reading of Libya.",
             paragraphs: [
                 "Qalun was Nafi's stepson and read on him for some twenty years. The name Qalun was given to him by Nafi himself and is said to be a Byzantine word for 'good', a comment on the quality of his recitation.",
-                "He is reported to have gone deaf in later life and yet to have continued correcting students by watching their lips - a story the biographers tell to convey how completely he had internalised the reading.",
+                "He is reported to have gone deaf in later life and yet to have continued correcting students by watching their lips, a story the biographers tell to convey how completely he had internalised the reading.",
                 "His narration is the recitation of Libya and of parts of Tunisia today.",
             ],
             hallmarks: [
@@ -459,7 +547,7 @@ enum QiraatProfiles {
             id: Settings.Riwayah.khalaf, name: "Khalaf", arabic: "خَلَف",
             fullName: "Abu Muhammad Khalaf ibn Hisham al-Bazzar al-Baghdadi",
             masterID: Settings.Riwayah.hamzahTeacher, city: "Baghdad", bornAH: 150, diedAH: 229,
-            summary: "Narrator of Hamzah - and the tenth imam under his own name.",
+            summary: "Narrator of Hamzah, and the tenth imam under his own name.",
             paragraphs: [
                 "Khalaf read on Sulaym, Hamzah's student, and is one of Hamzah's two canonical narrators. He is the same Khalaf who later made his own selection and became the tenth of the ten imams, which is why the guide lists him in both places.",
                 "Read as a narrator of Hamzah, he transmits Hamzah's reading with its long madd and its distinctive pauses; read as Khalaf al-Ashir, he is following his own considered choices.",
@@ -643,6 +731,10 @@ struct QiraahMasterDetailView: View {
                     }
                 }
 
+                Section(header: Text("RECITED TODAY")) {
+                    ProseText(text: QiraatProfiles.recitedToday(master: profile.id))
+                }
+
                 Section(header: Text("CHAIN TO THE COMPANIONS")) {
                     ProseText(text: profile.companions)
                 }
@@ -650,7 +742,7 @@ struct QiraahMasterDetailView: View {
                 let riwayat = QiraatProfiles.narrators(ofMaster: profile.id)
                 Section {
                     ForEach(riwayat) { narrator in
-                        NavigationLink(destination: RiwayahNarratorDetailView(profile: narrator)) {
+                        NavigationLink(destination: LazyDestination { RiwayahNarratorDetailView(profile: narrator) }) {
                             QiraatProfileRow(title: narrator.name, arabic: narrator.arabic,
                                              detail: "\(narrator.city) · d. \(narrator.diedAH) AH")
                         }
@@ -719,9 +811,13 @@ struct RiwayahNarratorDetailView: View {
                     }
                 }
 
+                Section(header: Text("RECITED TODAY")) {
+                    ProseText(text: QiraatProfiles.recitedToday(narrator: profile.id))
+                }
+
                 if let master = QiraatProfiles.master(id: profile.masterID) {
                     Section(header: Text("THE READING IT NARRATES")) {
-                        NavigationLink(destination: QiraahMasterDetailView(profile: master)) {
+                        NavigationLink(destination: LazyDestination { QiraahMasterDetailView(profile: master) }) {
                             QiraatProfileRow(title: master.id, arabic: master.arabic,
                                              detail: "\(master.city) · d. \(master.diedAH) AH")
                         }
@@ -743,12 +839,20 @@ struct QiraatProfileRow: View {
     let title: String
     let arabic: String
     let detail: String
+    /// Where the reading is recited today, when the list wants it on the row.
+    var note: String? = nil
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.body)
                 Text(detail).font(.caption).foregroundColor(.secondary)
+                if let note {
+                    Label(note, systemImage: "mappin.and.ellipse")
+                        .font(.caption2)
+                        .foregroundColor(settings.accentColor.color.opacity(0.9))
+                        .lineLimit(2)
+                }
             }
             Spacer(minLength: 8)
             Text(arabic)
@@ -763,7 +867,7 @@ struct QiraatSourceSection: View {
     var body: some View {
         Section(header: Text("FURTHER READING")) {
             Link(destination: QiraatProfiles.sourceURL) {
-                Label("QiraatHub - profiles of the ten readings and their narrators", systemImage: "link")
+                Label("QiraatHub: profiles of the ten readings and their narrators", systemImage: "link")
             }
             .font(.caption)
 

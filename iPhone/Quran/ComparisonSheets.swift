@@ -33,6 +33,11 @@ struct AyahQiraahComparisonSheet: View {
     /// projected onto the stripped skeleton, so hiding the marks no longer hides the coloring.
     @AppStorage("qiraahCompareShowTajweed") private var compareShowTajweed = true
 
+    #if DEBUG
+    /// "-openQiraatExplorer": push the explorer as the sheet appears (its row cannot be tapped headlessly).
+    @State private var debugOpenExplorer = false
+    #endif
+
     private struct QiraahDisplay: Identifiable {
         let label: String
         let tag: String
@@ -97,13 +102,39 @@ struct AyahQiraahComparisonSheet: View {
     }
 
     var body: some View {
-        NavigationView {
+        // A NavigationStack on iOS 16+ (`SheetNavigationContainer`): the Qiraat Explorer door pushes
+        // from this sheet, and `navigationDestination` needs the stack (a NavigationView drops it).
+        SheetNavigationContainer {
             // The pinned "current riwayah" strip rides as a safe-area inset on the List
             // rather than a VStack above it: with a VStack, the half-height (.medium)
             // sheet detent laid the header out as a blank gap until the sheet was
             // dragged to full height.
             List {
                     Group {
+                        // The door to the whole-Quran view: this sheet compares one ayah, the
+                        // explorer finds the next one worth comparing.
+                        Section {
+                            NavigationLink(destination: LazyDestination {
+                                QiraatExplorerView(surah: surahNumber, ayah: ayahNumber, originTag: originTag)
+                            }) {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "arrow.left.and.right.text.vertical")
+                                        .font(.title3)
+                                        .foregroundColor(settings.accentColor.color)
+                                        .frame(width: 30)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Qiraat Explorer")
+                                            .font(.subheadline.weight(.semibold))
+                                        Text("Step through every place the riwayat differ: what changes, what it means, and every reading side by side")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        }
+
                         Section {
                             Toggle(isOn: $smartComparison.animation(.easeInOut)) {
                                 Text("Smart Comparison")
@@ -114,7 +145,7 @@ struct AyahQiraahComparisonSheet: View {
                         } footer: {
                             Text(smartComparison
                                  ? "Compare this ayah across the Arabic riwayat available in the app. Ayah numbering differs between riwayat, so rows are aligned to the SAME WORDS automatically; a note marks any riwayah that numbers this ayah differently or joins it with a neighbor. Words tinted in the accent color differ from the current riwayah's reading."
-                                 : "Smart Comparison is off: each row shows that riwayah's ayah under this exact NUMBER, with no word alignment - where numbering differs, rows may show different words. Turn it on to align every row to the same words.")
+                                 : "Smart Comparison is off: each row shows that riwayah's ayah under this exact NUMBER, with no word alignment. Where numbering differs, rows may show different words. Turn it on to align every row to the same words.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -127,7 +158,7 @@ struct AyahQiraahComparisonSheet: View {
                             .tint(settings.accentColor.color)
                             .onChange(of: compareShowTajweed) { _ in settings.hapticFeedback() }
                         } footer: {
-                            Text("Each riwayah's print-derived tajweed coloring (the khilaf wash marking what differs from Hafs) paints on every row - and stays on even with tashkeel or dots hidden below.")
+                            Text("Each riwayah's print-derived tajweed coloring (the khilaf wash marking what differs from Hafs) paints on every row, and stays on even with tashkeel or dots hidden below.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -220,6 +251,15 @@ struct AyahQiraahComparisonSheet: View {
                 }
             .applyConditionalListStyle()
             .compactListSectionSpacing()
+            #if DEBUG
+            .debugPushDestination(isPresented: $debugOpenExplorer) {
+                QiraatExplorerView(surah: surahNumber, ayah: ayahNumber, originTag: originTag)
+            }
+            .onAppear {
+                guard ProcessInfo.processInfo.arguments.contains("-openQiraatExplorer") else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { debugOpenExplorer = true }
+            }
+            #endif
             // The app's own bottom search bar, not `.searchable` - the same inset the reciter picker
             // (`SettingsQuranView.reciterSearchControlsInset`) and every other search in the app uses.
             // The filtering itself is untouched: `filteredOptions` still reads `searchText`.
@@ -263,7 +303,7 @@ struct AyahQiraahComparisonSheet: View {
             }
             .sheet(isPresented: $showSummarize) {
                 SummarizeSheet(
-                    title: "Tafsir, riwayat & translations of \(ayahSheetTitle(surahNumber: surahNumber, ayahNumber: ayahNumber))",
+                    title: "\(AyahAISources.combinedTitlePrefix) of \(ayahSheetTitle(surahNumber: surahNumber, ayahNumber: ayahNumber))",
                     sourceText: "",
                     multiSource: true,
                     gatherSource: {
@@ -279,12 +319,12 @@ struct AyahQiraahComparisonSheet: View {
                                 onlineTranslations: online
                             )
                         )
-                    }
+                    },
+                    excludedNote: AyahAISources.arabicExcludedNote
                 )
             }
             #endif
         }
-        .navigationViewStyle(.stack)
     }
 
     #if canImport(FoundationModels)
@@ -762,6 +802,11 @@ struct AyahQiraahComparisonSheet: View {
                 .multilineTextAlignment(.trailing)
                 .lineSpacing(6)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+
+            // Hearing the difference: the same reciter, both readings, where a pair exists.
+            if text != nil, QiraatVariantAudioStore.isBundled {
+                QiraatVariantAudioButtons(tag: option.tag, surah: surahNumber, ayah: ayahNumber)
+            }
         }
         .padding(.vertical, 4)
         .opacity(text == nil ? 0.55 : 1)
@@ -998,7 +1043,7 @@ struct AyahEnglishComparisonSheet: View {
             }
             .sheet(isPresented: $showSummarize) {
                 SummarizeSheet(
-                    title: "Tafsir, riwayat & translations of \(ayahSheetTitle(surahNumber: surahNumber, ayahNumber: ayahNumber))",
+                    title: "\(AyahAISources.combinedTitlePrefix) of \(ayahSheetTitle(surahNumber: surahNumber, ayahNumber: ayahNumber))",
                     sourceText: "",
                     multiSource: true,
                     gatherSource: {
@@ -1017,7 +1062,8 @@ struct AyahEnglishComparisonSheet: View {
                                 onlineTranslations: online
                             )
                         )
-                    }
+                    },
+                    excludedNote: AyahAISources.arabicExcludedNote
                 )
             }
             #endif
@@ -1333,6 +1379,17 @@ enum AyahAISources {
         )
     }
 
+    /// What the combined ayah source covers, for the summarize sheets' titles.
+    static var combinedTitlePrefix: String {
+        OnDeviceAsk.supportsArabic ? "Tafsir, riwayat & translations" : "English tafsirs & translations"
+    }
+
+    /// The note a summarize sheet shows when the Arabic sources were left out (see `combinedSections`).
+    static var arabicExcludedNote: String? {
+        OnDeviceAsk.supportsArabic ? nil
+            : "The Arabic tafsir editions and the riwayat readings are left out: Apple Intelligence can\u{2019}t read Arabic on this device yet."
+    }
+
     static func combinedSections(
         surahNumber: Int,
         ayahNumber: Int,
@@ -1340,17 +1397,22 @@ enum AyahAISources {
         onlineTranslations: [String: String] = [:]
     ) -> [OnDeviceAsk.SummarizeSection] {
         let anchor = hafsAnchor(surahNumber: surahNumber, ayahNumber: ayahNumber)
+        // The model rejects a prompt with a substantial Arabic passage while it has no Arabic
+        // (`OnDeviceAsk.supportsArabic`): the three Arabic editions and the riwayat readings (pure
+        // Arabic) stay out until it does. Before this gate the six-edition prompt failed outright.
+        let readsArabic = OnDeviceAsk.supportsArabic
 
         // All six bundled tafsir editions - a synchronous pack read (Hafs numbering).
         let tafsirSections = TafsirAuthor.allCases.compactMap { author -> OnDeviceAsk.SummarizeSection? in
-            guard let entry = TafsirStore.shared.entry(author: author, surah: surahNumber, ayah: anchor) else { return nil }
+            guard readsArabic || !author.isArabic,
+                  let entry = TafsirStore.shared.entry(author: author, surah: surahNumber, ayah: anchor) else { return nil }
             return OnDeviceAsk.SummarizeSection(label: author.summarizeSectionLabel, text: entry.content)
         }
 
-        let qiraahSections = [OnDeviceAsk.SummarizeSection(
+        let qiraahSections = readsArabic ? [OnDeviceAsk.SummarizeSection(
             label: "Riwayat (qiraah readings) of this ayah",
             text: qiraahComparisonText(surahNumber: surahNumber, ayahNumber: ayahNumber)
-        )].filter { !$0.text.isEmpty }
+        )].filter { !$0.text.isEmpty } : []
 
         let translationSections = [OnDeviceAsk.SummarizeSection(
             label: "English translations of this ayah",

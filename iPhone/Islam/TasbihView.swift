@@ -15,45 +15,260 @@ final class TasbihCounters: ObservableObject {
     /// Counts for the preset dhikr rows, keyed by row index. Persisted like the free counter: these
     /// used to be session-only "scratch" state, which meant a background jetsam mid-count silently
     /// zeroed a dhikr the user was 80 taps into - the one loss a tally counter must never have.
-    @Published private var presetCounts: [Int: Int] {
-        didSet {
-            let stored = Dictionary(uniqueKeysWithValues: presetCounts.map { (String($0.key), $0.value) })
-            UserDefaults.standard.set(stored, forKey: "tasbihPresetCounts")
-        }
-    }
+    ///
+    /// Plain stored values, not `@Published`: a tap moves a count, the lifetime total and today's
+    /// tally, and three `didSet` publishes plus three `UserDefaults` writes per tap was the
+    /// counter's own overhead (Performance Guide, Phase 6 step 7). `mutate` publishes ONCE per tap
+    /// and `persist` writes on a short debounce (and at once when the app resigns active).
+    private var presetCounts: [Int: Int] { didSet { dirty.insert(.presets) } }
 
     /// The free count persists (same key the old `@AppStorage("tasbihFreeCount")` used), because it's
     /// meant to be carried across sittings and run up as high as the user likes.
-    @Published private var freeCount: Int {
-        didSet { UserDefaults.standard.set(freeCount, forKey: "tasbihFreeCount") }
+    private var freeCount: Int { didSet { dirty.insert(.free) } }
+
+    // MARK: Lifetime and streak
+
+    /// Every count ever tapped, across every counter. Only ever grows: a minus or a reset corrects a
+    /// tally, it does not un-remember the dhikr that was said. Seeded from the live counts the first
+    /// time this build runs, so nobody's history starts at zero.
+    private(set) var lifetimeCount: Int { didSet { dirty.insert(.lifetime) } }
+
+    /// Counts tapped per local calendar day, keyed "yyyy-MM-dd". The keys ARE the days the tasbih was
+    /// used, which is what the streak walks; the values give today's count.
+    private(set) var countsByDay: [String: Int] { didSet { dirty.insert(.days) } }
+
+    private struct Dirty: OptionSet {
+        let rawValue: Int
+        static let presets = Dirty(rawValue: 1), free = Dirty(rawValue: 2), lifetime = Dirty(rawValue: 4), days = Dirty(rawValue: 8)
+    }
+    private var dirty: Dirty = []
+    private var persistTask: Task<Void, Never>?
+    private var resignObserver: NSObjectProtocol?
+
+    /// One publish per user action, then a debounced write of whatever changed.
+    private func mutate(_ change: () -> Void) {
+        objectWillChange.send()
+        change()
+        schedulePersist()
+    }
+
+    private func schedulePersist() {
+        #if os(watchOS)
+        persist()
+        #else
+        guard persistTask == nil else { return }
+        persistTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.persistTask = nil
+            self.persist()
+        }
+        #endif
+    }
+
+    /// Writes every dirty key now. Also the resign-active flush, so a jetsam right after a tap
+    /// cannot lose it.
+    func persist() {
+        persistTask?.cancel()
+        persistTask = nil
+        let defaults = UserDefaults.standard
+        if dirty.contains(.presets) {
+            let stored = Dictionary(uniqueKeysWithValues: presetCounts.map { (String($0.key), $0.value) })
+            defaults.set(stored, forKey: "tasbihPresetCounts")
+        }
+        if dirty.contains(.free) { defaults.set(freeCount, forKey: "tasbihFreeCount") }
+        if dirty.contains(.lifetime) { defaults.set(lifetimeCount, forKey: "tasbihLifetimeCount") }
+        if dirty.contains(.days) { defaults.set(countsByDay, forKey: "tasbihCountsByDay") }
+        dirty = []
     }
 
     private init() {
         freeCount = UserDefaults.standard.integer(forKey: "tasbihFreeCount")
         let stored = UserDefaults.standard.dictionary(forKey: "tasbihPresetCounts") as? [String: Int] ?? [:]
-        presetCounts = Dictionary(uniqueKeysWithValues: stored.compactMap { key, value in
+        let presets = Dictionary(uniqueKeysWithValues: stored.compactMap { key, value in
             Int(key).map { ($0, value) }
         })
+        presetCounts = presets
+        countsByDay = UserDefaults.standard.dictionary(forKey: "tasbihCountsByDay") as? [String: Int] ?? [:]
+        if let saved = UserDefaults.standard.object(forKey: "tasbihLifetimeCount") as? Int {
+            lifetimeCount = saved
+        } else {
+            // First run with a lifetime total: what is on the counters right now is the least the
+            // user has ever counted, so history begins there rather than at zero.
+            lifetimeCount = UserDefaults.standard.integer(forKey: "tasbihFreeCount") + presets.values.reduce(0, +)
+            dirty.insert(.lifetime)
+            persist()
+        }
+        ObjectPublishCounter.attach(self, label: "TasbihCounters")
+        #if os(iOS)
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willResignActiveNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { TasbihCounters.shared.persist() }
+        }
+        #endif
     }
 
-    /// Everything ever counted here - the free counter plus every preset row. Read by the profile's
-    /// dhikr card and its badges; the individual counts stay private so nothing outside this object can
-    /// write them behind `binding(for:)`'s back.
+    /// Everything currently ON the counters - the free counter plus every preset row. The badges and
+    /// the profile read `lifetimeCount` instead, which a reset can no longer take away.
     var totalCount: Int {
         freeCount + presetCounts.values.reduce(0, +)
+    }
+
+    /// Local calendar day key. The device's calendar and time zone: a dhikr said at 11 pm belongs to
+    /// the day the user was living in, not to UTC's.
+    static func dayKey(_ date: Date = Date()) -> String {
+        let parts = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
+    private static func date(fromDayKey key: String) -> Date? {
+        let bits = key.split(separator: "-").compactMap { Int($0) }
+        guard bits.count == 3 else { return nil }
+        return Calendar.current.date(from: DateComponents(year: bits[0], month: bits[1], day: bits[2]))
+    }
+
+    /// Counts tapped today.
+    var todayCount: Int { countsByDay[Self.dayKey()] ?? 0 }
+
+    /// Days on which the tasbih was used at all.
+    var activeDayCount: Int { countsByDay.count }
+
+    /// `currentStreak` and `bestStreak` walk the day keys with Calendar arithmetic (~1,000 calls for
+    /// a year of use); the stats strip read both on every tap. Cached per (today, number of day
+    /// keys): a tap on a day already counted changes neither, a first tap on a new day does.
+    private var streakCache: (day: String, dayCount: Int, current: Int, best: Int)?
+
+    private func streaks() -> (current: Int, best: Int) {
+        let today = Self.dayKey()
+        if let cached = streakCache, cached.day == today, cached.dayCount == countsByDay.count {
+            return (cached.current, cached.best)
+        }
+        let current = computeCurrentStreak()
+        let best = computeBestStreak(current: current)
+        streakCache = (today, countsByDay.count, current, best)
+        return (current, best)
+    }
+
+    /// Consecutive days of use ending today - or ending yesterday, so a streak is not shown as broken
+    /// before the user has had today's chance to keep it.
+    var currentStreak: Int { streaks().current }
+
+    /// The longest run of consecutive days ever.
+    var bestStreak: Int { streaks().best }
+
+    private func computeCurrentStreak() -> Int {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        var day = today
+        if countsByDay[Self.dayKey(day)] == nil {
+            guard let yesterday = calendar.date(byAdding: .day, value: -1, to: day),
+                  countsByDay[Self.dayKey(yesterday)] != nil else { return 0 }
+            day = yesterday
+        }
+        var streak = 0
+        while countsByDay[Self.dayKey(day)] != nil {
+            streak += 1
+            guard let previous = calendar.date(byAdding: .day, value: -1, to: day) else { break }
+            day = previous
+        }
+        return streak
+    }
+
+    private func computeBestStreak(current: Int) -> Int {
+        let calendar = Calendar.current
+        let days = countsByDay.keys.compactMap(Self.date(fromDayKey:)).map { calendar.startOfDay(for: $0) }.sorted()
+        var best = 0, run = 0
+        var previous: Date?
+        for day in days {
+            if let previous, let next = calendar.date(byAdding: .day, value: 1, to: previous), calendar.isDate(next, inSameDayAs: day) {
+                run += 1
+            } else {
+                run = 1
+            }
+            best = max(best, run)
+            previous = day
+        }
+        return max(best, current)
+    }
+
+    /// A count went UP by `amount`: remember it for life and for today.
+    private func record(increment amount: Int) {
+        guard amount > 0 else { return }
+        lifetimeCount += amount
+        countsByDay[Self.dayKey(), default: 0] += amount
+        ActivityLog.shared.record(.dhikr, count: amount)
     }
 
     func binding(for index: Int) -> Binding<Int> {
         if index == Self.freeIndex {
             return Binding(
                 get: { self.freeCount },
-                set: { self.freeCount = max(0, $0) }
+                set: { newValue in
+                    let clamped = max(0, newValue)
+                    guard clamped != self.freeCount else { return }
+                    self.mutate {
+                        self.record(increment: clamped - self.freeCount)
+                        self.freeCount = clamped
+                    }
+                }
             )
         }
         return Binding(
             get: { self.presetCounts[index, default: 0] },
-            set: { self.presetCounts[index] = $0 }
+            set: { newValue in
+                let current = self.presetCounts[index, default: 0]
+                guard newValue != current else { return }
+                self.mutate {
+                    self.record(increment: newValue - current)
+                    self.presetCounts[index] = newValue
+                }
+            }
         )
+    }
+}
+
+/// Today, the streak, the best streak and the lifetime total, in one glass strip at the top of the
+/// tasbih screen. Its own view so it alone observes `TasbihCounters` - the rest of the screen still
+/// skips every count tap.
+struct TasbihStatsStrip: View {
+    @ObservedObject private var settings = Settings.shared
+    @ObservedObject private var counts = TasbihCounters.shared
+
+    var body: some View {
+        let streak = counts.currentStreak
+        HStack(spacing: 8) {
+            stat(value: counts.todayCount, label: "Today", systemImage: "sun.max.fill")
+            stat(value: streak, label: streak == 1 ? "Day streak" : "Day streak", systemImage: "flame.fill", emphasized: streak > 0)
+            stat(value: counts.bestStreak, label: "Best", systemImage: "trophy.fill")
+            stat(value: counts.lifetimeCount, label: "Lifetime", systemImage: "infinity")
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func stat(value: Int, label: String, systemImage: String, emphasized: Bool = false) -> some View {
+        VStack(spacing: 3) {
+            Image(systemName: systemImage)
+                .font(.caption)
+                .foregroundStyle(emphasized ? Color.orange : settings.accentColor.color)
+
+            Text(value.formatted(.number.notation(.compactName)))
+                .font(.headline.weight(.bold).monospacedDigit())
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .numericContentTransition()
+                .animation(.easeOut(duration: 0.2), value: value)
+
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .conditionalGlassEffect(rectangle: true, interactive: false)
     }
 }
 
@@ -80,6 +295,7 @@ struct TasbihView: View {
     var body: some View {
         List {
             Group {
+                statsSection
                 freeDhikrSection
                 dhikrSelectionSection
                 #if os(watchOS)
@@ -100,6 +316,30 @@ struct TasbihView: View {
         .applyConditionalListStyle()
         .compactListSectionSpacing()
         .navigationTitle("Tasbih Counter")
+        #if DEBUG
+        // `-tasbihTaps N`: N counts on the free counter, one every 100 ms, so the publish counter
+        // (`-renderCounter`) can show one TasbihCounters publish per tap and the debounced persist.
+        .onAppear {
+            let arguments = ProcessInfo.processInfo.arguments
+            guard let index = arguments.firstIndex(of: "-tasbihTaps"), arguments.indices.contains(index + 1),
+                  let taps = Int(arguments[index + 1]) else { return }
+            let binding = TasbihCounters.shared.binding(for: TasbihCounters.freeIndex)
+            for tap in 0..<taps {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1 + Double(tap) * 0.1) { binding.wrappedValue += 1 }
+            }
+        }
+        #endif
+    }
+
+    /// Today's count, the day streak, the best streak and the lifetime total. Every count on this screen
+    /// feeds them; a reset or a minus corrects a tally without touching them.
+    private var statsSection: some View {
+        Section(header: Text("YOUR DHIKR"), footer: Text("Count on any day to keep the streak. Resets and corrections never lower the lifetime total.")) {
+            TasbihStatsStrip()
+                #if os(iOS)
+                .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                #endif
+        }
     }
 
     /// A counter with no dhikr attached: name it whatever you're reciting, or nothing at all, and count.
@@ -312,6 +552,8 @@ struct ActiveTasbihCard: View {
                         .font(.system(size: 30, weight: .semibold))
                         .monospacedDigit()
                         .foregroundColor(.primary)
+                        .numericContentTransition()
+                        .animation(.easeOut(duration: 0.18), value: count)
 
                     // Position within the current turn, so a long session still tells you where you are.
                     Text("\(withinLap) / \(cycle)")
@@ -586,4 +828,20 @@ struct TasbihCounterControls: View {
     AlIslamPreviewContainer {
         TasbihView()
     }
+}
+
+/// `.contentTransition(.numericText())` where the OS has it (iOS 16 / watchOS 9); a plain redraw below.
+private struct NumericContentTransition: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, watchOS 9.0, *) {
+            content.contentTransition(.numericText())
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    func numericContentTransition() -> some View { modifier(NumericContentTransition()) }
 }

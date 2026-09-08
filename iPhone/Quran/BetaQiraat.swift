@@ -101,8 +101,10 @@ final class BetaQiraatStore: @unchecked Sendable {
             var lookup: [Int: String] = [:]
             lookup.reserveCapacity(ayahs.count)
             for entry in ayahs {
+                // Trimmed once here: `Ayah.textArabic` hands texts out untrimmed now (the bundled
+                // packs are verified clean, see there), so this side table must be too.
                 guard let aid = entry["id"] as? Int,
-                      let text = entry["text"] as? String,
+                      let text = (entry["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
                       !text.isEmpty else { continue }
                 lookup[aid] = text
             }
@@ -170,7 +172,7 @@ struct BetaTextConsentCard: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("The printed mushaf of this riwayah is exact - the scanned pages of its published print. Its SELECTABLE TEXT is a beta transcription:\n\n\(Settings.betaQiraatNotice)")
+                Text("The printed mushaf of this riwayah is exact: the scanned pages of its published print. Its SELECTABLE TEXT is a beta transcription:\n\n\(Settings.betaQiraatNotice)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

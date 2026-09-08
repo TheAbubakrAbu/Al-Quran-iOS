@@ -88,6 +88,9 @@ struct BookmarkedAyah: Codable, Identifiable, Equatable, Hashable {
     /// The highlighter's color, stored raw (not as the enum) so an unrecognized value degrades to "no
     /// highlight" instead of failing the array's decode - see `AyahHighlightColor.resolve`.
     var highlightRaw: String? = nil
+    /// When the bookmark was made (2026-09-07 on; older rows decode without it), so a bookmark
+    /// anniversary can exist one day (Tilawa Guide, Phase 9 step 8).
+    var createdAt: Date? = nil
 
     var hasNote: Bool {
         !(note?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
@@ -105,8 +108,11 @@ struct VerseIndexEntry: Identifiable, Hashable, Codable {
     let id: String
     let surah: Int
     let ayah: Int
-    let arabicTashkeelBlob: String
-    let englishExactBlob: String
+    /// Positions into the `[Surah]` the index was built from. The two rare exact lanes (`#` with
+    /// tashkeel, exact English) read the raw texts through them on demand; every entry used to carry
+    /// both as two more copies of its own text, about a third of the index's ~15 MB.
+    let surahOffset: Int32
+    let ayahOffset: Int32
     let arabicBlob: String
     let silentArabicBlob: String
     /// The hamza-preserving twin of `arabicBlob`, consulted ONLY when the query carries a bare ء (see

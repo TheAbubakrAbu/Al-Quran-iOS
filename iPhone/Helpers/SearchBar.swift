@@ -72,7 +72,9 @@ struct SearchBar: View {
                         .foregroundColor(.primary)
                         .frame(width: 50, height: 50)
                         .contentShape(Circle())
-                        .conditionalGlassEffect(circle: true)
+                        // System glass whenever the OS has it, like the field it pairs with: the
+                        // search bar stays Liquid Glass under the Classic Look.
+                        .conditionalGlassEffect(circle: true, systemGlass: true)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Cancel search")
@@ -102,6 +104,9 @@ private final class PaddedSearchTextField: UISearchTextField {
 
     override func textRect(forBounds bounds: CGRect) -> CGRect {
         let rect = super.textRect(forBounds: bounds)
+        // With text in it the resting field shows its clear button (`clearButtonMode = .always`), and
+        // `super` has already kept the text clear of that; the extra gap is for the empty field.
+        guard (text ?? "").isEmpty else { return rect }
         // Trailing, not "right": mirrored for a right-to-left INTERFACE, which is a different thing
         // from right-to-left text inside a left-to-right interface.
         let isRTL = effectiveUserInterfaceLayoutDirection == .rightToLeft
@@ -121,6 +126,7 @@ private struct SystemSearchField: UIViewRepresentable {
     /// pasteboard with `simctl pbcopy` before launching.
     nonisolated(unsafe) private static var didSchedulePasteProbe = false
     #endif
+    @Environment(\.appearance) private var appearance
     @Binding var text: String
     var focusRequestID: Int
     var cancelToken: Int
@@ -146,16 +152,13 @@ private struct SystemSearchField: UIViewRepresentable {
             field.inlinePredictionType = .no
         }
         field.returnKeyType = .search
-        field.clearButtonMode = .whileEditing
-        if #unavailable(iOS 26.0) {
-            // Pre-Liquid-Glass the bare field draws only its translucent gray fill, and floating over
-            // list content it read as "way too transparent" (user report). The old UISearchBar layered
-            // that same fill over an opaque bar; an opaque backing under the field restores that look.
-            // iOS 26 draws the field as glass and needs nothing.
-            field.backgroundColor = .secondarySystemBackground
-            field.layer.cornerRadius = 14
-            field.clipsToBounds = true
-        }
+        // At rest too, not only while editing: the small ✕ that empties the field stays once the
+        // keyboard is gone, so a finished query can be cleared without tapping back into the field
+        // first (Abu, 2026-09-07: "when not focused it should still have the tiny x on the right which
+        // gets rid of the text, NOT the big X that collapses"). The big ✕ beside the field, which
+        // cancels the search, is still editing-only.
+        field.clearButtonMode = .always
+        applyBacking(to: field, coordinator: context.coordinator)
         field.delegate = context.coordinator
         field.addTarget(context.coordinator, action: #selector(Coordinator.editingChanged(_:)), for: .editingChanged)
         field.addTarget(context.coordinator, action: #selector(Coordinator.editingBegan), for: .editingDidBegin)
@@ -193,9 +196,41 @@ private struct SystemSearchField: UIViewRepresentable {
         return field
     }
 
+    /// Before iOS 26 the bare field draws only its translucent gray fill, and floating over list
+    /// content it read as "way too transparent" (user report). The old UISearchBar layered that same
+    /// fill over an opaque bar; an opaque backing under the field restores that look. On iOS 26 the
+    /// field draws itself as Liquid Glass and needs nothing, and it KEEPS that glass under the Classic
+    /// Look (Abu, 2026-09-04: "even for classic look keep the search bar liquid glass"), so this keys
+    /// on the OS, not on `appearance.liquidGlass`. Re-applied on update all the same, cheaply.
+    ///
+    /// The backing is the reading theme's row color on Sepia / Gray / Custom (the system gray read as
+    /// a lavender slab on the Sepia page, Abu 2026-09-05) and the system secondary background
+    /// otherwise, and it is re-applied whenever THAT color changes, not only when the opaque-or-glass
+    /// choice flips: `appearance` is an environment value, so a theme switch re-runs `updateUIView`.
+    private func applyBacking(to field: UISearchTextField, coordinator: Coordinator) {
+        let opaque: Bool
+        if #available(iOS 26.0, *) { opaque = false } else { opaque = true }
+        let themeRow = opaque ? appearance.themeRowBackground : nil
+        guard coordinator.appliedOpaqueBacking != opaque || coordinator.appliedThemeRow != themeRow else { return }
+        coordinator.appliedOpaqueBacking = opaque
+        coordinator.appliedThemeRow = themeRow
+        if !opaque {
+            field.backgroundColor = nil
+        } else if let themeRow {
+            field.backgroundColor = UIColor(themeRow)
+        } else {
+            // The system dynamic color itself, not a `UIColor(Color(...))` round trip, which would
+            // freeze it to the appearance current at that moment.
+            field.backgroundColor = .secondarySystemBackground
+        }
+        field.layer.cornerRadius = opaque ? 14 : 0
+        field.clipsToBounds = opaque
+    }
+
     func updateUIView(_ field: UISearchTextField, context: Context) {
         context.coordinator.onSearchButtonClicked = onSearchButtonClicked
         context.coordinator.onFocusChanged = onFocusChanged
+        applyBacking(to: field, coordinator: context.coordinator)
 
         // Push SwiftUI's text into UIKit ONLY when it's a value the user didn't just type (a programmatic
         // set: the global-search handoff, a cleared query). While the field is being edited, UIKit is the
@@ -240,6 +275,11 @@ private struct SystemSearchField: UIViewRepresentable {
         /// The last focus request honoured, so a re-render can't keep re-taking first responder.
         var lastFocusRequestID = 0
         var lastCancelToken = 0
+        /// Whether the opaque (non-glass) backing is currently applied, and which reading-theme row
+        /// color it carries (nil = the system color), so `applyBacking` only touches the layer when
+        /// the look actually changes.
+        var appliedOpaqueBacking: Bool?
+        var appliedThemeRow: Color?
         /// The last few values `editingChanged` pushed INTO SwiftUI. When one of them comes back through
         /// `updateUIView` it's an echo of the user's own typing (possibly stale by a beat), not a
         /// programmatic set - see the guard there.
@@ -273,6 +313,132 @@ private struct SystemSearchField: UIViewRepresentable {
             onSearchButtonClicked?()
             return true
         }
+    }
+}
+
+// MARK: - Shared search chrome
+
+/// The "Load more / Load all" pair under a truncated result list, as ONE card: a menu row offering
+/// 5/10/20 more, a hairline, and the load-all row beneath it. It used to be two glass capsules pulled
+/// together with negative padding, which Liquid Glass merged into one blob but every earlier system
+/// drew as two overlapping pills with a pinched waist (Abu's iOS 18 report). A single rounded card
+/// reads the same on both.
+struct LoadMoreControls: View {
+    @Environment(\.appearance) private var appearance
+
+    /// What is being loaded, e.g. "hadith matches" / "ayah matches" (the rows read "Load more X").
+    let label: String
+    var amounts: [Int] = [5, 10, 20]
+    let onLoad: (Int) -> Void
+    let onLoadAll: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Menu {
+                Text("Load More")
+                    .foregroundStyle(.secondary)
+
+                ForEach(amounts, id: \.self) { amount in
+                    Button {
+                        Settings.shared.hapticFeedback()
+                        onLoad(amount)
+                    } label: {
+                        Label("Load \(amount)", systemImage: "\(amount).circle")
+                    }
+                }
+            } label: {
+                row("Load more \(label)")
+            }
+
+            Divider()
+                .padding(.horizontal, 16)
+
+            Button {
+                Settings.shared.hapticFeedback()
+                onLoadAll()
+            } label: {
+                row("Load all \(label)")
+            }
+            .buttonStyle(.plain)
+        }
+        .foregroundStyle(appearance.accent)
+        .tint(appearance.accent)
+        .conditionalGlassEffect(rectangle: true)
+        .listRowSeparator(.hidden)
+    }
+
+    private func row(_ text: String) -> some View {
+        Text(text)
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 11)
+            .padding(.horizontal, 12)
+            .contentShape(Rectangle())
+    }
+}
+
+/// Recent searches as tappable glass chips (tap re-runs, the ✕ forgets one) in a horizontal row.
+/// Shown INSIDE the search-help card that floats over the list while the field is focused and empty,
+/// the Safari / App Store placement - not stacked over the bottom bar, where a row of chips floated on
+/// top of whatever the list had scrolled under the field. One component for the Quran and both
+/// hadith searches so they read identically.
+struct RecentSearchChips: View {
+    @Environment(\.appearance) private var appearance
+
+    let queries: [String]
+    let onPick: (String) -> Void
+    let onRemove: (String) -> Void
+    /// The host card's inner padding: the row scrolls edge to edge of the CARD, not of the padded
+    /// content, so a chip slides under the card's edge instead of being chopped at the padding line.
+    var bleed: CGFloat = 14
+
+    var body: some View {
+        if !queries.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("RECENT")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(queries, id: \.self) { query in
+                            chip(query)
+                        }
+                    }
+                    .padding(.horizontal, bleed)
+                }
+                .padding(.horizontal, -bleed)
+            }
+        }
+    }
+
+    private func chip(_ query: String) -> some View {
+        HStack(spacing: 4) {
+            Button {
+                Settings.shared.hapticFeedback()
+                onPick(query)
+            } label: {
+                Text(query)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+            }
+
+            Button {
+                Settings.shared.hapticFeedback()
+                withAnimation(.easeInOut) { onRemove(query) }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2.bold())
+                    .padding(.trailing, 8)
+            }
+            .accessibilityLabel("Forget \(query)")
+        }
+        .foregroundStyle(appearance.accent)
+        .conditionalGlassEffect(useColor: 0.25, themeTint: false)
     }
 }
 

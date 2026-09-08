@@ -109,8 +109,7 @@ extension Settings {
 }
 
 struct AdhkarRow: View, Equatable {
-    @ObservedObject var settings = Settings.shared
-
+    @Environment(\.appearance) private var appearance
     let arabicText: String
     let transliteration: String
     let translation: String
@@ -129,6 +128,14 @@ struct AdhkarRow: View, Equatable {
     var source: String? = nil
     /// Captured at construction; see `Settings.adhkarRenderSettingsSignature`.
     var renderSettingsSignature: String = Settings.shared.adhkarRenderSettingsSignature
+    /// The row's id in its list, so "Scroll To" can land on it. Nil on rows that are not scroll
+    /// targets (the AI matches).
+    var rowID: String? = nil
+    /// "Scroll To ...": clears the search and scrolls the list to this row's home - its own place in
+    /// the list, or its collection on the Duas root. Excluded from `==` (a closure; the row's CONTENT
+    /// decides a redraw). Nil where the screen has nowhere to scroll to.
+    var onScrollTo: (() -> Void)? = nil
+    var scrollLabel: String = "Scroll To Dhikr"
 
     /// The body lays out a full dhikr/dua (Arabic + transliteration + translation) and re-measures the
     /// Arabic's wrap - the expensive rows of the Adhkar and Dua screens, whose parents re-render on every
@@ -163,12 +170,12 @@ struct AdhkarRow: View, Equatable {
     }
 
     private var arabicFont: Font {
-        useQuranicFont ? Font.arabic(settings.nonQuranArabicFontName, size: 30) : .title2
+        useQuranicFont ? Font.arabic(appearance.islamArabicFontName, size: 30) : .title2
     }
 
     /// Whether `arabicFont` resolves to a bundled face, and so must opt out of the app-wide rounded design.
     private var usesCustomArabicFace: Bool {
-        useQuranicFont && settings.islamUsesCustomArabicFace
+        useQuranicFont && appearance.islamUsesCustomArabicFace
     }
 
     var body: some View {
@@ -205,8 +212,8 @@ struct AdhkarRow: View, Equatable {
                 source: arabicText,
                 term: searchQuery,
                 font: arabicFont,
-                accent: settings.accentColor.color,
-                fg: settings.accentColor.color,
+                accent: appearance.accent,
+                fg: appearance.accent,
                 guaranteeMatch: matches(arabicText)
             )
                 .arabicFontDesign(custom: usesCustomArabicFace)
@@ -240,7 +247,7 @@ struct AdhkarRow: View, Equatable {
                 source: transliteration,
                 term: searchQuery,
                 font: .subheadline,
-                accent: settings.accentColor.color,
+                accent: appearance.accent,
                 fg: .primary,
                 guaranteeMatch: matches(transliteration)
             )
@@ -250,7 +257,7 @@ struct AdhkarRow: View, Equatable {
                 source: translation,
                 term: searchQuery,
                 font: .subheadline,
-                accent: settings.accentColor.color,
+                accent: appearance.accent,
                 fg: .secondary,
                 guaranteeMatch: matches(translation)
             )
@@ -264,7 +271,7 @@ struct AdhkarRow: View, Equatable {
                             source: source,
                             term: searchQuery,
                             font: .caption.weight(.semibold),
-                            accent: settings.accentColor.color,
+                            accent: appearance.accent,
                             fg: .secondary,
                             guaranteeMatch: matches(source)
                         )
@@ -284,34 +291,73 @@ struct AdhkarRow: View, Equatable {
         .padding(.vertical, 4)
         // The row being read aloud carries a soft accent wash; during Listen All it walks down the
         // section one row at a time as the queue advances. (Its own observing view - see SpokenRowWash.)
-        .background(SpokenRowWash(text: arabicText, color: settings.accentColor.color))
+        .background(SpokenRowWash(text: arabicText, color: appearance.accent))
         #if os(iOS)
         .contextMenu {
             Text("Copy")
                 .foregroundStyle(.secondary)
 
             Button {
-                settings.hapticFeedback()
+                Settings.shared.hapticFeedback()
                 UIPasteboard.general.string = arabicText
             } label: {
                 Label("Copy Arabic", systemImage: "doc.on.doc")
             }
 
             Button {
-                settings.hapticFeedback()
+                Settings.shared.hapticFeedback()
                 UIPasteboard.general.string = transliteration
             } label: {
                 Label("Copy Transliteration", systemImage: "doc.on.doc")
             }
 
             Button {
-                settings.hapticFeedback()
+                Settings.shared.hapticFeedback()
                 UIPasteboard.general.string = translation
             } label: {
                 Label("Copy Translation", systemImage: "doc.on.doc")
             }
+
+            if let onScrollTo {
+                Divider()
+
+                Button {
+                    Settings.shared.hapticFeedback()
+                    onScrollTo()
+                } label: {
+                    Label(scrollLabel, systemImage: "arrow.down.circle")
+                }
+            }
+        }
+        // The Quran list's trailing swipe: the arrow clears the search and scrolls to the row's home.
+        .swipeActions(edge: .trailing) {
+            if let onScrollTo {
+                Button {
+                    Settings.shared.hapticFeedback()
+                    onScrollTo()
+                } label: {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .tint(.secondary)
+            }
         }
         #endif
+        .modifier(OptionalRowID(id: rowID))
+    }
+}
+
+/// `.id(_:)` only when the row has one: a shared placeholder id on every row would make them all "the
+/// same" row to the scroll proxy.
+private struct OptionalRowID: ViewModifier {
+    let id: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let id {
+            content.id(id)
+        } else {
+            content
+        }
     }
 }
 
@@ -320,6 +366,8 @@ struct AdhkarView: View {
     @State private var searchText = ""
     /// Apple Music-style bar minimization: true while scrolling down.
     @State private var barsCollapsed = false
+    /// The dhikr a result asked to scroll to ("Scroll To Dhikr"), consumed once the search clears.
+    @State private var scrollTarget: String?
 
     #if os(iOS)
     // AI (semantic) dhikr search - the hadith book search's exact grammar, over the remembrances:
@@ -471,7 +519,7 @@ struct AdhkarView: View {
                     }
                 }
             } else if !semanticEngine.failedCorpora.contains(Self.semanticCorpusID) {
-                Section { AISearchStatusRow(progress: semanticEngine.progress(Self.semanticCorpusID), failed: false) }
+                Section { AISearchStatusRow(corpusID: Self.semanticCorpusID, failed: false) }
             }
         }
     }
@@ -489,7 +537,8 @@ struct AdhkarView: View {
         let keywordVisible = true
         #endif
 
-        return List {
+        return ScrollViewReader { proxy in
+        List {
             Group {
                 introductionSection
                 #if os(iOS)
@@ -557,6 +606,14 @@ struct AdhkarView: View {
         // A running "Listen All" queue must not follow the user out of this screen (it kept speaking -
         // and kept the ducking audio session alive - after navigating away).
         .onDisappear { ArabicSpeech.shared.stop() }
+        .onChange(of: scrollTarget) { target in
+            guard let target else { return }
+            // The search rows are still animating out; scroll once the full list is back.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                withAnimation { proxy.scrollTo(target, anchor: .top) }
+            }
+        }
+        }
     }
 
     private func matchesSearch(_ dhikr: CommonDhikr) -> Bool {
@@ -570,13 +627,20 @@ struct AdhkarView: View {
     @ViewBuilder
     private func filteredAdhkarRow(_ dhikr: CommonDhikr) -> some View {
         if matchesSearch(dhikr) {
+            let searching = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             AdhkarRow(
                 arabicText: dhikr.arabicText,
                 transliteration: dhikr.transliteration,
                 translation: dhikr.translation,
                 useQuranicFont: settings.useFontArabic,
                 searchQuery: searchText,
-                speechEnabled: true
+                speechEnabled: true,
+                rowID: dhikr.id,
+                // Only while searching: with the full list showing, the row is already where it lives.
+                onScrollTo: searching ? {
+                    withAnimation { searchText = "" }
+                    scrollTarget = dhikr.id
+                } : nil
             )
             .equatable()
         }

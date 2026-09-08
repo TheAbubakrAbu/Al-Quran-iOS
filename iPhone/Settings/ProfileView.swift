@@ -39,7 +39,12 @@ struct ProfileStats: Equatable {
     var favoriteReciters = 0
 
     // Dhikr
+    /// Lifetime count (never lowered by a reset), today's count, and the day streaks.
     var dhikrTotal = 0
+    var dhikrToday = 0
+    var dhikrStreak = 0
+    var dhikrBestStreak = 0
+    var dhikrActiveDays = 0
 
     /// Distinct highlight colors the reader has actually reached for.
     var highlightColorsUsed: Int {
@@ -64,7 +69,8 @@ struct ProfileStats: Equatable {
         l.bookmarks == r.bookmarks && l.notes == r.notes && l.highlights == r.highlights &&
         l.highlightsByColor == r.highlightsByColor &&
         l.favoriteSurahs == r.favoriteSurahs && l.favoriteReciters == r.favoriteReciters &&
-        l.dhikrTotal == r.dhikrTotal
+        l.dhikrTotal == r.dhikrTotal && l.dhikrToday == r.dhikrToday && l.dhikrStreak == r.dhikrStreak &&
+        l.dhikrBestStreak == r.dhikrBestStreak && l.dhikrActiveDays == r.dhikrActiveDays
     }
 
     /// Cache slot for `current(settings:quranData:)`, keyed by a stamp of everything the stats derive
@@ -79,7 +85,7 @@ struct ProfileStats: Equatable {
     static func current(settings: Settings, quranData: QuranData) -> ProfileStats {
         // The tasbih store is a separate object with its own storage, so it gets its own cheap
         // component in the key rather than being folded into `profileStatsStamp`.
-        let dhikrStamp = TasbihCounters.shared.totalCount
+        let dhikrStamp = TasbihCounters.shared.lifetimeCount &+ TasbihCounters.shared.currentStreak &* 1_000_003
         let stamp = settings.profileStatsStamp
 
         if let cached = cache,
@@ -174,7 +180,12 @@ struct ProfileStats: Equatable {
         stats.favoriteReciters = settings.favoriteReciterIDs.count
 
         // Dhikr
-        stats.dhikrTotal = TasbihCounters.shared.totalCount
+        let tasbih = TasbihCounters.shared
+        stats.dhikrTotal = tasbih.lifetimeCount
+        stats.dhikrToday = tasbih.todayCount
+        stats.dhikrStreak = tasbih.currentStreak
+        stats.dhikrBestStreak = tasbih.bestStreak
+        stats.dhikrActiveDays = tasbih.activeDayCount
 
         return stats
     }
@@ -267,6 +278,7 @@ struct ProfileView: View {
         ScrollView {
             VStack(spacing: 16) {
                 RingHero(stats: stats)
+                ActivityDashboardCard()
                 quranCard(stats)
                 libraryCard(stats)
                 dhikrCard(stats)
@@ -332,12 +344,29 @@ struct ProfileView: View {
 
             statRow("Favorite surahs", value: formatted(stats.favoriteSurahs))
             statRow("Favorite reciters", value: formatted(stats.favoriteReciters))
+            if !SavedReflectionsStore.shared.items.isEmpty {
+                NavigationLink(destination: LazyDestination { SavedReflectionsView() }) {
+                    HStack {
+                        Text("Saved reflections")
+                            .font(.subheadline)
+                        Spacer()
+                        Text(formatted(SavedReflectionsStore.shared.items.count))
+                            .font(.subheadline.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
     private func dhikrCard(_ stats: ProfileStats) -> some View {
         ProfileCard(title: "Dhikr", systemImage: "circle.hexagonpath.fill") {
             statRow("Counted on the tasbih", value: formatted(stats.dhikrTotal))
+            statRow("Counted today", value: formatted(stats.dhikrToday))
+            statRow("Day streak", value: "\(formatted(stats.dhikrStreak)) day\(stats.dhikrStreak == 1 ? "" : "s")")
+            statRow("Best streak", value: "\(formatted(stats.dhikrBestStreak)) day\(stats.dhikrBestStreak == 1 ? "" : "s")")
+            statRow("Days with dhikr", value: formatted(stats.dhikrActiveDays))
         }
     }
 
@@ -740,7 +769,7 @@ private struct BadgeDetailSheet: View {
                     // unmarked, a bookmark deleted) says so instead of letting the two lines
                     // silently contradict each other.
                     if earned, !badge.isEarned(stats) {
-                        Text("Kept - once earned, a badge stays earned.")
+                        Text("Kept: once earned, a badge stays earned.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)

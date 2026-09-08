@@ -44,6 +44,9 @@ extension AyahHighlightColor {
     /// with. Cached because a menu rebuilds its rows on every render pass of the row that owns it.
     private static var swatchCache: [String: Image] = [:]
 
+    /// Memory-warning purge (AppLifecycle); the swatches redraw on the next menu.
+    static func purgeSwatchCache() { swatchCache.removeAll() }
+
     /// `selected` draws the checkmark INSIDE the swatch. A menu row can't carry both a colored icon and a
     /// trailing checkmark (the trailing mark belongs to `Picker`, which can't express "tap the active
     /// color to clear it"), so the swatch does both jobs.
@@ -113,6 +116,55 @@ func ayahHighlightMenuItems(surah: Int, ayah: Int, settings: Settings) -> some V
     }
 }
 
+#if os(iOS)
+/// The "Apply Settings" menu body, shared by the list row's ellipsis menu, the ayah actions sheet's tile
+/// and the multi-select bar (Abu, 2026-09-05): one checkmark row per display option, each flipping the
+/// EFFECTIVE state of every ayah in `refs` (see `AyahDisplayOverrides.toggle`), several at once, and a
+/// reset back to the app settings whenever any of them pins something. "Word by Word" is offered only
+/// where the inline study layout can draw: the list reader, on Hafs.
+@MainActor
+@ViewBuilder
+func ayahDisplayMenuItems(refs: Set<HighlightedAyahRef>, settings: Settings,
+                          offersWordByWord: Bool) -> some View {
+    let overrides = AyahDisplayOverrides.shared
+
+    ForEach(AyahDisplayOption.allCases, id: \.self) { option in
+        if option != .wordByWord || (offersWordByWord && settings.isHafsDisplay) {
+            Toggle(isOn: Binding(
+                get: { overrides.allOn(option, for: refs, settings: settings) },
+                set: { _ in
+                    settings.hapticFeedback()
+                    withAnimation(.easeInOut) {
+                        overrides.toggle(option, for: refs, settings: settings)
+                    }
+                }
+            )) {
+                Label(option.title, systemImage: option.systemImage)
+            }
+            // The app root styles every Toggle as a padded switch (`PaddedSwitchToggleStyle`), and
+            // that style reaches into menu content too: on iOS 26 the menu then drew each row as
+            // the label plus an empty second line with a stray checkmark (Abu, 2026-09-07: "what
+            // the heck, this looks weird"). The automatic style hands the row back to the menu,
+            // which renders it as the native checkmark row.
+            .toggleStyle(.automatic)
+        }
+    }
+
+    if overrides.hasOverride(refs) {
+        Divider()
+
+        Button(role: .destructive) {
+            settings.hapticFeedback()
+            withAnimation(.easeInOut) {
+                overrides.reset(refs)
+            }
+        } label: {
+            Label("Reset to App Settings", systemImage: "arrow.counterclockwise")
+        }
+    }
+}
+#endif
+
 struct SurahContextMenu: View {
     @ObservedObject var settings = Settings.shared
     @ObservedObject var quranData = QuranData.shared
@@ -160,7 +212,7 @@ struct SurahContextMenu: View {
         Button(role: isFavorite ? .destructive : .cancel) {
             settings.hapticFeedback()
             withAnimation(.easeInOut) {
-                settings.toggleSurahFavorite(surah: surahID)
+                settings.toggleSurahFavoriteOrConfirm(surah: surahID)
             }
         } label: {
             Label(
@@ -424,8 +476,10 @@ struct AyahContextMenuModifier: ViewModifier {
     @State private var showCustomRangeSheet = false
     @State private var showTafsirSheet = false
     @State private var showSimilarAyahsSheet = false
+    @State private var showMutashabihatSheet = false
     @State private var showQiraahComparisonSheet = false
     @State private var showEnglishComparisonSheet = false
+    @State private var showSelectTextSheet = false
 
     private var isBookmarked: Bool {
         bookmarkedAyahs.contains("\(surah)-\(ayah)")
@@ -507,13 +561,11 @@ struct AyahContextMenuModifier: ViewModifier {
         settings.removeBookmarkNote(surah: surah, ayah: ayah)
     }
 
-    @State private var confirmRemoveNote = false
     @State private var confirmDeleteForever = false
 
-    private func toggleBookmarkWithNoteGuard() {
-        if !settings.toggleBookmarkIfNoNoteLoss(surah: surah, ayah: ayah) {
-            confirmRemoveNote = true
-        }
+    /// Bookmarks the ayah, or asks before removing the bookmark (`Settings.toggleBookmarkOrConfirm`).
+    private func toggleBookmarkOrConfirm() {
+        settings.toggleBookmarkOrConfirm(surah: surah, ayah: ayah)
     }
 
     /// The full action list, shared verbatim by the long-press context menu and (when
@@ -555,7 +607,7 @@ struct AyahContextMenuModifier: ViewModifier {
 
                 Button(role: isBookmarked ? .destructive : .cancel) {
                     settings.hapticFeedback()
-                    toggleBookmarkWithNoteGuard()
+                    toggleBookmarkOrConfirm()
                 } label: {
                     Label(
                         isBookmarked ? "Unbookmark Ayah" : "Bookmark Ayah",
@@ -618,16 +670,52 @@ struct AyahContextMenuModifier: ViewModifier {
                     }
                 }
 
+                // The repeated phrases (mutashabihat): the same sheet, opened on its phrases tab.
+                if settings.isHafsDisplay && MutashabihatStore.isBundled {
+                    Button {
+                        settings.hapticFeedback()
+                        showMutashabihatSheet = true
+                    } label: {
+                        Label("Mutashabihat", systemImage: "text.quote")
+                    }
+                }
+
                 comparisonMenuBlock
 
+                // From here down, the reader rows' ellipsis menu block for block (user rule
+                // 2026-09-05: every ayah menu offers the same actions in the same order) - minus
+                // "Apply Settings", whose per-ayah pins only the readers draw.
                 if settings.isHafsDisplay {
+                    Divider()
+
+                    Menu {
+                        ForEach([2, 3, 5, 10, 15, 20], id: \.self) { count in
+                            Button {
+                                settings.hapticFeedback()
+                                quranPlayer.playAyah(surahNumber: surah, ayahNumber: ayah, repeatCount: count)
+                            } label: {
+                                Label("Repeat \(count)×", systemImage: "\(count).circle")
+                            }
+                        }
+
+                        Button {
+                            settings.hapticFeedback()
+                            showCustomRangeSheet = true
+                        } label: {
+                            Label("Play Custom Range", systemImage: "slider.horizontal.3")
+                        }
+                    } label: {
+                        Label("Repeat Ayah", systemImage: "repeat")
+                    }
+
                     Menu {
                         Button {
                             settings.hapticFeedback()
-                            quranPlayer.playAyah(surahNumber: surah, ayahNumber: ayah)
+                            showCustomRangeSheet = true
                         } label: {
-                            Label("Play This Ayah", systemImage: "play.circle")
+                            Label("Play Custom Range", systemImage: "slider.horizontal.3")
                         }
+
                         Button {
                             settings.hapticFeedback()
                             quranPlayer.playAyah(
@@ -638,15 +726,25 @@ struct AyahContextMenuModifier: ViewModifier {
                         } label: {
                             Label("Play From Ayah", systemImage: "play.circle.fill")
                         }
+
                         Button {
                             settings.hapticFeedback()
-                            showCustomRangeSheet = true
+                            quranPlayer.playAyah(surahNumber: surah, ayahNumber: ayah)
                         } label: {
-                            Label("Play Custom Range", systemImage: "slider.horizontal.3")
+                            Label("Play This Ayah", systemImage: "play.circle")
                         }
                     } label: {
                         Label("Play Ayah", systemImage: "play.circle")
                     }
+                }
+
+                Divider()
+
+                Button {
+                    settings.hapticFeedback()
+                    showSelectTextSheet = true
+                } label: {
+                    Label("Select Text", systemImage: "highlighter")
                 }
 
                 Button {
@@ -731,6 +829,15 @@ struct AyahContextMenuModifier: ViewModifier {
             .sheet(isPresented: $showSimilarAyahsSheet) {
                 SimilarAyahsSheet(surahNumber: surah, ayahNumber: ayah)
             }
+            .sheet(isPresented: $showMutashabihatSheet) {
+                SimilarAyahsSheet(surahNumber: surah, ayahNumber: ayah, initialTab: .phrases)
+            }
+            .sheet(isPresented: $showSelectTextSheet) {
+                if let surahObj = surahObj, let ayahObj = quranData.ayah(surah: surah, ayah: ayah) {
+                    SelectAyahTextSheet(surah: surahObj, ayah: ayahObj)
+                        .smallMediumSheetPresentation()
+                }
+            }
             .sheet(isPresented: $showCustomRangeSheet) {
                 if let surahObj = surahObj {
                     PlayCustomRangeSheet(
@@ -754,7 +861,7 @@ struct AyahContextMenuModifier: ViewModifier {
                         onCancel: { showCustomRangeSheet = false }
                     )
                     .environmentObject(settings)
-                    .smallMediumSheetPresentation()
+                    // Detents: the sheet's own (it opens at full height).
                 }
             }
             .sheet(isPresented: $showQiraahComparisonSheet) {
@@ -793,15 +900,6 @@ struct AyahContextMenuModifier: ViewModifier {
                 Button("OK") { }
             } message: {
                 Text("Please keep notes Islamic and respectful.")
-            }
-            .confirmationDialog(Settings.bookmarkNoteRemovalDialogTitle, isPresented: $confirmRemoveNote, titleVisibility: .visible) {
-                Button("Remove", role: .destructive) {
-                    settings.hapticFeedback()
-                    settings.toggleBookmark(surah: surah, ayah: ayah)
-                }
-                Button("Cancel") {}
-            } message: {
-                Text(Settings.bookmarkNoteRemovalDialogMessage)
             }
             .confirmationDialog("Are you sure?", isPresented: $confirmDeleteForever, titleVisibility: .visible) {
                 Button("Remove Permanently", role: .destructive) {
@@ -891,12 +989,8 @@ struct LeftSwipeActions: ViewModifier {
         settings.bookmarkNoteText(surah: bookmarkedSurah ?? 1, ayah: bookmarkedAyah ?? 1)
     }
 
-    @State private var confirmRemoveNote = false
-
-    private func toggleBookmarkWithNoteGuard(_ surah: Int, _ ayah: Int) {
-        if !settings.toggleBookmarkIfNoNoteLoss(surah: surah, ayah: ayah) {
-            confirmRemoveNote = true
-        }
+    private func toggleBookmarkOrConfirm(_ surah: Int, _ ayah: Int) {
+        settings.toggleBookmarkOrConfirm(surah: surah, ayah: ayah)
     }
 
     func body(content: Content) -> some View {
@@ -906,7 +1000,7 @@ struct LeftSwipeActions: ViewModifier {
                 Button {
                     settings.hapticFeedback()
                     withAnimation(.easeInOut) {
-                        settings.toggleSurahFavorite(surah: surah)
+                        settings.toggleSurahFavoriteOrConfirm(surah: surah)
                     }
                 } label: {
                     Image(systemName: isFavorite ? "star.fill" : "star")
@@ -916,7 +1010,7 @@ struct LeftSwipeActions: ViewModifier {
                 if let s = bookmarkedSurah, let a = bookmarkedAyah {
                     Button {
                         settings.hapticFeedback()
-                        toggleBookmarkWithNoteGuard(s, a)
+                        toggleBookmarkOrConfirm(s, a)
                     } label: {
                         Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
                     }
@@ -924,15 +1018,6 @@ struct LeftSwipeActions: ViewModifier {
                 }
             }
             #endif
-            .confirmationDialog(Settings.bookmarkNoteRemovalDialogTitle, isPresented: $confirmRemoveNote, titleVisibility: .visible) {
-                Button("Remove", role: .destructive) {
-                    settings.hapticFeedback()
-                    settings.toggleBookmark(surah: bookmarkedSurah ?? 1, ayah: bookmarkedAyah ?? 1)
-                }
-                Button("Cancel") {}
-            } message: {
-                Text(Settings.bookmarkNoteRemovalDialogMessage)
-            }
     }
 }
 
@@ -1353,7 +1438,7 @@ struct SelectAyahTextSheet: View {
                 Group {
                     if settings.showQiraahDetails {
                         Section {
-                            ArabicTextRiwayahPicker(selection: $selectedQiraah.animation(.easeInOut), useMenuRow: true)
+                            ArabicTextRiwayahPicker(selection: $selectedQiraah, useMenuRow: true)
 
                             // The same words across riwayat (anchored through Hafs, like the comparison
                             // sheet) vs. whatever verse sits at the raw tapped number. Only shown once the
@@ -1376,7 +1461,7 @@ struct SelectAyahTextSheet: View {
                     }
 
                     Section {
-                        Picker("Arabic Font", selection: $selectedFontName.animation(.easeInOut)) {
+                        Picker("Arabic Font", selection: $selectedFontName) {
                             Text("Uthmani").tag(Settings.hafsUthmaniFontName)
                             Text("Maghribi").tag(Settings.warshUthmaniFontName)
                             Text("Indopak").tag(Settings.indopakFontName)

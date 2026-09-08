@@ -1,7 +1,11 @@
 import SwiftUI
 
 struct ConditionalGlassEffect: ViewModifier {
-    @ObservedObject private var settings = Settings.shared
+    // The appearance snapshot, not `Settings`: this modifier sits on ~205 sites (35 on the Adhan tab
+    // alone), and as an `@ObservedObject` each one was a subscriber that re-ran on every Settings
+    // publish - a page turn re-rendered every pill in the app. The environment value changes only when
+    // an appearance field (or the performance tier) does.
+    @Environment(\.appearance) private var appearance
 
     var clear: Bool = false
     var rectangle: Bool = false
@@ -13,6 +17,15 @@ struct ConditionalGlassEffect: ViewModifier {
     /// When false, glass skips the Sepia/Gray reading-theme tint. Use for nested glass (e.g. a pill inside an
     /// already-tinted card) so it doesn't read as a heavy double-tinted box.
     var themeTint: Bool = true
+    /// Pre-Liquid-Glass fallback only: a flat fill on every tier, not just the reduced one. For shapes
+    /// that sit on a uniform list row (the prayer tiles, the bells, the Glance tiles): a material over a
+    /// flat colour renders as that flat colour anyway, and each one was a backdrop-blur pass. iOS 26
+    /// keeps its real glass.
+    var flat: Bool = false
+    /// Liquid Glass on every iOS 26, Classic Look or not. For the search bar's own chrome, which
+    /// keeps the system glass field even when the rest of the app is on the classic fallback
+    /// (Abu, 2026-09-04). Pre-26 systems still take the fallback.
+    var systemGlass: Bool = false
 
     /// A 24pt radius reads right on iPhone-sized cards; on the watch's small tiles it rounds them into
     /// near-stadiums that look chopped, so the watch uses a gentler curve.
@@ -25,7 +38,9 @@ struct ConditionalGlassEffect: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, watchOS 26.0, *) {
+        // `appearance.liquidGlass` is false on every pre-26 system and under the Classic Look (manual,
+        // or automatic in Low Power Mode), so one flag routes all ~207 sites to the fallback.
+        if #available(iOS 26.0, watchOS 26.0, *), appearance.liquidGlass || systemGlass {
             modernGlass(content: content)
         } else {
             fallbackGlass(content: content)
@@ -86,7 +101,22 @@ struct ConditionalGlassEffect: ViewModifier {
 
         return content
             .background {
-                if #available(iOS 15.0, watchOS 10.0, *) {
+                // Reduced tier (Low Power Mode, thermal throttling, a 3 GB-class device) or Reduce
+                // Transparency: a flat fill. Every material here is a backdrop blur pass, and a screen
+                // stacks dozens of them; on A11-A13 GPUs that is the scroll stutter people report. The
+                // tint overlay and the hairline stroke below still apply, so the pill keeps its shape.
+                if appearance.flattenMaterials {
+                    shape.fill(fallbackBaseFill)
+                } else if flat {
+                    // The colour a material lands on over a uniform list row (measured: ultra-thin
+                    // and regular both read ~#2D2E2E on a dark grouped row, white on a light one),
+                    // so a flat tile is indistinguishable from the blurred one it replaces.
+                    #if os(iOS)
+                    shape.fill(Color(UIColor.tertiarySystemBackground))
+                    #else
+                    shape.fill(fallbackBaseFill)
+                    #endif
+                } else if #available(iOS 15.0, watchOS 10.0, *) {
                     // Regular material, not ultra-thin: on pre-Liquid-Glass systems these pills float
                     // straight over list content, and ultra-thin let the rows bleed through them
                     // ("wayyy too transparent" - user report). `clear` keeps the see-through variant
@@ -110,11 +140,11 @@ struct ConditionalGlassEffect: ViewModifier {
             return customTint.opacity(useColor ?? 0.35)
         }
         if let useColor {
-            return settings.accentColor.color.opacity(useColor)
+            return appearance.accent.opacity(useColor)
         }
         // Untinted glass picks up the active reading theme so cards aren't plain white/black in Sepia/Gray,
         // unless the caller opts out (nested glass that would otherwise double-tint).
-        return themeTint ? settings.themeGlassTint : nil
+        return themeTint ? appearance.glassTint : nil
     }
 }
 
@@ -133,11 +163,27 @@ struct SheetPresentationModifier: ViewModifier {
     private static let forceLarge = false
     #endif
 
+    /// Open at the large detent, with the medium one still a drag away: for a sheet whose content
+    /// the medium detent would show only a sliver of (the ayah actions sheet of a long ayah, whose
+    /// preview card reads at the reader's size). A plain Bool rather than a stored
+    /// `PresentationDetent`, which does not exist on iOS 15.
+    @State private var isLarge: Bool
+
+    init(startLarge: Bool = false) {
+        _isLarge = State(initialValue: startLarge)
+    }
+
     func body(content: Content) -> some View {
         if #available(iOS 16.0, *) {
             if UIDevice.current.userInterfaceIdiom == .phone {
                 content
-                    .presentationDetents(Self.forceLarge ? [.large] : [.medium, .large])
+                    .presentationDetents(
+                        Self.forceLarge ? [.large] : [.medium, .large],
+                        selection: Binding(
+                            get: { (isLarge || Self.forceLarge) ? .large : .medium },
+                            set: { isLarge = $0 == .large }
+                        )
+                    )
                     .presentationDragIndicator(.visible)
             } else {
                 content
@@ -157,7 +203,7 @@ struct SheetPresentationModifier: ViewModifier {
 /// where the rest used `.body`, several dropped the accent tint, and a few sheets used a text "Done" button or
 /// had no dismiss control at all. Defining it once means every sheet dismisses the same way.
 struct SheetDismissToolbar: ViewModifier {
-    @ObservedObject private var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
     @Environment(\.dismiss) private var dismiss
 
     /// When non-nil, a checkmark is shown. Returning `false` keeps the sheet open (e.g. a failed validation).
@@ -173,13 +219,13 @@ struct SheetDismissToolbar: ViewModifier {
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
                         Button {
-                            settings.hapticFeedback()
+                            Settings.shared.hapticFeedback()
                             if onConfirm() { dismiss() }
                         } label: {
                             Image(systemName: "checkmark")
                                 .font(.body.weight(.semibold))
                         }
-                        .tint(settings.accentColor.color)
+                        .tint(appearance.accent)
                         .accessibilityLabel("Done")
                     }
                 }
@@ -191,13 +237,13 @@ struct SheetDismissToolbar: ViewModifier {
     private var closeItem: some ToolbarContent {
         ToolbarItem(placement: .cancellationAction) {
             Button {
-                settings.hapticFeedback()
+                Settings.shared.hapticFeedback()
                 dismiss()
             } label: {
                 Image(systemName: "xmark")
                     .font(.body.weight(.semibold))
             }
-            .tint(settings.accentColor.color)
+            .tint(appearance.accent)
             .accessibilityLabel("Close")
         }
     }
@@ -212,9 +258,11 @@ extension View {
         useColor: Double? = nil,
         customTint: Color? = nil,
         interactive: Bool = true,
-        themeTint: Bool = true
+        themeTint: Bool = true,
+        flat: Bool = false,
+        systemGlass: Bool = false
     ) -> some View {
-        modifier(ConditionalGlassEffect(clear: clear, rectangle: rectangle, circle: circle, useColor: useColor, customTint: customTint, interactive: interactive, themeTint: themeTint))
+        modifier(ConditionalGlassEffect(clear: clear, rectangle: rectangle, circle: circle, useColor: useColor, customTint: customTint, interactive: interactive, themeTint: themeTint, flat: flat, systemGlass: systemGlass))
     }
 
     /// Presents a `Menu`'s items in DECLARED order, top to bottom, wherever the menu pops up from.
@@ -232,8 +280,9 @@ extension View {
     }
 
     #if os(iOS)
-    func smallMediumSheetPresentation() -> some View {
-        modifier(SheetPresentationModifier())
+    /// `startLarge` opens the sheet at full height (see `SheetPresentationModifier.isLarge`).
+    func smallMediumSheetPresentation(startLarge: Bool = false) -> some View {
+        modifier(SheetPresentationModifier(startLarge: startLarge))
     }
 
     /// An X to close, plus an optional checkmark to confirm. See `SheetDismissToolbar`.

@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 // MARK: - App-wide toggle style
 
@@ -14,6 +15,428 @@ struct PaddedSwitchToggleStyle: ToggleStyle {
         Toggle(isOn: configuration.$isOn) { configuration.label }
             .toggleStyle(.switch)
             .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Appearance environment (one snapshot, no per-row Settings subscriptions)
+
+/// Everything the shared chrome used to read straight off `Settings`, snapshotted once at the app root.
+///
+/// `ConditionalGlassEffect`, `ThemedListRowBackground`, `ConditionalListStyle`, `AccentGlowOverlay`,
+/// `AccentWashedBackground`, `AccentIconChip` and `SectionPillHeader` were each an `@ObservedObject`
+/// subscriber to the whole `Settings` object - so a 114-row list registered 114 row-background
+/// subscribers plus a glass subscriber per pill, and EVERY Settings publish (a page turn, a GPS fix, a
+/// countdown tick) re-ran all of them. As an Equatable environment value it flows down once from the
+/// root and only views that read a field that actually changed re-evaluate.
+///
+/// The performance flags ride along so a Low Power Mode flip re-evaluates the same views the same way.
+struct AppearanceEnvironment: Equatable {
+    var accent: Color
+    var colorScheme: ColorScheme?
+    var defaultView: Bool
+    var hasCustomTheme: Bool
+    /// `Settings.themeBackgroundColor`, nil on Light/Dark/System.
+    var themeBackground: Color?
+    /// `Settings.themeRowBackgroundColor`, nil on Light/Dark/System (so a single `if let` gates the row paint).
+    var themeRowBackground: Color?
+    /// `Settings.themeGlassTint`, nil for untinted system glass.
+    var glassTint: Color?
+    var showAccentGlow: Bool
+    var alIslamGlow: Bool
+    /// `PerformanceProfile.shouldFlattenMaterials`: flat fills on the pre-Liquid-Glass fallback.
+    var flattenMaterials: Bool
+    /// `PerformanceProfile.shouldDropShadows`: `.softShadow` becomes a no-op.
+    var dropShadows: Bool
+    /// `PerformanceProfile.shouldReduceAnimations`: decorative animation off.
+    var reduceAnimations: Bool
+    /// `PerformanceProfile.tier == .reduced` (Low Power Mode, thermal throttling, a 3 GB-class device):
+    /// the gate for work that is neither a material nor a shadow nor an animation, such as the
+    /// Adhan tab's magnetometer, GPS burst and sky-clock cadence.
+    var isReducedTier: Bool
+    /// Whether the app's own glass surfaces use Liquid Glass: iOS/watchOS 26 with the Classic Look off
+    /// and, when its Low Power Mode rule is on, Low Power Mode off. False on every earlier system, so a
+    /// site can read this alone. `ConditionalGlassEffect` and the glass-only decorations key on it.
+    /// Not keyed on it, by design: the search field (system glass on every iOS 26, Classic Look or
+    /// not, Abu's rule) and `adaptiveSafeArea` (a flip there recreated every List).
+    var liquidGlass: Bool
+    /// The Islam tab's Arabic face (`Settings.nonQuranArabicFontName`) and whether it is a bundled face
+    /// rather than "Basic". Carried here so the article pages (Pillars, Beliefs, How-to guides, and
+    /// every `ScriptureQuote` in them) read their accent and faces from this one snapshot instead of
+    /// observing `Settings`: those pages are 100-300-node trees, and observation re-diffed all of them
+    /// on every publish (a location tick, a countdown) while the reader scrolled.
+    var islamArabicFontName: String
+    var islamUsesCustomArabicFace: Bool
+    /// The Quran face (`Settings.fontArabic`) for the ayat quoted on those pages, and its custom flag.
+    var quranArabicFontName: String
+    var quranUsesCustomArabicFace: Bool
+    /// `Settings.quranArabicFontName(for: nil)`: the Quran face as the readers resolve it, with the
+    /// script style folded in. The ported screens quote ayat in this one, not in the raw selection
+    /// above, and it rides in the snapshot so a script-style change re-renders them.
+    var quranDisplayFace: String
+    /// The reader's type sizes and face switches (`Settings.useFontArabic`, `fontArabicSize`,
+    /// `hadithArabicFontSize`, `englishFontSize`, `hadithArabicWantsCustomFace`, `cleanArabicText`):
+    /// what the Tilawa port's pushed screens read beside the accent and the faces, carried here so
+    /// they stop observing `Settings` (Tilawa Guide, Phase 8 step 1's tail, 2026-09-07).
+    var useFontArabic: Bool
+    var fontArabicSize: Double
+    var hadithArabicFontSize: Double
+    var englishFontSize: Double
+    var hadithArabicWantsCustomFace: Bool
+    var cleanArabicText: Bool
+
+    /// `Settings.scalableIslamArabicFont(base:relativeTo:)` off the snapshot.
+    func islamArabicFont(base: CGFloat, relativeTo style: Font.TextStyle) -> Font {
+        Font.arabic(islamArabicFontName, size: base, relativeTo: style)
+    }
+
+    /// The Quran face at `size`, scaling with `style`.
+    func quranArabicFont(size: CGFloat, relativeTo style: Font.TextStyle) -> Font {
+        Font.arabic(quranArabicFontName, size: size, relativeTo: style)
+    }
+
+    /// The resolved `liquidGlass` flag for a Settings/profile pair.
+    static func liquidGlass(_ settings: Settings, profile: PerformanceProfile) -> Bool {
+        guard #available(iOS 26.0, watchOS 26.0, *) else { return false }
+        #if DEBUG
+        // "-classicLook": force the Classic Look on the simulator without touching the stored toggle.
+        if ProcessInfo.processInfo.arguments.contains("-classicLook") { return false }
+        #endif
+        if settings.classicLook { return false }
+        if settings.classicLookInLowPower && profile.isLowPowerMode { return false }
+        return true
+    }
+
+    /// The live flag, for the few static helpers with no environment (`SafeAreaInsetVStackSpacing`).
+    static var liveLiquidGlass: Bool {
+        liquidGlass(Settings.shared, profile: PerformanceProfile.shared)
+    }
+
+    static func snapshot(_ settings: Settings, profile: PerformanceProfile) -> AppearanceEnvironment {
+        let custom = settings.hasCustomThemeColors
+        return AppearanceEnvironment(
+            accent: settings.accentColor.color,
+            colorScheme: settings.colorScheme,
+            defaultView: settings.defaultView,
+            hasCustomTheme: custom,
+            themeBackground: custom ? settings.themeBackgroundColor : nil,
+            themeRowBackground: custom ? settings.themeRowBackgroundColor : nil,
+            glassTint: settings.themeGlassTint,
+            showAccentGlow: settings.showAccentGlow,
+            alIslamGlow: settings.alIslamGlow,
+            flattenMaterials: profile.shouldFlattenMaterials,
+            dropShadows: profile.shouldDropShadows,
+            reduceAnimations: profile.shouldReduceAnimations,
+            isReducedTier: profile.tier == .reduced,
+            liquidGlass: liquidGlass(settings, profile: profile),
+            islamArabicFontName: settings.nonQuranArabicFontName,
+            islamUsesCustomArabicFace: settings.islamUsesCustomArabicFace,
+            quranArabicFontName: settings.fontArabic,
+            quranUsesCustomArabicFace: settings.quranUsesCustomArabicFace,
+            quranDisplayFace: settings.quranArabicFontName(for: nil),
+            useFontArabic: settings.useFontArabic,
+            fontArabicSize: settings.fontArabicSize,
+            hadithArabicFontSize: settings.hadithArabicFontSize,
+            englishFontSize: settings.englishFontSize,
+            hadithArabicWantsCustomFace: settings.hadithArabicWantsCustomFace,
+            cleanArabicText: settings.cleanArabicText
+        )
+    }
+}
+
+struct AppearanceEnvironmentKey: EnvironmentKey {
+    /// A one-time snapshot, for trees no root injects into (previews). Every real root applies
+    /// `.appearanceEnvironment()`, which keeps the value live.
+    static let defaultValue = AppearanceEnvironment.snapshot(Settings.shared, profile: PerformanceProfile.shared)
+}
+
+extension EnvironmentValues {
+    var appearance: AppearanceEnvironment {
+        get { self[AppearanceEnvironmentKey.self] }
+        set { self[AppearanceEnvironmentKey.self] = newValue }
+    }
+}
+
+/// The app root's view of `Settings`: the appearance fields above plus `firstLaunch`, re-snapshotted after
+/// each Settings publish and republished ONLY when one of them changed.
+///
+/// The root used to hold `Settings` as an `@StateObject`, so every one of its ~236 publishing fields
+/// re-evaluated the window, the tab host and all five mounted tab roots. This object turns that into a
+/// publish on the rare change that actually reaches the root (an accent, a theme, a color scheme, the
+/// first-launch flag). The refresh is coalesced to one per run-loop turn: `objectWillChange` fires
+/// before the write, so the snapshot has to be taken on the next tick anyway.
+final class RootAppearance: ObservableObject {
+    static let shared = RootAppearance()
+
+    @Published private(set) var environment: AppearanceEnvironment
+    @Published private(set) var firstLaunch: Bool
+
+    private var cancellable: AnyCancellable?
+    private var refreshScheduled = false
+
+    private init() {
+        let settings = Settings.shared
+        environment = AppearanceEnvironment.snapshot(settings, profile: PerformanceProfile.shared)
+        firstLaunch = settings.firstLaunch
+        cancellable = settings.objectWillChange.sink { [weak self] _ in self?.scheduleRefresh() }
+        ObjectPublishCounter.attach(self, label: "RootAppearance")
+    }
+
+    private func scheduleRefresh() {
+        guard !refreshScheduled else { return }
+        refreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.refreshScheduled = false
+            self.refresh()
+        }
+    }
+
+    /// Re-read the inputs and publish what changed. Also called by `AppearanceEnvironmentInjector` on a
+    /// performance-profile publish, so a Low Power Mode flip lands in the same snapshot.
+    func refresh() {
+        let settings = Settings.shared
+        let next = AppearanceEnvironment.snapshot(settings, profile: PerformanceProfile.shared)
+        if next != environment { environment = next }
+        if settings.firstLaunch != firstLaunch { firstLaunch = settings.firstLaunch }
+    }
+}
+
+#if DEBUG
+/// `-printChanges` companion: logs WHICH `AppearanceEnvironment` fields differ between consecutive
+/// injections ("APPEARANCE ENV changed: ..."), since every view reading `\.appearance` re-evaluates on
+/// each change and a launch-time churn there is an app-wide re-render per flip.
+enum AppearanceChangeLog {
+    private static var last: AppearanceEnvironment?
+    private static let enabled = ProcessInfo.processInfo.arguments.contains("-printChanges")
+
+    private static var injections = 0
+
+    static func note(_ next: AppearanceEnvironment) {
+        guard enabled else { return }
+        injections += 1
+        NSLog("APPEARANCE ENV injection %d", injections)
+        defer { last = next }
+        guard let last else { return }
+        guard last != next else { return }
+        var changed: [String] = []
+        for (before, after) in zip(Mirror(reflecting: last).children, Mirror(reflecting: next).children)
+        where String(describing: before.value) != String(describing: after.value) {
+            changed.append("\(before.label ?? "?"): \(before.value) -> \(after.value)")
+        }
+        NSLog("APPEARANCE ENV changed: %@", changed.joined(separator: "; "))
+    }
+}
+#endif
+
+/// Applied once at each app root (and at any secondary `UIHostingController` root, like the achievement
+/// banner window): injects the live `AppearanceEnvironment` and asserts the accent + color scheme from it.
+struct AppearanceEnvironmentInjector: ViewModifier {
+    @ObservedObject private var root = RootAppearance.shared
+    @ObservedObject private var profile = PerformanceProfile.shared
+
+    func body(content: Content) -> some View {
+        var environment = root.environment
+        // Folded here rather than through `RootAppearance.refresh()` so a profile publish and its
+        // consequences land in the SAME body pass, with no intermediate frame on the old flags.
+        environment.flattenMaterials = profile.shouldFlattenMaterials
+        environment.dropShadows = profile.shouldDropShadows
+        environment.reduceAnimations = profile.shouldReduceAnimations
+        environment.isReducedTier = profile.tier == .reduced
+        environment.liquidGlass = AppearanceEnvironment.liquidGlass(Settings.shared, profile: profile)
+        #if DEBUG
+        AppearanceChangeLog.note(environment)
+        #endif
+        return content
+            .environment(\.appearance, environment)
+            .accentColor(environment.accent)
+            .tint(environment.accent)
+            .preferredColorScheme(environment.colorScheme)
+    }
+}
+
+#if os(iOS)
+import ImageIO
+
+/// Large bundled images decoded at the size they are shown, not at their full pixel size.
+/// `Image("Phone Wallpaper").resizable()` decoded the whole 1893x4096 asset (31 MB) to paint a
+/// 340-point row; the four Wallpapers rows together were ~90 MB of footprint on open, a jetsam
+/// candidate on a 3 GB device (Performance Guide, Phase 6 step 4).
+///
+/// These assets are DATA sets in the catalog, not image sets, on purpose: `UIImage(named:)` plus
+/// `preparingThumbnail(of:)` decodes the full bitmap first and keeps it in the named-image cache
+/// (measured: +31 MB per wallpaper, thumbnail on top), whereas ImageIO's thumbnail path over the
+/// encoded bytes materialises only the thumbnail. The results live in a cost-limited cache so a
+/// second visit is instant and the total stays bounded.
+enum ImageThumbnails {
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 40 << 20
+        return cache
+    }()
+    private static let aspectLock = NSLock()
+    nonisolated(unsafe) private static var aspects: [String: CGFloat] = [:]
+
+    /// A full-width list row in pixels: the screen minus the grouped insets, at the screen's scale.
+    /// On the reduced tier (Low Power Mode, a 3 GB-class device) the scale is capped at 2x: a phone
+    /// wallpaper thumbnail is 10 MB at 3x and 4.5 MB at 2x, and the preview row is the only place
+    /// the difference could show.
+    static var rowPixelWidth: CGFloat {
+        let screen = UIScreen.main
+        let scale = PerformanceProfile.shared.tier == .reduced ? min(screen.scale, 2) : screen.scale
+        return (screen.bounds.width - 40) * scale
+    }
+
+    private static func key(_ name: String, _ width: CGFloat) -> NSString { "\(name)@\(Int(width))" as NSString }
+
+    private static func source(_ name: String) -> CGImageSource? {
+        guard let data = NSDataAsset(name: name)?.data else { return nil }
+        return CGImageSourceCreateWithData(data as CFData, nil)
+    }
+
+    /// The full asset, decoded on demand (Copy / Save). Not cached: the caller keeps it only as
+    /// long as the pasteboard or the photo library needs it.
+    static func fullImage(_ name: String) -> UIImage? {
+        NSDataAsset(name: name).flatMap { UIImage(data: $0.data) }
+    }
+
+    /// width / height from the header, so a placeholder can hold the row's height before the decode.
+    static func aspectRatio(_ name: String) -> CGFloat {
+        aspectLock.lock(); defer { aspectLock.unlock() }
+        if let hit = aspects[name] { return hit }
+        var aspect: CGFloat = 1
+        if let source = source(name),
+           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+           let height = properties[kCGImagePropertyPixelHeight] as? CGFloat, height > 0 {
+            aspect = width / height
+        }
+        aspects[name] = aspect
+        return aspect
+    }
+
+    static func cached(_ name: String, maxPixelWidth: CGFloat) -> UIImage? {
+        cache.object(forKey: key(name, maxPixelWidth))
+    }
+
+    /// The asset at most `maxPixelWidth` pixels wide (aspect kept), decoded off the main thread.
+    static func thumbnail(_ name: String, maxPixelWidth: CGFloat) async -> UIImage? {
+        if let hit = cached(name, maxPixelWidth: maxPixelWidth) { return hit }
+        let image = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard let source = source(name) else { return nil }
+            // The longest side is capped, so scale the cap by the aspect to land on the width.
+            let aspect = aspectRatio(name)
+            let maxPixel = aspect >= 1 ? maxPixelWidth : maxPixelWidth / aspect
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: Int(maxPixel.rounded(.up)),
+            ]
+            #if DEBUG
+            let before = MemoryFootprint.megabytes
+            #endif
+            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+            #if DEBUG
+            if RenderCounter.enabled {
+                NSLog("THUMB %@ -> %dx%d footprint %.1f -> %.1f MB", name, cgImage.width, cgImage.height, before, MemoryFootprint.megabytes)
+            }
+            #endif
+            return UIImage(cgImage: cgImage)
+        }.value
+        if let image {
+            let cost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
+            cache.setObject(image, forKey: key(name, maxPixelWidth), cost: cost)
+        }
+        return image
+    }
+}
+
+/// `Image(name).resizable()` for a large bundled DATA asset (see `ImageThumbnails`): shows the cached
+/// thumbnail at once when there is one, otherwise a placeholder with the asset's aspect ratio (so the
+/// row keeps its height) until the downsample lands. Add `.aspectRatio` / corner radii / menus
+/// exactly as on the `Image` it replaces.
+struct DownsampledImage: View {
+    let name: String
+    let maxPixelWidth: CGFloat
+    @State private var image: UIImage?
+
+    init(_ name: String, maxPixelWidth: CGFloat = ImageThumbnails.rowPixelWidth) {
+        self.name = name
+        self.maxPixelWidth = maxPixelWidth
+        _image = State(initialValue: ImageThumbnails.cached(name, maxPixelWidth: maxPixelWidth))
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+            } else {
+                Color.clear
+                    .aspectRatio(ImageThumbnails.aspectRatio(name), contentMode: .fit)
+            }
+        }
+        .task(id: name) {
+            if image == nil {
+                image = await ImageThumbnails.thumbnail(name, maxPixelWidth: maxPixelWidth)
+            }
+        }
+    }
+}
+#else
+/// watchOS: the data asset decoded whole (the pre-Phase-6 behaviour), so the shared call sites read
+/// the same. `ImageIO` thumbnails are iOS-only here because the watch never lists these screens
+/// at a size where the decode matters.
+enum ImageThumbnails {
+    static func fullImage(_ name: String) -> UIImage? {
+        NSDataAsset(name: name).flatMap { UIImage(data: $0.data) }
+    }
+}
+
+struct DownsampledImage: View {
+    let name: String
+    init(_ name: String, maxPixelWidth: CGFloat = 0) { self.name = name }
+    var body: some View {
+        if let image = ImageThumbnails.fullImage(name) {
+            Image(uiImage: image).resizable()
+        } else {
+            Color.clear
+        }
+    }
+}
+#endif
+
+/// A drop shadow that disappears on the reduced performance tier. Shadows are offscreen render passes,
+/// and the Adhan tab alone stacks a dozen of them on material layers; on A11-A13 hardware under Low
+/// Power Mode that is the difference between a smooth and a stuttering scroll. Same signature and
+/// default color as `View.shadow`, so a site is a one-word rename.
+struct SoftShadow: ViewModifier {
+    @Environment(\.appearance) private var appearance
+
+    let color: Color
+    let radius: CGFloat
+    let x: CGFloat
+    let y: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if appearance.dropShadows {
+            content
+        } else {
+            content.shadow(color: color, radius: radius, x: x, y: y)
+        }
+    }
+}
+
+extension View {
+    /// See `AppearanceEnvironmentInjector`.
+    func appearanceEnvironment() -> some View {
+        modifier(AppearanceEnvironmentInjector())
+    }
+
+    /// `.shadow(...)` that the reduced performance tier skips. See `SoftShadow`.
+    func softShadow(color: Color = Color(.sRGBLinear, white: 0, opacity: 0.33), radius: CGFloat, x: CGFloat = 0, y: CGFloat = 0) -> some View {
+        modifier(SoftShadow(color: color, radius: radius, x: x, y: y))
     }
 }
 
@@ -186,28 +609,75 @@ extension View {
     }
 }
 
-extension View {
+#if os(iOS)
+/// The navigation container for a SHEET: `NavigationStack` on iOS 16 and later, a stack-style
+/// `NavigationView` on iOS 15. Sheets that open straight onto a sub-screen (the Adhan settings on
+/// Traveling Mode or Prayer Calculation) push through `navigationDestination(isPresented:)`, which
+/// only a `NavigationStack` honours; a legacy `NavigationLink(isActive:)` that is already true when a
+/// `NavigationView` mounts never pushes at all (2026-09-05, seen on iOS 26).
+struct SheetNavigationContainer<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if #available(iOS 16.0, *) {
+            NavigationStack { content() }
+        } else {
+            NavigationView { content() }
+                .navigationViewStyle(.stack)
+        }
+    }
+}
+#endif
+
+/// `safeAreaBar` (the scroll-edge effect under a floating bar) on iOS 26, a plain `safeAreaInset`
+/// on earlier systems.
+///
+/// The branch is on the OS ONLY, never on `appearance.liquidGlass`. It used to switch to
+/// `safeAreaInset` under the Classic Look, and that flip (the toggle itself, or Low Power Mode
+/// with the automatic rule on) swapped the modifier around the List, which recreated the List and
+/// scrolled every screen back to the top; the Adhan tab, with no bottom bar, was the one screen
+/// that kept its place. A constant modifier chain keeps the List's identity, so a look change is
+/// now a restyle, not a reset. The bar's pills still follow the Classic Look through
+/// `conditionalGlassEffect`; only the scroll-edge treatment under them stays the system's.
+///
+/// `spacing` is the pre-26 `safeAreaInset` spacing between the bar and what sits above it. Its
+/// default there is 8pt, while `safeAreaBar` adds none, so a screen that stacks a second bar above
+/// this one (the surah reader's legend row, the Quran tab's mini player) read 16pt between the two
+/// on iOS 18 against 8pt on iOS 26. Those screens pass 0; a lone bar keeps the default clearance.
+struct AdaptiveSafeArea<InsetContent: View>: ViewModifier {
+    let edge: VerticalEdge
+    var spacing: CGFloat? = nil
+    let inset: InsetContent
+
     @ViewBuilder
-    func adaptiveSafeArea<InsetContent: View>(edge: VerticalEdge, @ViewBuilder content: () -> InsetContent) -> some View {
+    func body(content: Content) -> some View {
         #if os(iOS)
         if #available(iOS 26.0, *) {
-            self.safeAreaBar(edge: edge) {
-                content()
-            }
+            content.safeAreaBar(edge: edge) { inset }
         } else {
-            self.safeAreaInset(edge: edge) {
-                content()
-            }
+            content.safeAreaInset(edge: edge, spacing: spacing) { inset }
         }
         #else
-        self.safeAreaInset(edge: edge) {
-            content()
-        }
+        content.safeAreaInset(edge: edge, spacing: spacing) { inset }
         #endif
     }
+}
 
-    func applyConditionalListStyle(disableNowPlayingInset: Bool = false, topContentMargin: CGFloat = 0) -> some View {
-        modifier(ConditionalListStyle(disableNowPlayingInset: disableNowPlayingInset, topContentMargin: topContentMargin))
+extension View {
+    func adaptiveSafeArea<InsetContent: View>(
+        edge: VerticalEdge,
+        spacing: CGFloat? = nil,
+        @ViewBuilder content: () -> InsetContent
+    ) -> some View {
+        modifier(AdaptiveSafeArea(edge: edge, spacing: spacing, inset: content()))
+    }
+
+    /// `readingWidth`: a reading list (the ayah list, a hadith chapter, an article) keeps its rows
+    /// inside a ~840 pt column on wide layouts, see `ReadingColumnMargins`.
+    func applyConditionalListStyle(disableNowPlayingInset: Bool = false, topContentMargin: CGFloat = 0,
+                                   readingWidth: Bool = false) -> some View {
+        modifier(ConditionalListStyle(disableNowPlayingInset: disableNowPlayingInset, topContentMargin: topContentMargin,
+                                      readingWidth: readingWidth))
     }
 
 
@@ -220,16 +690,34 @@ extension View {
     /// of it, which is what actually allows a partial highlight inside a List - see the note there
     /// for why the modifier alone can't. SwiftUI doesn't apply text selection to text inside
     /// controls, so rows that are navigation links or buttons keep behaving as taps.
-    @ViewBuilder
-    func selectableArticleList(disableNowPlayingInset: Bool = false, topContentMargin: CGFloat = 0) -> some View {
+    ///
+    /// It also carries the search's landing: a page opened from an article search result arrives with
+    /// `articleScrollTarget` set to a section heading, and the list scrolls to that `ArticleHeader`
+    /// as it appears (see IslamSearch.swift).
+    ///
+    /// `article` is the page's catalog id ("ShahadahView") for the Pillars & Beliefs and How-to pages:
+    /// it puts the page's own search bar at the foot (`ArticleSearchChrome`), which finds the page's
+    /// sections and scrolls to them. Pages outside the catalog (the tajweed topics, the qiraat
+    /// biographies) have no searchable text and leave it nil.
+    func selectableArticleList(article: String? = nil, disableNowPlayingInset: Bool = false,
+                               topContentMargin: CGFloat = 0) -> some View {
+        modifier(SelectableArticleList(article: article, disableNowPlayingInset: disableNowPlayingInset,
+                                       topContentMargin: topContentMargin))
+    }
+
+    /// The article pages' list styling on its own: the reading-width list style plus text selection on
+    /// iOS. `selectableArticleList` applies it, and so does the in-page search, which has to wrap the
+    /// page BEFORE the style so its results share the page's wash and bottom insets.
+    func articleListStyle(disableNowPlayingInset: Bool = false, topContentMargin: CGFloat = 0) -> some View {
         let styled = applyConditionalListStyle(
             disableNowPlayingInset: disableNowPlayingInset,
-            topContentMargin: topContentMargin
+            topContentMargin: topContentMargin,
+            readingWidth: true
         )
         #if os(iOS)
-        styled.textSelection(.enabled)
+        return styled.textSelection(.enabled)
         #else
-        styled
+        return styled
         #endif
     }
 
@@ -283,14 +771,11 @@ extension View {
     }
 }
 
-/// Vertical spacing between views inside `safeAreaInset` stacks: iOS 26+ uses tighter 8pt; older systems use 16pt.
+/// Vertical spacing between views inside `safeAreaInset` stacks: 8pt everywhere. It was 12pt on
+/// pre-26 systems and on the Classic Look, which read as a visibly wider gap between the sort row
+/// and the search field than iOS 26 draws (Abu, 2026-09-04: "make it like post 26").
 enum SafeAreaInsetVStackSpacing {
-    static var standard: CGFloat {
-        if #available(iOS 26.0, watchOS 26.0, *) {
-            return 8
-        }
-        return 12
-    }
+    static var standard: CGFloat { 8 }
 }
 
 /// The cushion UNDER a floating bottom bar (above the tab bar / home indicator). On iOS 26 the bar
@@ -339,7 +824,7 @@ final class PlaybackVisibility: ObservableObject {
 /// pair for the Al-Islam glow, the app icon's palette split across the top corners. Everything
 /// collapses to invisible when the glow is off or a custom reading theme owns the background.
 struct AccentGlowOverlay: View {
-    @ObservedObject private var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
     @Environment(\.colorScheme) private var systemColorScheme
 
     /// How far down the wash reaches before it is fully faded. The default covers the navigation
@@ -354,13 +839,26 @@ struct AccentGlowOverlay: View {
     /// yellow half especially, yellow-on-white being the weakest pairing in the brand palette. 0.26
     /// against dark's 0.16 reads as the same glow in both; measured side by side, not guessed.
     private var resolvedStrength: Double {
-        guard !settings.hasCustomThemeColors, settings.showAccentGlow else { return 0 }
-        return (settings.colorScheme ?? systemColorScheme) == .dark ? 0.16 : 0.26
+        guard !appearance.hasCustomTheme, appearance.showAccentGlow else { return 0 }
+        return (appearance.colorScheme ?? systemColorScheme) == .dark ? 0.16 : 0.26
     }
 
+    @ViewBuilder
     var body: some View {
         let strength = resolvedStrength
-        let brand = settings.alIslamGlow
+        let brand = appearance.alIslamGlow
+
+        // Nothing to draw: skip the GeometryReader and the three zero-opacity gradients rather than
+        // composing (and compositing) invisible layers behind ~90 screens. The wash lives inside a
+        // `.background`, so swapping this subtree never touches the List it sits behind.
+        if strength == 0 {
+            Color.clear.allowsHitTesting(false)
+        } else {
+            glow(strength: strength, brand: brand)
+        }
+    }
+
+    private func glow(strength: Double, brand: Bool) -> some View {
 
         // Top-only, by explicit choice (a bottom band was tried and rolled back): the wash lights the
         // navigation-bar edge and fades before mid-screen, leaving the bottom bars on plain background.
@@ -375,7 +873,7 @@ struct AccentGlowOverlay: View {
 
             ZStack {
                 RadialGradient(
-                    colors: [settings.accentColor.color.opacity(brand ? 0 : strength), .clear],
+                    colors: [appearance.accent.opacity(brand ? 0 : strength), .clear],
                     center: .top,
                     startRadius: 8,
                     endRadius: radius
@@ -418,13 +916,13 @@ struct AccentGlowOverlay: View {
 /// is off or a custom reading theme owns the background, and theme/accent flips never recreate the
 /// List they sit behind.
 struct WatchTopGlowOverlay: View {
-    @ObservedObject private var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
 
     var body: some View {
         // The watch renders on pure black OLED, so the wash can sit a touch brighter than the
         // iPhone's dark-mode 0.16 and still stay quiet.
-        let strength: Double = (settings.hasCustomThemeColors || !settings.showAccentGlow) ? 0 : 0.20
-        let brand = settings.alIslamGlow
+        let strength: Double = (appearance.hasCustomTheme || !appearance.showAccentGlow) ? 0 : 0.20
+        let brand = appearance.alIslamGlow
 
         // Same width-tracking ellipse as the iPhone overlay: the radius follows the screen width
         // (198pt on a 45mm, wider on Ultra) so the wash spans the whole top edge, then compresses
@@ -435,7 +933,7 @@ struct WatchTopGlowOverlay: View {
 
             ZStack {
                 RadialGradient(
-                    colors: [settings.accentColor.color.opacity(brand ? 0 : strength), .clear],
+                    colors: [appearance.accent.opacity(brand ? 0 : strength), .clear],
                     center: .top,
                     startRadius: 4,
                     endRadius: radius
@@ -476,7 +974,7 @@ struct WatchTopGlowOverlay: View {
 /// and don't inherit the root's `preferredColorScheme` - without this, a forced-Dark theme would
 /// paint a black wash behind light-mode sheet content.
 struct AccentWashedBackground: ViewModifier {
-    @ObservedObject private var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
     @Environment(\.colorScheme) private var systemColorScheme
 
     func body(content: Content) -> some View {
@@ -490,9 +988,9 @@ struct AccentWashedBackground: ViewModifier {
                 }
                 .ignoresSafeArea()
             )
-            .accentColor(settings.accentColor.color)
-            .tint(settings.accentColor.color)
-            .preferredColorScheme(settings.colorScheme)
+            .accentColor(appearance.accent)
+            .tint(appearance.accent)
+            .preferredColorScheme(appearance.colorScheme)
         #elseif os(watchOS)
         // The watch does NOT honor the reading themes (user rule: don't send background/theme colors
         // to the watch) - a themed ground painted the whole watch gray and its flat row color erased
@@ -513,13 +1011,13 @@ struct AccentWashedBackground: ViewModifier {
     /// The list background every theme resolves to - identical to what `ConditionalListStyle` painted
     /// historically (`resolvedListBackground`), kept in ONE place now.
     private var resolvedBackground: Color {
-        if settings.hasCustomThemeColors {
-            return settings.themeBackgroundColor ?? Color(.systemGroupedBackground)
+        if appearance.hasCustomTheme {
+            return appearance.themeBackground ?? Color(.systemGroupedBackground)
         }
-        if settings.defaultView {
+        if appearance.defaultView {
             return Color(.systemGroupedBackground)
         }
-        return (settings.colorScheme ?? systemColorScheme) == .dark ? .black : .white
+        return (appearance.colorScheme ?? systemColorScheme) == .dark ? .black : .white
     }
     #endif
 }
@@ -528,10 +1026,10 @@ struct AccentWashedBackground: ViewModifier {
 /// which draw their own `AccentGlowOverlay` but historically fell through to the bare system window
 /// background, so Sepia/Gray/Custom never reached them. No-op on Light/Dark/System.
 struct ThemedReaderBackground: ViewModifier {
-    @ObservedObject private var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
 
     func body(content: Content) -> some View {
-        content.background((settings.themeBackgroundColor ?? Color.clear).ignoresSafeArea())
+        content.background((appearance.themeBackground ?? Color.clear).ignoresSafeArea())
     }
 }
 
@@ -569,12 +1067,46 @@ struct ReservedLineLimit: ViewModifier {
     }
 }
 
+#if os(iOS)
+/// Reading lists on wide layouts: an iPad landscape detail column is ~800 pt, the 13-inch and a Mac
+/// window over 1,000, and a 20 pt translation ran 110+ characters per line there (2026-09-06 iPad
+/// pass). The list's scroll content is held to `readingWidth` and centered, so the ayah / hadith /
+/// article cards and their text narrow together; margins are 0 until the column is wider than that,
+/// and iPhones never get the modifier (constant per device, so the List is never rebuilt). Measured
+/// from the list's own frame, so it follows split-view resizes and rotation. iOS 17+ (`contentMargins`);
+/// earlier systems keep the full width.
+private struct ReadingColumnMargins: ViewModifier {
+    let enabled: Bool
+    @State private var width: CGFloat = 0
+
+    static let readingWidth: CGFloat = 840
+    private static let wideIdiom: Bool = UIDevice.current.userInterfaceIdiom != .phone
+
+    func body(content: Content) -> some View {
+        if enabled, Self.wideIdiom, #available(iOS 17.0, *) {
+            content
+                .contentMargins(.horizontal, max(0, (width - Self.readingWidth) / 2), for: .scrollContent)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear { width = proxy.size.width }
+                            .onChange(of: proxy.size.width) { width = $0 }
+                    }
+                )
+        } else {
+            content
+        }
+    }
+}
+#endif
+
 struct ConditionalListStyle: ViewModifier {
-    @ObservedObject private var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
     @ObservedObject private var playback = PlaybackVisibility.shared
 
     let disableNowPlayingInset: Bool
     var topContentMargin: CGFloat = 0
+    var readingWidth: Bool = false
 
     private var shouldShowNowPlaying: Bool {
         playback.showsNowPlaying
@@ -584,18 +1116,19 @@ struct ConditionalListStyle: ViewModifier {
         Group {
             #if os(iOS)
             styledContent(content)
+                .modifier(ReadingColumnMargins(enabled: readingWidth))
                 .navigationBarTitleDisplayMode(.inline)
             #else
             watchStyledContent(content)
             #endif
         }
-        .accentColor(settings.accentColor.color)
-        .tint(settings.accentColor.color)
+        .accentColor(appearance.accent)
+        .tint(appearance.accent)
         .dismissKeyboardOnScroll()
         .topContentMargin(topContentMargin)
         // Force the theme's light/dark base here (not just at the app root) so sheets - which are their own
         // presentation contexts and don't inherit the root's preferredColorScheme - also adopt the theme.
-        .preferredColorScheme(settings.colorScheme)
+        .preferredColorScheme(appearance.colorScheme)
         #if os(iOS)
         .safeAreaInset(edge: .bottom) {
             if !disableNowPlayingInset && shouldShowNowPlaying, let bar = playback.barContent {
@@ -619,7 +1152,7 @@ struct ConditionalListStyle: ViewModifier {
     // itself lives in `AccentWashedBackground` - one implementation for lists, sheets, and the watch.)
     @ViewBuilder
     private func styledContent(_ content: Content) -> some View {
-        let base = settings.defaultView ? AnyView(content) : AnyView(content.listStyle(.plain))
+        let base = appearance.defaultView ? AnyView(content) : AnyView(content.listStyle(.plain))
 
         if #available(iOS 16.0, *) {
             // Always hidden (not just for custom themes): the wash reproduces every theme's system
@@ -654,10 +1187,50 @@ struct ConditionalListStyle: ViewModifier {
     #endif
 }
 
+/// `selectableArticleList`'s body: the list style, text selection on iOS, the page's own search bar
+/// (catalog articles), and the scroll to a search result's section. The scroll waits a beat for the
+/// pushed page to lay its rows out; scrolling in the same frame as `onAppear` lands on nothing.
+private struct SelectableArticleList: ViewModifier {
+    @Environment(\.articleScrollTarget) private var scrollTarget
+    /// The page's landing handle: the headers register their views with it (see `ArticleScroll`).
+    @StateObject private var handle = ArticleScrollHandle()
+
+    let article: String?
+    let disableNowPlayingInset: Bool
+    let topContentMargin: CGFloat
+
+    func body(content: Content) -> some View {
+        ScrollViewReader { proxy in
+            styled(content, proxy: proxy)
+                .environment(\.articleScrollHandle, handle)
+                .onAppear {
+                    guard let scrollTarget, !scrollTarget.isEmpty else { return }
+                    ArticleScroll.land(on: scrollTarget, proxy: proxy, after: 0.45, handle: handle)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func styled(_ content: Content, proxy: ScrollViewProxy) -> some View {
+        #if os(iOS)
+        if let article {
+            // The search chrome applies `articleListStyle` itself, around the page AND its results.
+            content.modifier(ArticleSearchChrome(articleID: article, proxy: proxy, handle: handle,
+                                                 disableNowPlayingInset: disableNowPlayingInset,
+                                                 topContentMargin: topContentMargin))
+        } else {
+            content.articleListStyle(disableNowPlayingInset: disableNowPlayingInset, topContentMargin: topContentMargin)
+        }
+        #else
+        content.articleListStyle(disableNowPlayingInset: disableNowPlayingInset, topContentMargin: topContentMargin)
+        #endif
+    }
+}
+
 /// Paints the per-row background for the Sepia / Gray reading themes. Must be applied to rows/sections inside
 /// a `List` so `.listRowBackground` actually reaches the cells. No-op for Light/Dark/System (system colors).
 struct ThemedListRowBackground: ViewModifier {
-    @ObservedObject private var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -665,7 +1238,7 @@ struct ThemedListRowBackground: ViewModifier {
         // section cards (rows read as square, "cut off") - and the reading themes are phone-only
         // looks anyway (they no longer sync to the watch).
         #if os(iOS)
-        if settings.hasCustomThemeColors, let rowColor = settings.themeRowBackgroundColor {
+        if let rowColor = appearance.themeRowBackground {
             content.listRowBackground(rowColor)
         } else {
             content
@@ -755,7 +1328,7 @@ struct IslamArabicFontPicker: View {
             set: { newValue in
                 guard newValue != settings.islamArabicFace else { return }
                 settings.hapticFeedback()
-                withAnimation(.easeInOut) { settings.islamArabicFace = newValue }
+                settings.islamArabicFace = newValue
             }
         )) {
             Text("Uthmani").tag(Settings.IslamArabicFace.uthmani)
@@ -774,6 +1347,8 @@ struct IslamArabicFontPicker: View {
 /// The small numeric badge the Quran tab's section headers wear - caption-semibold, monospaced digits,
 /// on glass. One view so every counted section in the app shows the identical pill.
 struct CountPill: View {
+    @Environment(\.appearance) private var appearance
+
     let count: Int
     /// "5+" style - set when the count is a floor from an early-exited search, not an exact total.
     var overflow: Bool = false
@@ -782,7 +1357,7 @@ struct CountPill: View {
         Text("\(count)\(overflow ? "+" : "")")
             .font(.caption.weight(.semibold))
             .monospacedDigit()
-            .foregroundStyle(Settings.shared.accentColor.color)
+            .foregroundStyle(appearance.accent)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .conditionalGlassEffect()
@@ -796,14 +1371,14 @@ struct CountPill: View {
 /// A small accent-gradient icon chip - the iOS Settings app's row-icon grammar, tinted the app's
 /// way. Shared by the Settings hub, settings search results, and the Islam tab's resource rows.
 struct AccentIconChip: View {
-    @ObservedObject private var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
 
     let systemImage: String
     var tint: Color? = nil
     var size: CGFloat = 29
 
     var body: some View {
-        let tint = tint ?? settings.accentColor.color
+        let tint = tint ?? appearance.accent
         Image(systemName: systemImage)
             // Scales with the chip (~footnote at the default 29pt), so mini chips stay balanced.
             .font(.system(size: size * 0.45, weight: .semibold))
@@ -823,7 +1398,7 @@ struct AccentIconChip: View {
 }
 
 struct SectionPillHeader: View {
-    @ObservedObject private var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
 
     let title: String
     let count: Int
@@ -845,12 +1420,12 @@ struct SectionPillHeader: View {
         HStack(spacing: 8) {
             if let icon {
                 Image(systemName: icon)
-                    .foregroundStyle(settings.accentColor.color)
+                    .foregroundStyle(appearance.accent)
             }
 
             if accentTitle {
                 Text(title)
-                    .foregroundStyle(settings.accentColor.color)
+                    .foregroundStyle(appearance.accent)
             } else {
                 Text(title)
             }
@@ -868,11 +1443,11 @@ struct SectionPillHeader: View {
                 // and as wide as it is tall.
                 Image(systemName: "shuffle")
                     .font(.caption2.weight(.semibold))
-                    .foregroundColor(settings.accentColor.color)
+                    .foregroundColor(appearance.accent)
                     .frame(width: Self.pillHeight, height: Self.pillHeight)
                     .conditionalGlassEffect(circle: true)
                     .onTapGesture {
-                        settings.hapticFeedback()
+                        Settings.shared.hapticFeedback()
                         onShuffle()
                     }
                     .accessibilityLabel("Random \(title.lowercased())")
@@ -880,11 +1455,11 @@ struct SectionPillHeader: View {
 
             if let isExpanded {
                 Image(systemName: isExpanded.wrappedValue ? "chevron.down.circle" : "chevron.up.circle")
-                    .foregroundColor(settings.accentColor.color)
+                    .foregroundColor(appearance.accent)
                     .padding(4)
                     .conditionalGlassEffect()
                     .onTapGesture {
-                        settings.hapticFeedback()
+                        Settings.shared.hapticFeedback()
                         withAnimation { isExpanded.wrappedValue.toggle() }
                     }
                     .accessibilityLabel(isExpanded.wrappedValue ? "Collapse \(title.lowercased())" : "Expand \(title.lowercased())")

@@ -144,7 +144,11 @@ enum PackAudit {
 
         // MARK: Loose JSON payloads (deflate or xz, whichever ships)
 
-        for name in ["SimilarAyahs", "WordByWord", "ThematicTopics", "SurahSections", "TajweedLessons"] {
+        for name in ["SimilarAyahs", "WordByWord", "ThematicTopics", "SurahSections", "TajweedLessons",
+                     "Morphology", "Mutashabihat", "QuranTopics", "AyahThemes", "QiraatVariants",
+                     // The Tilawa port's packs (loose xz, flat in the bundle).
+                     "DailyReminders", "WordOfDay", "NamesDetails", "QiraatVariantAudio",
+                     "QiraatPlaces", "Miracles", "HisnDuas"] {
             var raw: Data?
             var ext = "?"
             if let url = bundled(name, "json.xz"), let blob = try? Data(contentsOf: url) {

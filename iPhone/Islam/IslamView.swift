@@ -9,13 +9,42 @@ struct IslamView: View {
     // window compact - the sidebar/detail layout must collapse to the iPhone shape there (see
     // `usesColumnNavigation`), or the split collapses onto a pre-selected detail with no way back.
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var selectedResource: IslamDestination? = .arabicAlphabet
+    /// iPad: the split view's sidebar selection. Seeded from `-islamDestination` too, so the DEBUG
+    /// hook lands on the resource in the detail column as it does on the iPhone stack (2026-09-06).
+    @State private var selectedResource: IslamDestination? = Self.launchDestination ?? .arabicAlphabet
     /// Bumped when the SAME sidebar row is re-tapped: the detail stack is keyed on it, so the tap
     /// always lands (pops that section back to its root) instead of dying against unchanged state.
     @State private var islamDetailRefreshToken = 0
     /// Programmatic pushes for the grid tiles (a `NavigationLink` inside a List row drags the row chevron
     /// into each tile; a path append does not).
     @State private var islamPath: [IslamDestination] = Self.launchDestination.map { [$0] } ?? []
+
+    /// The tab's search: resources by name, and every Pillars & Beliefs / How-to article by title and
+    /// by the prose inside it (IslamSearch.swift). Results replace the list while a query is typed.
+    @State private var searchText = ""
+    /// Apple Music-style bar minimization: true while scrolling down.
+    @State private var barsCollapsed = false
+    /// The resource row a result asked to scroll to ("Scroll To ..."), consumed once the search clears.
+    @State private var scrollTarget: String?
+    @StateObject private var articleSearch = IslamArticleSearchModel()
+
+    #if DEBUG
+    /// `-islamOpenArticle <catalog id>` (with `-articleSection <HEADING>` alongside): what tapping an
+    /// article result on this screen does, headlessly - the article's index pushed as a destination and
+    /// the article on top of it - so the two-hop landing can be screenshot.
+    @State private var debugOpenArticle = false
+
+    private static var debugArticleRequest: (home: IslamArticleHome, request: IslamArticleOpenRequest)? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let idx = arguments.firstIndex(of: "-islamOpenArticle"), arguments.indices.contains(idx + 1),
+              let entry = IslamArticleCatalog.byID[arguments[idx + 1]] else { return nil }
+        var section: String?
+        if let sectionIdx = arguments.firstIndex(of: "-articleSection"), arguments.indices.contains(sectionIdx + 1) {
+            section = arguments[sectionIdx + 1]
+        }
+        return (entry.home, IslamArticleOpenRequest(id: entry.id, section: section))
+    }
+    #endif
 
     /// DEBUG launch argument `-islamDestination <rawValue>` (e.g. `namesOfAllah`): the resource is
     /// pushed as the tab appears, the only headless route into a resource page (see Settings.init).
@@ -50,9 +79,9 @@ struct IslamView: View {
     /// favorites section all draw from one source of truth instead of three hand-maintained row lists.
     private enum IslamDestination: String, Hashable, CaseIterable {
         /// The on-device chat. Listed only where Apple Intelligence can run it (`available`).
-        case askAI
         case arabicAlphabet
         case tajweedFoundations
+        case tajweedCourse
         case commonAdhkar
         case commonDuas
         case tasbihCounter
@@ -60,15 +89,19 @@ struct IslamView: View {
         case inheritanceCalculator
         case namesOfAllah
         case hijriCalendarConverter
-        case islamicWallpapers
         case pillarsAndBasics
         case howToGuides
+        case miraclesOfQuran
+        case islamicWallpapers
+        case journal
+        case askAI
 
         var title: String {
             switch self {
             case .askAI: return "Ask AI"
             case .arabicAlphabet: return "Arabic Alphabet"
             case .tajweedFoundations: return "Tajweed Foundations"
+            case .tajweedCourse: return "Tajweed Course"
             case .commonAdhkar: return "Dhikr & Remembrances"
             case .commonDuas: return "Dua & Supplications"
             case .tasbihCounter: return "Tasbih Counter"
@@ -79,6 +112,8 @@ struct IslamView: View {
             case .islamicWallpapers: return "Islamic Wallpapers"
             case .pillarsAndBasics: return "Pillars & Beliefs"
             case .howToGuides: return "How-To Guides"
+            case .miraclesOfQuran: return "Miracles of the Quran"
+            case .journal: return "Islamic Journal"
             }
         }
 
@@ -87,6 +122,7 @@ struct IslamView: View {
             case .askAI: return "sparkles"
             case .arabicAlphabet: return "textformat.size.ar"
             case .tajweedFoundations: return "waveform"
+            case .tajweedCourse: return "graduationcap"
             case .commonAdhkar: return "book.closed"
             case .commonDuas: return "text.book.closed"
             case .tasbihCounter: return "circles.hexagonpath.fill"
@@ -97,6 +133,8 @@ struct IslamView: View {
             case .islamicWallpapers: return "photo.on.rectangle"
             case .pillarsAndBasics: return "moon.stars"
             case .howToGuides: return "list.bullet.rectangle"
+            case .miraclesOfQuran: return "sparkle.magnifyingglass"
+            case .journal: return "square.and.pencil"
             }
         }
 
@@ -106,6 +144,7 @@ struct IslamView: View {
             case .askAI: return "Ask anything about Islam, on device"
             case .arabicAlphabet: return "Letters, forms, diacritics, and signs"
             case .tajweedFoundations: return "The rules of beautiful recitation"
+            case .tajweedCourse: return "A guided course, lesson by lesson"
             case .commonAdhkar: return "Morning, evening, and daily remembrances"
             case .commonDuas: return "Authenticated supplications with sources"
             case .tasbihCounter: return "Count dhikr with a tap"
@@ -116,6 +155,8 @@ struct IslamView: View {
             case .islamicWallpapers: return "Beautiful wallpapers to save"
             case .pillarsAndBasics: return "The Five Pillars and Six Beliefs"
             case .howToGuides: return "Wudu, salah, Jumuah, and more"
+            case .miraclesOfQuran: return "Signs in creation, science, and history"
+            case .journal: return "Notes from khutbahs, classes, and your reading"
             }
         }
 
@@ -127,6 +168,7 @@ struct IslamView: View {
             case .askAI: return "Ask\nAI"
             case .arabicAlphabet: return "Arabic\nAlphabet"
             case .tajweedFoundations: return "Tajweed\nFoundations"
+            case .tajweedCourse: return "Tajweed\nCourse"
             case .commonAdhkar: return "Dhikr &\nRemembrances"
             case .commonDuas: return "Dua &\nSupplications"
             case .tasbihCounter: return "Tasbih\nCounter"
@@ -137,13 +179,50 @@ struct IslamView: View {
             case .islamicWallpapers: return "Islamic\nWallpapers"
             case .pillarsAndBasics: return "Pillars &\nBeliefs"
             case .howToGuides: return "How-To\nGuides"
+            case .miraclesOfQuran: return "Miracles of\nthe Quran"
+            case .journal: return "Islamic\nJournal"
             }
         }
+
+        /// Words a searcher types that the title and subtitle do not carry.
+        var searchKeywords: [String] {
+            switch self {
+            case .askAI: return ["chat", "question", "assistant", "apple intelligence"]
+            case .arabicAlphabet: return ["letters", "harakat", "huruf", "alphabet", "tashkeel", "numbers"]
+            case .tajweedFoundations: return ["recitation", "rules", "makharij", "ghunnah", "qalqalah", "madd"]
+            case .tajweedCourse: return ["lessons", "course", "learn", "practice", "beginner", "step by step", "tajwid"]
+            case .commonAdhkar: return ["dhikr", "adhkar", "azkar", "remembrance", "tasbih", "subhanallah"]
+            case .commonDuas: return ["dua", "duas", "supplication", "prayer", "invocation"]
+            case .tasbihCounter: return ["counter", "beads", "misbaha", "count"]
+            case .zakahCalculator: return ["zakat", "charity", "nisab", "gold", "silver", "2.5", "fitr", "zakat al-fitr", "sadaqah", "hawl", "sa'"]
+            case .inheritanceCalculator: return ["faraid", "mirath", "estate", "heirs", "shares", "will", "wasiyyah", "bequest", "awl", "radd", "asabah"]
+            case .namesOfAllah: return ["asma", "husna", "asmaul husna", "attributes", "ar-rahman"]
+            case .hijriCalendarConverter: return ["calendar", "date", "islamic date", "gregorian", "converter"]
+            case .islamicWallpapers: return ["wallpaper", "background", "lock screen", "calligraphy"]
+            case .pillarsAndBasics: return ["beliefs", "aqeedah", "articles", "basics", "iman", "faith"]
+            case .howToGuides: return ["how to", "guide", "steps", "wudu", "salah", "ghusl"]
+            case .miraclesOfQuran: return ["miracles", "miracle", "science", "scientific", "signs", "creation", "embryology", "astronomy", "cosmology", "universe", "ijaz"]
+            case .journal: return ["journal", "notes", "note", "diary", "khutbah", "lecture", "class", "study", "reflection", "write"]
+            }
+        }
+
+        /// The row title, subtitle and keywords, folded ONCE per launch for matching (this was
+        /// re-folded for every resource on every keystroke; Performance Guide, Phase 6 step 10).
+        var searchBlob: String { Self.searchBlobs[self] ?? "" }
+
+        private static let searchBlobs: [IslamDestination: String] = Dictionary(uniqueKeysWithValues: allCases.map {
+            ($0, IslamArticles.fold(([$0.title, $0.subtitle] + $0.searchKeywords).joined(separator: " ")))
+        })
 
         /// Every resource this device can show: all of them, minus Ask AI where Apple Intelligence
         /// can't run it (a row that opens onto "not available here" is worse than no row).
         static var available: [IslamDestination] {
-            allCases.filter { $0 != .askAI || OnDeviceAsk.isAvailable }
+            allCases.filter {
+                if $0 == .askAI { return OnDeviceAsk.isAvailable }
+                // The course is a pack, not code: no pack, no tile.
+                if $0 == .tajweedCourse { return TajweedLessonsStore.isBundled }
+                return true
+            }
         }
     }
 
@@ -179,6 +258,32 @@ struct IslamView: View {
 
     var body: some View {
         navigationContainer
+            #if os(iOS)
+            // A Reminder of the Day card's "Open": the resource pushed onto this tab's stack (or
+            // selected in the iPad sidebar), then the request cleared so it never replays.
+            .onReceive(AppNavigation.shared.$pendingIslam) { target in
+                guard let target else { return }
+                let destination: IslamDestination?
+                switch target {
+                case .duas: destination = .commonDuas
+                case .adhkar: destination = .commonAdhkar
+                case .names(let number):
+                    NamesViewModel.shared.pendingNameNumber = number
+                    destination = .namesOfAllah
+                case .hadithTab: destination = nil
+                }
+                guard let destination else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    if columnLayoutActive {
+                        selectedResource = destination
+                        islamDetailRefreshToken += 1
+                    } else if #available(iOS 16.0, *) {
+                        islamPath = [destination]
+                    }
+                    AppNavigation.shared.pendingIslam = nil
+                }
+            }
+            #endif
             // The window crossed the compact/regular boundary (iPad Split View drag, Slide Over, Stage
             // Manager): carry the open resource across the sidebar/stack swap so the user stays where
             // they were instead of being dumped back on the list.
@@ -241,6 +346,8 @@ struct IslamView: View {
     @ViewBuilder
     private func islamListEntries(split: Bool) -> some View {
         Group {
+            // No Reminder of the Day card here (Abu, 2026-09-07): the reminder still opens as the
+            // daily sheet and feeds the widgets, and this tab is the resource grid.
             Group {
                 #if os(iOS)
                 if split, #available(iOS 16.0, *) {
@@ -257,33 +364,203 @@ struct IslamView: View {
 
             ProphetQuote()
             AlIslamAppsSection()
+                .id("apps")
         }
         .themedListRowBackground()
     }
 
     private var islamList: some View {
-        List {
+        #if os(iOS)
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ScrollViewReader { proxy in
+            List {
+                if query.isEmpty {
+                    islamListEntries(split: false)
+                } else {
+                    searchResultSections(query: query)
+                }
+            }
+            .applyConditionalListStyle()
+            .navigationTitle("Al-Islam")
+            #if DEBUG
+            .debugPushDestination(isPresented: $debugOpenArticle) {
+                if let debug = Self.debugArticleRequest {
+                    IslamArticleCatalog.homeDestination(debug.home, opening: debug.request)
+                }
+            }
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    if #available(iOS 16.0, *), query.isEmpty {
+                        Button {
+                            settings.hapticFeedback()
+                            withAnimation { settings.islamGridMode.toggle() }
+                        } label: {
+                            Image(systemName: settings.islamGridMode ? "list.bullet" : "square.grid.2x2")
+                        }
+                        .accessibilityLabel(settings.islamGridMode ? "Show list" : "Show grid")
+                        .tint(settings.accentColor.accent1)
+                    }
+                }
+            }
+            // Apple Music-style: the bottom bar minimizes while scrolling down, restores on scroll-up.
+            .collapseBarsOnScroll($barsCollapsed)
+            .adaptiveSafeArea(edge: .bottom) {
+                SearchBar(text: (AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut)))
+                    .minimizedBarStyle(barsCollapsed)
+                    .animation(.spring(response: 0.35, dampingFraction: 0.85), value: barsCollapsed)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, BottomBarCushion.standard)
+                    .background(Color.white.opacity(0.00001))
+            }
+            .onChange(of: scrollTarget) { target in
+                guard let target else { return }
+                // The search rows are still animating out; scroll once the resource rows are back.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    withAnimation { proxy.scrollTo(target, anchor: .top) }
+                }
+            }
+        }
+        .onAppear {
+            // A real visit inflates the corpus ahead of the first keystroke; the under-cover tab walk
+            // also lands here, and that inflate belongs to the root's post-reveal schedule instead.
+            if AppReveal.revealed { IslamArticleSearchModel.prewarm() }
+            #if DEBUG
+            // `-islamScrollToApps`: bring the app tiles at the foot of the list into a screenshot.
+            if ProcessInfo.processInfo.arguments.contains("-islamScrollToApps") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { scrollTarget = "apps" }
+            }
+            if let seeded = IslamSearchDebug.launchQuery("-islamSearch"), searchText.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { searchText = seeded }
+            }
+            if Self.debugArticleRequest != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { debugOpenArticle = true }
+            }
+            #endif
+        }
+        .onChange(of: searchText) { text in
+            articleSearch.update(query: text, homes: [.pillars, .guides])
+            if !text.isEmpty { scrollTarget = nil }
+        }
+        #else
+        return List {
             islamListEntries(split: false)
         }
         .applyConditionalListStyle()
         .navigationTitle("Al-Islam")
-        #if os(iOS)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                if #available(iOS 16.0, *) {
-                    Button {
-                        settings.hapticFeedback()
-                        withAnimation { settings.islamGridMode.toggle() }
-                    } label: {
-                        Image(systemName: settings.islamGridMode ? "list.bullet" : "square.grid.2x2")
-                    }
-                    .accessibilityLabel(settings.islamGridMode ? "Show list" : "Show grid")
-                    .tint(settings.accentColor.accent1)
-                }
-            }
-        }
         #endif
     }
+
+    #if os(iOS)
+    /// The resources whose title, subtitle or keywords carry every word of the query.
+    private func matchingResources(_ query: String) -> [IslamDestination] {
+        let terms = IslamArticleSearch.words(query)
+        guard !terms.isEmpty else { return [] }
+        return IslamDestination.available.filter { item in
+            let blob = item.searchBlob
+            return terms.allSatisfy { blob.contains($0) }
+        }
+    }
+
+    /// The search's list: the Ask AI row, matching RESOURCES, then the article matches from both
+    /// Pillars & Beliefs and the How-to guides, each labelled with where it lives.
+    @ViewBuilder
+    private func searchResultSections(query: String) -> some View {
+        let resources = matchingResources(query)
+        Group {
+            AskAISearchSection(query: query)
+
+            if !resources.isEmpty {
+                Section(header: SectionPillHeader(title: "RESOURCES", count: resources.count)) {
+                    ForEach(resources, id: \.self) { item in
+                        resourceSearchRow(item, query: query)
+                    }
+                }
+            }
+
+            IslamArticleSearchSections(
+                query: query,
+                homes: [.pillars, .guides],
+                contentHits: articleSearch.contentHits,
+                isSearching: articleSearch.isSearching,
+                showHome: true,
+                openViaHome: true,
+                hasOtherResults: !resources.isEmpty,
+                scrollLabel: { "Scroll To \($0.home.title)" },
+                onScrollTo: { entry in
+                    // The article's own row is inside its resource; the nearest thing on THIS screen is
+                    // the resource row, so that is where the list scrolls.
+                    scrollToResource(entry.home == .pillars ? .pillarsAndBasics : .howToGuides)
+                }
+            )
+        }
+        .themedListRowBackground()
+    }
+
+    private func scrollToResource(_ item: IslamDestination) {
+        withAnimation { searchText = "" }
+        scrollTarget = Self.rowID(item)
+    }
+
+    private static func rowID(_ item: IslamDestination) -> String { "resource_\(item.rawValue)" }
+
+    /// A resource as a search result: the list row with the match coloured, whatever the grid toggle
+    /// says (a grid tile cannot carry a context menu). Its menu and trailing swipe scroll the list back
+    /// to the resource's own row, the Quran list's grammar.
+    @ViewBuilder
+    private func resourceSearchRow(_ item: IslamDestination, query: String) -> some View {
+        let label = HStack(spacing: 12) {
+            AccentIconChip(systemImage: item.systemImage)
+
+            VStack(alignment: .leading, spacing: 1) {
+                HighlightedSnippet(source: item.title, term: query, font: .body,
+                                   accent: settings.accentColor.color, fg: .primary)
+
+                HighlightedSnippet(source: item.subtitle, term: query, font: .caption,
+                                   accent: settings.accentColor.color, fg: .secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 3)
+
+        let link = Group {
+            if #available(iOS 16.0, *), !usesColumnNavigation {
+                NavigationLink(value: item) { label }
+            } else {
+                NavigationLink(destination: LazyDestination { destinationView(for: item) }) { label }
+            }
+        }
+
+        link
+            .contextMenu {
+                Text(item.title)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    settings.hapticFeedback()
+                    scrollToResource(item)
+                } label: {
+                    Label("Scroll To Resource", systemImage: "arrow.down.circle")
+                }
+
+                Divider()
+
+                favoriteToggleButton(item)
+            }
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                resourceSwipeFavoriteButton(item)
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button {
+                    settings.hapticFeedback()
+                    scrollToResource(item)
+                } label: {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .tint(.secondary)
+            }
+    }
+    #endif
 
     #if os(iOS)
     /// The favorites section plus the full resource list, honoring the app-wide grid toggle. Value-based
@@ -328,6 +605,7 @@ struct IslamView: View {
                         resourceGridTile(item)
                     }
                     .buttonStyle(.plain)
+                    .id(Self.rowID(item))
                 }
             }
             // 1, not 4: the section row already carries ~16pt of its own vertical inset, so 4
@@ -339,6 +617,7 @@ struct IslamView: View {
                 NavigationLink(value: item) {
                     toolLabel(item.title, systemImage: item.systemImage, subtitle: item.subtitle)
                 }
+                .id(Self.rowID(item))
                 .contextMenu { favoriteToggleButton(item) }
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                     resourceSwipeFavoriteButton(item)
@@ -350,7 +629,6 @@ struct IslamView: View {
         }
     }
 
-    @available(iOS 16.0, *)
     private func resourceSwipeFavoriteButton(_ item: IslamDestination) -> some View {
         Button {
             settings.hapticFeedback()
@@ -418,12 +696,13 @@ struct IslamView: View {
             .id(islamDetailIdentity)
     }
 
-    @available(iOS 16.0, *)
     @ViewBuilder
     private func destinationView(for destination: IslamDestination) -> some View {
         switch destination {
         case .askAI:
-            AskAIChatView()
+            if #available(iOS 16.0, *) {
+                AskAIChatView()
+            }
         case .arabicAlphabet:
             ArabicView()
         case .tajweedFoundations:
@@ -439,6 +718,8 @@ struct IslamView: View {
             #else
             TajweedFoundationsView()
             #endif
+        case .tajweedCourse:
+            TajweedLessonsView()
         case .commonAdhkar:
             AdhkarView()
         case .commonDuas:
@@ -459,6 +740,10 @@ struct IslamView: View {
             PillarsView()
         case .howToGuides:
             GuidesView()
+        case .miraclesOfQuran:
+            MiraclesView()
+        case .journal:
+            JournalView()
         }
     }
     #endif
@@ -472,6 +757,12 @@ struct IslamView: View {
             resourceLink(title: "Tajweed Foundations", systemImage: "waveform") {
                 TajweedFoundationsView()
             }
+
+            #if os(iOS)
+            resourceLink(title: "Tajweed Course", systemImage: "graduationcap") {
+                TajweedLessonsView()
+            }
+            #endif
 
             resourceLink(title: "Dhikr & Remembrances", systemImage: "book.closed") {
                 AdhkarView()
@@ -505,16 +796,16 @@ struct IslamView: View {
             }
             #endif
 
-            resourceLink(title: "Islamic Wallpapers", systemImage: "photo.on.rectangle") {
-                WallpaperView()
-            }
-
             resourceLink(title: "Pillars & Beliefs", systemImage: "moon.stars") {
                 PillarsView()
             }
 
             resourceLink(title: "How-To Guides", systemImage: "list.bullet.rectangle") {
                 GuidesView()
+            }
+
+            resourceLink(title: "Islamic Wallpapers", systemImage: "photo.on.rectangle") {
+                WallpaperView()
             }
         }
     }
@@ -574,8 +865,18 @@ struct IslamView: View {
     }
 
     private func toolLabel(_ title: String, systemImage: String, subtitle: String? = nil) -> some View {
-        HStack(spacing: 12) {
-            AccentIconChip(systemImage: systemImage)
+        #if os(watchOS)
+        // The 40 mm face leaves about 103 pt beside the standard chip, and "Remembrances" (108 pt at
+        // its body size) broke as "Remem-" / "brances"; a smaller chip and gap there give the title
+        // the line it needs, at full size.
+        let chipSize: CGFloat = WatchScreen.isNarrow ? 24 : 29
+        let chipSpacing: CGFloat = WatchScreen.isNarrow ? 8 : 12
+        #else
+        let chipSize: CGFloat = 29
+        let chipSpacing: CGFloat = 12
+        #endif
+        return HStack(spacing: chipSpacing) {
+            AccentIconChip(systemImage: systemImage, size: chipSize)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
@@ -599,9 +900,17 @@ struct IslamView: View {
 
 /// The quote card sits between two first-accent sections (resources above, apps below), so it is the screen's
 /// second-accent section - every tint in here reads from `accent2`.
+///
+/// Its motion is a single LIGHT SWEEP: when the card appears, a soft band of light crosses it once from the
+/// leading edge to the trailing edge, and the badge's ring keeps a slow shimmer turning. Nothing scales,
+/// nothing moves up or down, nothing pulses - the earlier scale/offset/opacity entrance replayed on every
+/// scroll past the card and read as the whole card breathing.
 struct ProphetQuote: View {
     @ObservedObject var settings = Settings.shared
-    @State private var isCardVisible = false
+    @Environment(\.appearance) private var appearance
+    /// The sweep's horizontal position across the card, in points from its centre. Parked off the leading
+    /// edge until the card appears, then animated once past the trailing edge.
+    @State private var sweepOffset: CGFloat = -600
     @State private var rotateRing = false
 
     private let quoteText = "“O people, your Lord is one and your father Adam is one. There is no superiority of an Arab over a non-Arab, nor of a non-Arab over an Arab, nor of a red man over a black man, nor of a black man over a red man, except by taqwa (piety, righteousness, and God-consciousness).“"
@@ -611,7 +920,7 @@ struct ProphetQuote: View {
     var body: some View {
         Section(header: Text("PROPHET MUHAMMAD ﷺ QUOTE")) {
             ZStack {
-                if #available(iOS 26.0, *) {
+                if appearance.liquidGlass {
                     quoteCardBackground
                 }
 
@@ -624,35 +933,14 @@ struct ProphetQuote: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 16)
                 .conditionalGlassEffect(rectangle: true, useColor: 0.16)
+                .overlay(lightSweep)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             }
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, 2)
-            .scaleEffect(isCardVisible ? 1 : 0.97)
-            .opacity(isCardVisible ? 1 : 0.9)
-            .offset(y: isCardVisible ? 0 : 10)
-            .animation(.spring(response: 0.5, dampingFraction: 0.85), value: isCardVisible)
-            .onAppear {
-                isCardVisible = true
-                // The ring's slow shimmer sweep is the card's ONE living element - the badge itself
-                // holds still (the old scale/glow pulse read as the card breathing in and out).
-                // Purely decorative; in Low Power Mode a forever-animation is exactly the CPU the
-                // system is asking apps not to spend. The card renders identically, just still.
-                // Never on the watch: its paging TabView fires onAppear/onDisappear on every swipe,
-                // so the forever-animation was being torn down and restarted each tab change - a
-                // steady CPU drain that read as the Quran → Islam swipe lag.
-                #if os(watchOS)
-                return
-                #else
-                guard !AppPerformance.shouldReduceAnimations else { return }
-                withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
-                    rotateRing = true
-                }
-                #endif
-            }
+            .onAppear(perform: startMotion)
             .onDisappear {
-                withAnimation {
-                    isCardVisible = false
-                }
+                sweepOffset = -600
                 rotateRing = false
             }
         }
@@ -666,6 +954,46 @@ struct ProphetQuote: View {
             } label: {
                 Label("Copy Text", systemImage: "doc.on.doc")
             }
+        }
+        #endif
+    }
+
+    /// One pass of light across the card - a narrow diagonal band, brighter at its centre, that never
+    /// lingers: it enters from the leading edge and leaves past the trailing edge in about 1.4 s.
+    private var lightSweep: some View {
+        LinearGradient(
+            colors: [
+                .clear,
+                settings.accentColor.accent2.opacity(0.10),
+                Color.white.opacity(0.22),
+                settings.accentColor.accent2.opacity(0.10),
+                .clear,
+            ],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+        .frame(width: 140)
+        .rotationEffect(.degrees(18))
+        .offset(x: sweepOffset)
+        .blendMode(.plusLighter)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func startMotion() {
+        // Purely decorative; in Low Power Mode a forever-animation is exactly the CPU the system is asking
+        // apps not to spend, and the watch's paging TabView re-fires onAppear on every swipe (a restarted
+        // forever-animation per swipe was the Quran → Islam swipe lag). The card renders identically, still.
+        #if os(watchOS)
+        return
+        #else
+        guard !AppPerformance.shouldReduceAnimations else { return }
+        sweepOffset = -600
+        withAnimation(.easeInOut(duration: 1.4).delay(0.35)) {
+            sweepOffset = 600
+        }
+        withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
+            rotateRing = true
         }
         #endif
     }
@@ -692,7 +1020,7 @@ struct ProphetQuote: View {
 
     private var quoteBadge: some View {
         ZStack {
-            // A slowly rotating shimmer ring behind the badge for a subtle "cool" glow.
+            // A slowly rotating shimmer ring behind the badge: the card's one continuous motion.
             Circle()
                 .stroke(
                     AngularGradient(
@@ -720,8 +1048,7 @@ struct ProphetQuote: View {
                 .clipShape(Circle())
         }
         .conditionalGlassEffect(circle: true)
-        // A steady, quiet glow - deliberately NOT animated: the old scale/shadow pulse made the
-        // whole card read as breathing.
+        // A steady, quiet glow - deliberately NOT animated.
         .shadow(color: settings.accentColor.accent2.opacity(0.28), radius: 8)
         .padding(4)
     }
@@ -833,6 +1160,9 @@ struct AlIslamAppsSection: View {
             }
             .conditionalGlassEffect(rectangle: true)
             .onAppear(perform: runAppCardsPopAnimation)
+            #if DEBUG
+            .onAppear { MemoryFootprint.logLater("app tiles") }
+            #endif
             .onDisappear {
                 withAnimation {
                     popLeft = false
@@ -842,7 +1172,7 @@ struct AlIslamAppsSection: View {
             }
             #if os(iOS)
             .sheet(isPresented: $showLearnMoreSheet) {
-                SplashScreen()
+                SplashScreen(presentedAsSheet: true)
             }
             #endif
         }
@@ -915,6 +1245,14 @@ struct AlIslamAppsSection: View {
         popCenter = true
         popRight = true
         #else
+        // Reduced tier / Reduce Motion: the cards just show, settled (Performance Guide, Phase 6
+        // step 8) - three springs on every tab appearance are decoration.
+        if AppPerformance.shouldReduceAnimations {
+            popLeft = true
+            popCenter = true
+            popRight = true
+            return
+        }
         popLeft = false
         popCenter = false
         popRight = false
@@ -950,7 +1288,9 @@ private struct Card: View {
 
     var body: some View {
         VStack {
-            Image(title)
+            // The 300 px "<name> Tile" asset, not the 1024 px icon: a 100-point tile decoded from the
+            // full icon cost 4 MB apiece on every Islam and Settings tab switch (Phase 6 step 4).
+            Image("\(title) Tile")
                 .resizable()
                 .scaledToFit()
                 .cornerRadius(18)

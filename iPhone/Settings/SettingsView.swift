@@ -23,6 +23,8 @@ struct SettingsSearchEntry: Identifiable {
         case reciters
         case appearance
         case credits
+        /// One credited source on the Credits page (`CreditItem.id`): the page opens scrolled to it.
+        case credit(String)
 
         /// The chip icon a search result renders with - derived here so entries never repeat it.
         var icon: String {
@@ -31,6 +33,7 @@ struct SettingsSearchEntry: Identifiable {
             case .reciters: return "headphones"
             case .appearance: return "paintpalette.fill"
             case .credits: return "scroll.fill"
+            case .credit: return "link"
             }
         }
     }
@@ -180,7 +183,18 @@ struct SettingsView: View {
     private var settingsList: some View {
         #if os(iOS)
         settingsListChrome(
-            List { settingsListContent(split: false) },
+            ScrollViewReader { proxy in
+                List { settingsListContent(split: false) }
+                #if DEBUG
+                // "-scrollToClassicLook": land on the Classic Look switch (screenshot runs).
+                .onAppear {
+                    guard ProcessInfo.processInfo.arguments.contains("-scrollToClassicLook") else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        withAnimation { proxy.scrollTo("classicLook", anchor: .center) }
+                    }
+                }
+                #endif
+            },
             disableNowPlayingInset: false
         )
         #else
@@ -210,7 +224,43 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .applyConditionalListStyle(disableNowPlayingInset: disableNowPlayingInset)
+            #if DEBUG
+            // `-openCredit <CreditItem.id>`: what a credit row in the search results does, headlessly.
+            .debugPushDestination(isPresented: $debugOpenProfile) { ProfileView() }
+            .debugPushDestination(isPresented: $debugOpenCredit) {
+                if let id = Self.debugCreditID { CreditsView(presentedAsSheet: false, scrollTo: id) }
+            }
+            .onAppear {
+                // `-settingsSearch <query>` seeds the search a moment after the tab appears; `-showCredits`
+                // presents the Credits sheet. Typing and tapping are not scriptable in the simulator.
+                if let seeded = Self.launchValue("-settingsSearch"), settingsSearchText.isEmpty {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { settingsSearchText = seeded }
+                }
+                if ProcessInfo.processInfo.arguments.contains("-showCredits") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { showingCredits = true }
+                }
+                if Self.debugCreditID != nil {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { debugOpenCredit = true }
+                }
+                if ProcessInfo.processInfo.arguments.contains("-openProfile") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { debugOpenProfile = true }
+                }
+            }
+            #endif
     }
+
+    #if DEBUG
+    @State private var debugOpenCredit = false
+    @State private var debugOpenProfile = false
+
+    private static var debugCreditID: String? { launchValue("-openCredit") }
+
+    private static func launchValue(_ argument: String) -> String? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let idx = arguments.firstIndex(of: argument), arguments.indices.contains(idx + 1) else { return nil }
+        return arguments[idx + 1]
+    }
+    #endif
 
     /// The floating bottom search bar, shared by the iPhone list and the iPad sidebar so settings
     /// search works identically in both shapes.
@@ -306,10 +356,7 @@ struct SettingsView: View {
     private static let settingsSearchIndex: [SettingsSearchEntry] =
         SettingsSearchEntry.quranEntries
         + SettingsSearchEntry.appearanceEntries
-        + [
-            // About (owned by this file's credits link).
-            .init(title: "Credits & Contact", path: "Credits", keywords: "about version website email review", destination: .credits)
-        ]
+        + SettingsSearchEntry.creditEntries
 
     @ViewBuilder
     private func searchDestinationView(_ destination: SettingsSearchEntry.Destination) -> some View {
@@ -317,7 +364,8 @@ struct SettingsView: View {
         case .quranSettings: SettingsQuranView()
         case .reciters: ReciterListView()
         case .appearance: AppearanceSettingsScreen()
-        case .credits: CreditsView()
+        case .credits: CreditsView(presentedAsSheet: false)
+        case .credit(let id): CreditsView(presentedAsSheet: false, scrollTo: id)
         }
     }
 
@@ -775,6 +823,7 @@ extension SettingsSearchEntry {
         .init(title: "Custom Background Color", path: "Appearance", keywords: "custom color background hex picker theme", destination: .appearance),
         .init(title: "Top Accent Glow", path: "Appearance", keywords: "glow wash gradient accent top background flat hide al islam green yellow brand", destination: .appearance),
         .init(title: "Default List View", path: "Appearance", keywords: "list style plain grouped inset layout", destination: .appearance),
+        .init(title: "Classic Look (No Liquid Glass)", path: "Appearance", keywords: "liquid glass classic look performance faster battery low power mode ios 26 old design", destination: .appearance),
         .init(title: "Haptic Feedback", path: "Appearance", keywords: "vibration taptic buzz feedback toggle", destination: .appearance),
     ]
 }
@@ -782,6 +831,15 @@ extension SettingsSearchEntry {
 
 struct SettingsAppearanceView: View {
     @ObservedObject var settings = Settings.shared
+
+    #if os(iOS)
+    /// The iPad sidebar gives the five-segment theme control about 54 pt a segment, and "System"
+    /// showed as "Syst..." there (2026-09-06 iPad pass); iPads say "Auto". Keyed on the idiom, not
+    /// the size class: a split view's sidebar column reports `.compact` even on a 13-inch iPad.
+    private var systemThemeLabel: String {
+        UIDevice.current.userInterfaceIdiom != .phone ? "Auto" : "System"
+    }
+    #endif
 
     // Accent-swatch grid metrics. The watch gets fewer, smaller swatches with tighter gutters so each circle
     // actually FITS its column (see the note on the grid below); the phone keeps the roomier original.
@@ -865,8 +923,8 @@ struct SettingsAppearanceView: View {
     var body: some View {
         #if os(iOS)
         VStack(alignment: .leading) {
-            Picker("Color Theme", selection: $settings.colorSchemeString.animation(.easeInOut)) {
-                Text("System").tag("system")
+            Picker("Color Theme", selection: $settings.colorSchemeString) {
+                Text(systemThemeLabel).tag("system")
                 Text("Light").tag("light")
                 Text("Dark").tag("dark")
                 Text("Gray").tag("gray")
@@ -879,6 +937,7 @@ struct SettingsAppearanceView: View {
             Text("System follows your device. Light theme in Light Mode, Dark theme in Dark Mode. Other themes are ignored.")
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, 2)
         }
 
@@ -901,6 +960,7 @@ struct SettingsAppearanceView: View {
             Text("Pick any background color for the whole app. Light or dark text is chosen automatically so it stays readable.")
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, 2)
         }
         #endif
@@ -945,6 +1005,7 @@ struct SettingsAppearanceView: View {
             Text("Anas ibn Malik (may Allah be pleased with him) said, “The most beloved of colors to the Messenger of Allah (peace be upon him) was green.”")
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, 2)
                 .padding(.top, 10)
             #endif
@@ -959,6 +1020,7 @@ struct SettingsAppearanceView: View {
             Text("A soft wash of your accent color at the top of each screen. Turn it off for a flat background.")
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, 2)
 
             if settings.showAccentGlow {
@@ -967,9 +1029,10 @@ struct SettingsAppearanceView: View {
                         .font(.subheadline)
                         .onChange(of: settings.alIslamGlow) { _ in settings.hapticFeedback() }
 
-                    Text("Color the glow with Al-Islam's yellow and green - yellow from the left, green from the right - instead of your accent color.")
+                    Text("Color the glow with Al-Islam's yellow and green (yellow from the left, green from the right) instead of your accent color.")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .settingsDependent()
             }
@@ -983,7 +1046,38 @@ struct SettingsAppearanceView: View {
             Text("The default list view is the standard interface found in many of Apple's first party apps, including Notes.")
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, 2)
+        }
+
+        if #available(iOS 26.0, *) {
+            VStack(alignment: .leading) {
+                Toggle("Classic Look (No Liquid Glass)", isOn: $settings.classicLook.animation(.easeInOut))
+                    .font(.subheadline)
+                    .onChange(of: settings.classicLook) { _ in settings.hapticFeedback() }
+
+                Text("Turns off Liquid Glass so the app looks the way it did before iOS 26. Faster and easier on the battery. The search bar keeps its Liquid Glass.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 2)
+
+                if !settings.classicLook {
+                    VStack(alignment: .leading) {
+                        Toggle("Automatically in Low Power Mode", isOn: $settings.classicLookInLowPower.animation(.easeInOut))
+                            .font(.subheadline)
+                            .onChange(of: settings.classicLookInLowPower) { _ in settings.hapticFeedback() }
+
+                        Text("Uses the Classic Look while Low Power Mode is on and brings Liquid Glass back when it is off.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.vertical, 2)
+                    }
+                    .settingsDependent()
+                }
+            }
+            .id("classicLook")
         }
         #endif
 

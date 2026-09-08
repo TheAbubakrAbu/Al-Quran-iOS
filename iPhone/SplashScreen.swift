@@ -5,6 +5,12 @@ struct SplashScreen: View {
     @ObservedObject private var settings = Settings.shared
     @Environment(\.colorScheme) private var systemColorScheme
     @Environment(\.openURL) private var openURL
+    @Environment(\.dismiss) private var dismiss
+
+    /// True when the Islam tab's "Learn More" presents this as a sheet over a running app. The button then
+    /// reads "Done" and dismisses the sheet; on first launch (the default) it clears `firstLaunch` and the
+    /// root fades the splash away itself.
+    var presentedAsSheet = false
 
     @State private var openedAppStoreFromHero = false
     @State private var popCenter = false
@@ -46,7 +52,7 @@ struct SplashScreen: View {
                                         .font(.title.bold())
                                         .foregroundColor(.primary)
 
-                                    Text("Peace be upon you - welcome to \(AppIdentifiers.appName).")
+                                    Text("Peace be upon you, and welcome to \(AppIdentifiers.appName).")
                                         .font(.subheadline)
                                         .foregroundColor(.secondary)
                                 }
@@ -58,12 +64,12 @@ struct SplashScreen: View {
                                     splashFeatureRow(
                                         icon: "lock.shield.fill",
                                         title: "Private by design",
-                                        text: "Everything stays on your device - no accounts, no tracking, works offline."
+                                        text: "Everything stays on your device: no accounts, no tracking, works offline."
                                     )
                                     splashFeatureRow(
                                         icon: "heart.fill",
                                         title: "Free forever",
-                                        text: "No ads, no fees, no subscriptions - offered as sadaqah jariyah."
+                                        text: "No ads, no fees, no subscriptions. Offered as sadaqah jariyah."
                                     )
                                     splashFeatureRow(
                                         icon: "square.grid.2x2.fill",
@@ -338,11 +344,16 @@ struct SplashScreen: View {
             
             Button {
                 settings.hapticFeedback()
-                withAnimation {
-                    settings.firstLaunch = false
+                if presentedAsSheet {
+                    // A sheet over the running app: there is no first launch to end, only the sheet.
+                    dismiss()
+                } else {
+                    withAnimation {
+                        settings.firstLaunch = false
+                    }
                 }
             } label: {
-                Text(openedAppStoreFromHero ? "Done" : "Get Started")
+                Text(actionTitle)
                     .font(.headline)
                     .foregroundColor(.primary)
                     .frame(maxWidth: .infinity)
@@ -353,8 +364,13 @@ struct SplashScreen: View {
                 useColor: 0.38,
                 customTint: AppIdentifiers.mainColor.color
             )
-            .accessibilityLabel(openedAppStoreFromHero ? "Done" : "Get Started")
+            .accessibilityLabel(actionTitle)
         }
+    }
+
+    /// "Get Started" only makes sense on the first launch; a sheet opened from "Learn More" closes with "Done".
+    private var actionTitle: String {
+        (presentedAsSheet || openedAppStoreFromHero) ? "Done" : "Get Started"
     }
 
     private func openAppStoreFromHero(_ url: URL?) {

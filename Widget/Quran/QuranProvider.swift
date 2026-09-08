@@ -45,6 +45,15 @@ struct QuranWidgetEntry: TimelineEntry {
 struct QuranWidgetProvider: TimelineProvider {
     let kind: QuranWidgetKind
 
+    /// The accent, read from the App Group mirror the app writes on every accent change. Reading it
+    /// through `Settings.shared` cost this process the whole `Settings.init` (three location decodes,
+    /// ~240 stored properties) to learn one string; `.custom` resolves through the mirrored hex the
+    /// same way. Cached per process: every kind's snapshot and timeline share it.
+    private static let store = UserDefaults(suiteName: AppIdentifiers.appGroupSuiteName)
+    private static let accent: AccentColor = {
+        AccentColor(rawValue: store?.string(forKey: "accentColor") ?? AppIdentifiers.mainColorString) ?? AppIdentifiers.mainColor
+    }()
+
     // Placeholder (the redacted skeleton) and the widget-gallery preview must always show representative
     // content so they can never render blank - the app may not have written a snapshot yet (fresh install,
     // Quran data still loading), which previously left these surfaces empty.
@@ -63,11 +72,9 @@ struct QuranWidgetProvider: TimelineProvider {
         let policy: TimelineReloadPolicy
         switch kind {
         case .ayahOfTheDay:
-            // Via the calendar, not +86,400s: DST transition days are 23 or 25 hours long.
-            let todayStart = Calendar.current.startOfDay(for: Date())
-            let nextMidnight = Calendar.current.date(byAdding: .day, value: 1, to: todayStart)
-                ?? Date().addingTimeInterval(86_400)
-            policy = .after(nextMidnight)
+            // The day turns over when the app's daily cards do: Fajr from the table the app wrote,
+            // else local midnight (via the calendar, not +86,400s: DST days are 23 or 25 hours).
+            policy = .after(DailyRollover.nextRollover(after: Date(), fajrByDay: QuranWidgetStore.load()?.fajrByDay))
         case .lastReadAyah, .lastListenedSurah, .lastListenedAyah:
             policy = .never
         }
@@ -79,7 +86,7 @@ struct QuranWidgetProvider: TimelineProvider {
     /// ayah beats both a blank card and an "open the app" prompt. Rendered with the system font (no
     /// `arabicFontName`) so it displays even where the custom Uthmani font isn't available.
     private func sampleEntry() -> QuranWidgetEntry {
-        let settings = Settings.shared
+        let accent = Self.accent
         switch kind {
         case .lastListenedSurah:
             return QuranWidgetEntry(
@@ -90,7 +97,7 @@ struct QuranWidgetProvider: TimelineProvider {
                 primaryText: "Al-Fatihah",
                 secondaryText: "Mishary Alafasy",
                 tertiaryText: "00:42 / 01:30",
-                accentColor: settings.accentColor
+                accentColor: accent
             )
         case .lastReadAyah, .lastListenedAyah, .ayahOfTheDay:
             return QuranWidgetEntry(
@@ -101,35 +108,36 @@ struct QuranWidgetProvider: TimelineProvider {
                 primaryText: "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ",
                 secondaryText: "Surah 1:1 • Al-Fatihah",
                 tertiaryText: "In the name of Allah, the Entirely Merciful, the Especially Merciful.",
-                accentColor: settings.accentColor
+                accentColor: accent
             )
         }
     }
 
     private func makeEntry() -> QuranWidgetEntry {
-        let settings = Settings.shared
+        let accent = Self.accent
         let snapshot = QuranWidgetStore.load()
 
         switch kind {
         case .lastReadAyah:
-            return makeAyahEntry(settings: settings, card: snapshot?.lastRead)
+            return makeAyahEntry(accent: accent, card: snapshot?.lastRead)
         case .lastListenedSurah:
-            return makeLastListenedEntry(settings: settings, card: snapshot?.lastListened)
+            return makeLastListenedEntry(accent: accent, card: snapshot?.lastListened)
         case .lastListenedAyah:
-            return makeAyahEntry(settings: settings, card: snapshot?.lastListenedAyah)
+            return makeAyahEntry(accent: accent, card: snapshot?.lastListenedAyah)
         case .ayahOfTheDay:
             // The app's card only counts if it was built for today - otherwise (app not opened since
             // yesterday, or an old snapshot without the day stamp) rotate through the pool ourselves so
             // the "Ayah of the Day" actually changes daily.
             let appCard: QuranWidgetSnapshot.AyahCard? = {
-                guard let snapshot, snapshot.ayahOfTheDayDay == QuranWidgetSnapshot.dayBucket() else { return nil }
+                guard let snapshot,
+                      snapshot.ayahOfTheDayDay == QuranWidgetSnapshot.dailyDayIndex(fajrByDay: snapshot.fajrByDay) else { return nil }
                 return snapshot.ayahOfTheDay
             }()
-            return makeAyahEntry(settings: settings, card: appCard ?? ayahOfTheDayCard(from: snapshot))
+            return makeAyahEntry(accent: accent, card: appCard ?? ayahOfTheDayCard(from: snapshot))
         }
     }
 
-    private func makeAyahEntry(settings: Settings, card: QuranWidgetSnapshot.AyahCard?) -> QuranWidgetEntry {
+    private func makeAyahEntry(accent: AccentColor, card: QuranWidgetSnapshot.AyahCard?) -> QuranWidgetEntry {
         // Treat a card whose text is empty as missing, so a partially-written/blank card falls back to the
         // sample ayah rather than rendering an empty widget body.
         guard let card,
@@ -145,13 +153,13 @@ struct QuranWidgetProvider: TimelineProvider {
             primaryText: card.arabic,
             secondaryText: card.reference,
             tertiaryText: snippet(card.english),
-            accentColor: settings.accentColor,
+            accentColor: accent,
             arabicFontName: card.fontName,
             arabicColorRuns: card.colorRuns
         )
     }
 
-    private func makeLastListenedEntry(settings: Settings, card: QuranWidgetSnapshot.ListenCard?) -> QuranWidgetEntry {
+    private func makeLastListenedEntry(accent: AccentColor, card: QuranWidgetSnapshot.ListenCard?) -> QuranWidgetEntry {
         guard let card, !card.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return sampleEntry()
         }
@@ -163,7 +171,7 @@ struct QuranWidgetProvider: TimelineProvider {
             primaryText: card.name,
             secondaryText: card.reciter,
             tertiaryText: "\(formatDurationMMSS(card.current)) / \(formatDurationMMSS(card.full))",
-            accentColor: settings.accentColor
+            accentColor: accent
         )
     }
 
@@ -171,7 +179,7 @@ struct QuranWidgetProvider: TimelineProvider {
     /// app-provided pool by day, so the widget still shows one stable ayah per day.
     private func ayahOfTheDayCard(from snapshot: QuranWidgetSnapshot?) -> QuranWidgetSnapshot.AyahCard? {
         guard let pool = snapshot?.randomPool, !pool.isEmpty else { return nil }
-        let bucket = Int(Date().timeIntervalSince1970 / 86_400)
+        let bucket = QuranWidgetSnapshot.dailyDayIndex(fajrByDay: snapshot?.fajrByDay)
         return pool[((bucket % pool.count) + pool.count) % pool.count]
     }
 

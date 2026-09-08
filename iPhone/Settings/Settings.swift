@@ -27,6 +27,21 @@ let logger = Logger(subsystem: AppIdentifiers.bundleIdentifier, category: "Setti
 ///   3. **App Storage - Quran** - `@AppStorage` reciter, favorites, sajdah/muqatta'at, bookmarks, khatm.
 ///   4. **App Storage - Arabic/Names + appearance/misc** - fonts, themes, haptics, color scheme.
 /// Keep new settings in the matching section (and storage mechanism) so the split stays clean.
+/// The last-read position, split out of `Settings`: a reading pause writes it every 0.8 s, and every
+/// `@ObservedObject settings` in the app used to re-render for each write. Observed by the Quran tab
+/// root and the readers; everything else goes through the forwarding properties on `Settings`.
+final class ReadingState: ObservableObject {
+    static let shared = ReadingState()
+
+    @AppStorage("lastReadSurah") var lastReadSurah: Int = 0
+    @AppStorage("lastReadAyah") var lastReadAyah: Int = 0
+    /// When the last-read position was recorded (`Settings.stampLastRead`). 0 = saved by a build
+    /// without stamps.
+    @AppStorage("lastReadTimestamp") var lastReadTimestampRaw: Double = 0
+
+    private init() { ObjectPublishCounter.attach(self, label: "ReadingState") }
+}
+
 final class Settings: ObservableObject {
     static let shared = Settings()
     // Internal (not private): the per-domain extension files (SettingsQuran and friends) mirror their
@@ -40,8 +55,37 @@ final class Settings: ObservableObject {
     /// `scheduleNotifications(deferred:)`); the background-refresh task path stays synchronous.
     /// (Not `private` because the coalescing helpers live in the `SettingsAdhan` extension, another file.)
     var pendingNotificationScheduleWorkItem: DispatchWorkItem?
+    /// Completions handed to `scheduleNotifications(deferred:completion:)` while a pass is pending;
+    /// all run after the one coalesced pass.
+    var pendingNotificationScheduleCompletions: [() -> Void] = []
     var pendingWidgetReloadWorkItem: DispatchWorkItem?
-    
+
+    /// Write counters for the memoized derivations (`profileStatsStamp`). They used to hash every
+    /// content blob - up to ~6,000 khatm keys - on EVERY render of the Settings tab's profile row and
+    /// on every Settings publish (`AchievementWatcher`). A counter bumped by the setters costs nothing
+    /// and answers the same question: did anything change. In-process only; the stamps are only ever
+    /// compared within one run.
+    private(set) var contentGeneration = 0
+    func bumpContentGeneration() { contentGeneration &+= 1 }
+
+    /// `ayahRenderSettingsSignature` memo: ~47 `@AppStorage` reads per call, read once per reader body
+    /// pass. Cleared on every publish (see `init`), since any Settings write may have changed an input.
+    /// Main-thread only; off-main readers compute directly.
+    var renderSignatureCache: String?
+    /// The mushaf page cache's settings signature, memoized the same way (Phase 5 step 5).
+    var mushafSignatureCache: String?
+
+    private var selfObservation: AnyCancellable?
+
+    #if DEBUG
+    /// `-publishCounter`: log how many times this object published per second (only seconds with any).
+    /// One publish per user action and zero while idle is the target; a page turn printing 3, a
+    /// toggle printing 2 or a GPS fix printing 1 per sample is the fan-out the performance plan removes.
+    private var debugPublishCount = 0
+    /// Internal, not private: the widget snapshot stores log their byte counts under the same flag.
+    static let debugPublishCounterEnabled = ProcessInfo.processInfo.arguments.contains("-publishCounter")
+    #endif
+
     static let encoder: JSONEncoder = {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .millisecondsSince1970
@@ -69,7 +113,32 @@ final class Settings: ObservableObject {
             UserDefaults.standard.set(false, forKey: "alIslamGlow")
         }
 
-        loadKhatmProgressCacheFromStorage()
+        // Every publish (a `@Published` write or an `@AppStorage` write - both route through
+        // `objectWillChange`) invalidates the render-signature memo. Off-main publishes are a bug
+        // elsewhere, but must not race the main-only cache, so they hop.
+        selfObservation = objectWillChange.sink { [weak self] _ in
+            guard let self else { return }
+            if Thread.isMainThread {
+                self.renderSignatureCache = nil
+                self.mushafSignatureCache = nil
+            } else {
+                DispatchQueue.main.async {
+                    self.renderSignatureCache = nil
+                    self.mushafSignatureCache = nil
+                }
+            }
+            #if DEBUG
+            if Self.debugPublishCounterEnabled { self.debugNotePublish() }
+            #endif
+        }
+
+        // Widget processes read the App Group mirrors and never touch the khatm cache or the
+        // migrations: all of it is app-only work.
+        if Self.isAppProcess {
+            LaunchClock.mark("settings init: before khatm cache")
+            loadKhatmProgressCacheFromStorage()
+            LaunchClock.mark("settings init: khatm cache loaded")
+        }
 
         // Comparison mode is a riwayah feature: with riwayah/qiraah hidden it must be off. The
         // showOtherQiraatReciters didSet enforces this on every change; this covers installs that
@@ -206,6 +275,15 @@ final class Settings: ObservableObject {
                     case "hadithArabicFontSize": shared.hadithArabicFontSize = Double(kv[1]) ?? shared.hadithArabicFontSize
                     case "hadithEnglishFontSize": shared.hadithEnglishFontSize = Double(kv[1]) ?? shared.hadithEnglishFontSize
                     case "islamArabicFace": shared.islamArabicFace = IslamArabicFace(rawValue: kv[1]) ?? shared.islamArabicFace
+                    case "rawLastRead":
+                        // Does a raw UserDefaults write show through the @AppStorage property? (Decides
+                        // whether the last-read flush can coalesce its three writes into one publish.)
+                        UserDefaults.standard.set(Int(kv[1]) ?? 0, forKey: "lastReadSurah")
+                        NSLog("RAW WRITE PROBE lastReadSurah reads %d", shared.lastReadSurah)
+                    // The Classic Look flip, headlessly: paired with "-scrollToClassicLook" it shows
+                    // whether a look change keeps the Settings list where it was (2026-09-04: it
+                    // used to jump to the top, because the bottom bar's modifier changed shape).
+                    case "classicLook": shared.classicLook = kv[1] == "1"
                     case "tab":
                         NotificationCenter.default.post(name: Notification.Name("AlIslamDebugSwitchTab"), object: kv[1])
                     default: break
@@ -215,8 +293,13 @@ final class Settings: ObservableObject {
         }
         #endif
 
-        runQuranStartupMigrations()
-        runWatchSyncKeyMigration()
+        if Self.isAppProcess {
+            LaunchClock.mark("settings init: before migrations")
+            runQuranStartupMigrations()
+            LaunchClock.mark("settings init: quran migrations done")
+            runWatchSyncKeyMigration()
+            LaunchClock.mark("settings init: migrations done")
+        }
 
         #if os(watchOS)
         // Reading themes (Sepia/Gray/Custom) are phone-only looks: earlier builds synced the phone's
@@ -248,30 +331,128 @@ final class Settings: ObservableObject {
         isReadyForUI = true
     }
 
-    func waitUntilReady() async {
-        while true {
-            let isReady = await MainActor.run { self.isReadyForUI }
-            if isReady { return }
-            try? await Task.sleep(nanoseconds: 10_000_000)
+    #if DEBUG
+    /// `-publishTrace`: log the caller of every publish (four frames), to find out WHICH write it was.
+    private static let debugPublishTraceEnabled = ProcessInfo.processInfo.arguments.contains("-publishTrace")
+
+    private func debugNotePublish() {
+        if Self.debugPublishTraceEnabled {
+            let frames = Thread.callStackSymbols.dropFirst(6).prefix(6)
+                .map { $0.split(separator: " ", omittingEmptySubsequences: true).dropFirst(3).joined(separator: " ") }
+            NSLog("PUBLISH TRACE %@", frames.joined(separator: " <- "))
+        }
+        let wasIdle = debugPublishCount == 0
+        debugPublishCount += 1
+        guard wasIdle else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            NSLog("PUBLISH COUNT %d /s", self.debugPublishCount)
+            self.debugPublishCount = 0
         }
     }
+    #endif
+
+    func waitUntilReady() async {
+        // `init` sets the flag synchronously, so this returns on the replayed current value; the
+        // subscription (not a 10 ms poll) is for the day that stops being true.
+        for await ready in $isReadyForUI.values where ready { return }
+    }
     
+    /// Which widget kinds a reload is for. WidgetKit budgets reloads PER PLACED WIDGET (roughly 40-70 a
+    /// day each), and `reloadAllTimelines()` spends one from every widget on the home screen - so a
+    /// prayer-offset change used to charge the four Quran widgets too, and a long reading session
+    /// charged the 33 Adhan kinds. Scoping keeps each family's budget for its own changes.
+    enum WidgetReloadScope {
+        /// Prayer times, location, hijri date, sky palette: the Adhan widgets and watch complications.
+        case adhan
+        /// Something every widget paints (the accent), or a reset.
+        case all
+    }
+
+    /// The Adhan-family widget kinds, in `Widgets.swift` order (iOS) and the two watch complications.
+    /// Kept as one list so `reloadWidgets(.adhan)` and the extension's provider memo agree on the family.
+    static let adhanWidgetKinds: [String] = {
+        #if os(watchOS)
+        return ["Complication", "CountdownComplication"]
+        #else
+        return [
+            "PrayerGradientWidget", "SolarArcSkyWidget", "MoonSkyWidget", "SolarMoonSkyWidget",
+            "NextPrayerBoardSkyWidget", "PrayerDaySkyWidget", "CountdownSkyWidget", "SimpleSkyWidget",
+            "PrayerListSmallSkyWidget", "PrayersSkyWidget", "Prayers2SkyWidget", "FastingCountdownSkyWidget",
+            "PrayerGlanceWidget", "SolarArcWidget", "MoonWidget", "SolarMoonWidget",
+            "NextPrayerBoardWidget", "PrayerDayWidget", "CountdownWidget", "SimpleWidget",
+            "PrayerListSmallWidget", "PrayersWidget", "Prayers2Widget", "FastingCountdownWidget",
+            "PrayerProgressRingWidget", "PrayerCountdownCircularWidget", "LockScreen1Widget",
+            "PrayerWaveWidget", "LockScreen2Widget", "NextPrayerProgressWidget", "PrayerRowLockWidget",
+            "LockScreen3Widget", "LockScreen4Widget",
+        ]
+        #endif
+    }()
+
+    /// The four Quran widget kinds (`Widgets.swift`). `refreshQuranWidgets` reloads a subset of these.
+    static let quranWidgetKinds = ["LastReadSurahWidget", "LastListenedSurahWidget", "LastListenedAyahWidget", "RandomAyahWidget"]
+
+    /// The kinds the user has actually placed, as last reported by WidgetKit; nil until the first query
+    /// answers. A reload of an unplaced kind is a free no-op for WidgetKit but an XPC round trip for us,
+    /// and a scoped reload of 33 kinds would otherwise be 33 of them. Refreshed on every reload (the
+    /// answer arrives asynchronously, so a widget placed since the last query is picked up next time).
+    private static var placedWidgetKinds: Set<String>?
+    private static var pendingWidgetReloadScope: WidgetReloadScope = .adhan
+
     /// Reload widget timelines, coalescing the launch burst the same way as `scheduleNotifications`.
-    func reloadWidgets(deferred: Bool) {
+    /// Scopes coalesce upward: an `.all` request pending with an `.adhan` one reloads everything once.
+    func reloadWidgets(deferred: Bool, scope: WidgetReloadScope = .adhan) {
         // See `scheduleNotifications`: a widget must not reload widget timelines - that is a self-reload loop.
         guard Settings.isAppProcess else { return }
+        if case .all = scope { Self.pendingWidgetReloadScope = .all }
+        else if pendingWidgetReloadWorkItem == nil { Self.pendingWidgetReloadScope = scope }
         pendingWidgetReloadWorkItem?.cancel()
         pendingWidgetReloadWorkItem = nil
         guard deferred else {
-            WidgetCenter.shared.reloadAllTimelines()
+            Self.performWidgetReload(scope: Self.pendingWidgetReloadScope)
+            Self.pendingWidgetReloadScope = .adhan
             return
         }
         let work = DispatchWorkItem { [weak self] in
             self?.pendingWidgetReloadWorkItem = nil
-            WidgetCenter.shared.reloadAllTimelines()
+            Self.performWidgetReload(scope: Self.pendingWidgetReloadScope)
+            Self.pendingWidgetReloadScope = .adhan
         }
         pendingWidgetReloadWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    private static func performWidgetReload(scope: WidgetReloadScope) {
+        switch scope {
+        case .all:
+            WidgetCenter.shared.reloadAllTimelines()
+        case .adhan:
+            reloadWidgetKinds(adhanWidgetKinds)
+        }
+        refreshPlacedWidgetKinds()
+    }
+
+    /// Reloads the placed kinds among `kinds`; before the first placement answer, all of them.
+    static func reloadWidgetKinds(_ kinds: [String]) {
+        guard isAppProcess else { return }
+        let placed = placedWidgetKinds
+        for kind in kinds where placed?.contains(kind) ?? true {
+            WidgetCenter.shared.reloadTimelines(ofKind: kind)
+        }
+        #if DEBUG
+        if debugPublishCounterEnabled {
+            let count = kinds.filter { placed?.contains($0) ?? true }.count
+            NSLog("WIDGET RELOAD %d kinds (%@)", count, placed == nil ? "placement unknown" : "placed only")
+        }
+        #endif
+    }
+
+    private static func refreshPlacedWidgetKinds() {
+        WidgetCenter.shared.getCurrentConfigurations { result in
+            guard case .success(let infos) = result else { return }
+            let kinds = Set(infos.map(\.kind))
+            DispatchQueue.main.async { placedWidgetKinds = kinds }
+        }
     }
 
     /// Posted by a full erase (`resetAllSettings(keepingContent: false)`) so in-memory stores that live
@@ -429,7 +610,7 @@ final class Settings: ObservableObject {
             // `.onChange` at the app root) so every write path - the pickers, a synced snapshot, a
             // settings reset - repaints without each caller remembering to. Deferred so a burst of
             // writes (reset, sync apply) coalesces into one reload against WidgetKit's daily budget.
-            reloadWidgets(deferred: true)
+            reloadWidgets(deferred: true, scope: .all)
         }
     }
 
@@ -463,7 +644,9 @@ final class Settings: ObservableObject {
     /// Disambiguates reciters that share the same display name (qiraah / surah base URL).
     @AppStorage("reciterId") var reciterId: String = ""
 
-    @AppStorage("favoriteReciterIDsData") private var favoriteReciterIDsData = Data()
+    @AppStorage("favoriteReciterIDsData") private var favoriteReciterIDsData = Data() {
+        didSet { bumpContentGeneration() }
+    }
     /// Memoized like `favoriteSurahs`: `isReciterFavorite` runs inside a `.filter` over the whole
     /// reciter list per body pass, which used to be a full JSON decode per element.
     private static var favoriteReciterIDsCache: (data: Data, value: [String])?
@@ -507,47 +690,72 @@ final class Settings: ObservableObject {
     }
 
     @AppStorage("favoriteEnglishTranslationIDsData") private var favoriteEnglishTranslationIDsData = Data()
+    private static var favoriteEnglishTranslationIDsCache: (data: Data, value: [String])?
     var favoriteEnglishTranslationIDs: [String] {
         get {
-            (try? Self.decoder.decode([String].self, from: favoriteEnglishTranslationIDsData)) ?? []
+            if let cached = Self.favoriteEnglishTranslationIDsCache, cached.data == favoriteEnglishTranslationIDsData {
+                return cached.value
+            }
+            let decoded = (try? Self.decoder.decode([String].self, from: favoriteEnglishTranslationIDsData)) ?? []
+            Self.favoriteEnglishTranslationIDsCache = (favoriteEnglishTranslationIDsData, decoded)
+            return decoded
         }
         set {
             let normalized = Array(NSOrderedSet(array: newValue.compactMap {
                 let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.isEmpty ? nil : trimmed
             })) as? [String] ?? []
-            favoriteEnglishTranslationIDsData = (try? Self.encoder.encode(normalized)) ?? Data()
+            let encoded = (try? Self.encoder.encode(normalized)) ?? Data()
+            Self.favoriteEnglishTranslationIDsCache = (encoded, normalized)
+            favoriteEnglishTranslationIDsData = encoded
         }
     }
 
     // Saved user flags: sajdah ayahs and broken-letter (muqatta'at) ayahs.
+    // Both memoized on the stored bytes (the `favoriteSurahsCache` shape): every ayah row read one of
+    // these per body pass, and each read was a JSON decode into a fresh Set.
     @AppStorage("savedSajdahAyahIDsData") private var savedSajdahAyahIDsData = Data()
+    private static var savedSajdahAyahIDsCache: (data: Data, value: Set<String>)?
     var savedSajdahAyahIDs: Set<String> {
         get {
-            (try? Self.decoder.decode([String].self, from: savedSajdahAyahIDsData)) .flatMap { Set($0) } ?? Set()
+            if let cached = Self.savedSajdahAyahIDsCache, cached.data == savedSajdahAyahIDsData {
+                return cached.value
+            }
+            let decoded = (try? Self.decoder.decode([String].self, from: savedSajdahAyahIDsData)).flatMap { Set($0) } ?? Set()
+            Self.savedSajdahAyahIDsCache = (savedSajdahAyahIDsData, decoded)
+            return decoded
         }
         set {
-            let arr = Array(newValue)
-            savedSajdahAyahIDsData = (try? Self.encoder.encode(arr)) ?? Data()
-            objectWillChange.send()
+            let encoded = (try? Self.encoder.encode(Array(newValue))) ?? Data()
+            Self.savedSajdahAyahIDsCache = (encoded, newValue)
+            // The @AppStorage write publishes; no second send.
+            savedSajdahAyahIDsData = encoded
         }
     }
 
     @AppStorage("savedBrokenLetterAyahIDsData") private var savedBrokenLetterAyahIDsData = Data()
+    private static var savedBrokenLetterAyahIDsCache: (data: Data, value: Set<String>)?
     var savedBrokenLetterAyahIDs: Set<String> {
         get {
-            (try? Self.decoder.decode([String].self, from: savedBrokenLetterAyahIDsData)) .flatMap { Set($0) } ?? Set()
+            if let cached = Self.savedBrokenLetterAyahIDsCache, cached.data == savedBrokenLetterAyahIDsData {
+                return cached.value
+            }
+            let decoded = (try? Self.decoder.decode([String].self, from: savedBrokenLetterAyahIDsData)).flatMap { Set($0) } ?? Set()
+            Self.savedBrokenLetterAyahIDsCache = (savedBrokenLetterAyahIDsData, decoded)
+            return decoded
         }
         set {
-            let arr = Array(newValue)
-            savedBrokenLetterAyahIDsData = (try? Self.encoder.encode(arr)) ?? Data()
-            objectWillChange.send()
+            let encoded = (try? Self.encoder.encode(Array(newValue))) ?? Data()
+            Self.savedBrokenLetterAyahIDsCache = (encoded, newValue)
+            savedBrokenLetterAyahIDsData = encoded
         }
     }
 
     @AppStorage("reciteType") var reciteType: String = "Continue to Next"
 
-    @AppStorage("favoriteSurahsData") private var favoriteSurahsData = Data()
+    @AppStorage("favoriteSurahsData") private var favoriteSurahsData = Data() {
+        didSet { bumpContentGeneration() }
+    }
     /// Decoded-favorites memo. These getters are read from every surah row's body and from
     /// `QuranView.searchDisplayContext` on every render - without the memo each read re-ran a full
     /// JSONDecoder pass, so scrolling the list decoded the same bytes once per visible row per frame.
@@ -568,11 +776,15 @@ final class Settings: ObservableObject {
         }
     }
 
-    @AppStorage("khatmCompletedAyahsData") var khatmCompletedAyahsData = Data()
+    @AppStorage("khatmCompletedAyahsData") var khatmCompletedAyahsData = Data() {
+        didSet { bumpContentGeneration() }
+    }
     @AppStorage("automaticKhatmCompletion") var automaticKhatmCompletion = true
     /// The Quran Planner's plan (goal + per-day bookkeeping), iOS-only UI in QuranPlannerView.swift.
     /// Declared here because extensions can't add stored properties; harmless on the other targets.
-    @AppStorage("quranPlanData") var quranPlanData = Data()
+    @AppStorage("quranPlanData") var quranPlanData = Data() {
+        didSet { bumpContentGeneration() }
+    }
     var khatmCompletedAyahSetCache: Set<String> = []
     /// Int-keyed mirror of `khatmCompletedAyahSetCache` (surah * 1000 + ayah). `isKhatmAyahComplete`
     /// runs per ayah row per render while scrolling in khatm mode - the mirror answers it without
@@ -600,7 +812,9 @@ final class Settings: ObservableObject {
     // Raw storage only; the typed `bookmarkedAyahs: [BookmarkedAyah]` accessor lives in SettingsQuran.swift
     // so this core file names no Quran model type (ports to sibling apps without the Quran module). Not
     // `private` so that extension can reach it.
-    @AppStorage("bookmarkedAyahsData") var bookmarkedAyahsData = Data()
+    @AppStorage("bookmarkedAyahsData") var bookmarkedAyahsData = Data() {
+        didSet { bumpContentGeneration() }
+    }
 
     @AppStorage("showBookmarks") var showBookmarks = true
     @AppStorage("showFavorites") var showFavorites = true
@@ -657,12 +871,23 @@ final class Settings: ObservableObject {
     // a toggle removed by request - the recitation-style fold is strictly additive, so there is no
     // reason to turn it off). The old UserDefaults key is simply orphaned.
 
-    @AppStorage("lastReadSurah") var lastReadSurah: Int = 0
-    @AppStorage("lastReadAyah") var lastReadAyah: Int = 0
+    // Forwarded to `ReadingState` (see its comment): a view whose body shows the last-read position
+    // observes `ReadingState`; these keep the old names for the writers and non-view readers.
+    var lastReadSurah: Int {
+        get { ReadingState.shared.lastReadSurah }
+        set { ReadingState.shared.lastReadSurah = newValue }
+    }
+    var lastReadAyah: Int {
+        get { ReadingState.shared.lastReadAyah }
+        set { ReadingState.shared.lastReadAyah = newValue }
+    }
     /// When the last-read position was recorded, for the summary tile's "Today 5:30 PM" caption.
     /// Stamped via `stampLastRead()` at both real save paths (list reader, mushaf pager flush) -
-    /// clearing the position deliberately does not stamp. 0 = saved by a build without stamps.
-    @AppStorage("lastReadTimestamp") private var lastReadTimestampRaw: Double = 0
+    /// clearing the position deliberately does not stamp.
+    private var lastReadTimestampRaw: Double {
+        get { ReadingState.shared.lastReadTimestampRaw }
+        set { ReadingState.shared.lastReadTimestampRaw = newValue }
+    }
 
     var lastReadDate: Date? {
         lastReadTimestampRaw > 0 ? Date(timeIntervalSince1970: lastReadTimestampRaw) : nil
@@ -700,20 +925,49 @@ final class Settings: ObservableObject {
         guard let pending = pendingLastRead else { return }
         pendingLastRead = nil
 
+        let surahChanged = lastReadSurah != pending.surah
         lastReadSurah = pending.surah
         lastReadAyah = pending.ayah
         stampLastRead()
-        refreshQuranWidgets()
+        // The Last Read widget names the surah; the ayah within it reaches the widget on the next
+        // backgrounding flush (AppLifecycle), which is when the widget is next visible. Rebuilding the
+        // snapshot and reloading four timelines on every 0.8 s reading pause burned the WidgetKit
+        // budget in a single long session.
+        if surahChanged { refreshQuranWidgets(.lastRead) }
     }
 
     // MARK: - [Al-Quran] Surah stats (times opened / played)
     // A tiny [surahID: count] map JSON-encoded in one key each - at most 114 small entries, so it costs
     // almost nothing in memory and is only decoded when a surah header is shown.
-    @AppStorage("surahOpenCountsData") private var surahOpenCountsData: Data = Data()
-    @AppStorage("surahPlayCountsData") private var surahPlayCountsData: Data = Data()
+    // Manual defaults access, not `@AppStorage` (same reason as `lastListenedAyahData`): the wrapper
+    // publishes TWICE per write, its own set plus SwiftUI's defaults-observer echo, and a tap on play
+    // wrote the open count, the play count and the last-listened surah inside one second: six app-wide
+    // publishes, every Settings observer re-rendered three times over (2026-09-05 `-publishTrace`).
+    // One publish per write now; the memo below still keys on the bytes.
+    private var surahOpenCountsData: Data {
+        get { UserDefaults.standard.data(forKey: "surahOpenCountsData") ?? Data() }
+        set { setSurahCountsData(newValue, forKey: "surahOpenCountsData") }
+    }
+    private var surahPlayCountsData: Data {
+        get { UserDefaults.standard.data(forKey: "surahPlayCountsData") ?? Data() }
+        set { setSurahCountsData(newValue, forKey: "surahPlayCountsData") }
+    }
+    private func setSurahCountsData(_ data: Data, forKey key: String) {
+        objectWillChange.send()
+        UserDefaults.standard.set(data, forKey: key)
+        bumpContentGeneration()
+    }
 
+    /// Two-slot memo (open counts, play counts) keyed on the bytes, so a surah header's two reads and
+    /// the profile's two whole-map reads decode once per change instead of once per call.
+    private static var surahCountsCache: [Data: [Int: Int]] = [:]
     private func decodeSurahCounts(_ data: Data) -> [Int: Int] {
-        data.isEmpty ? [:] : ((try? Self.decoder.decode([Int: Int].self, from: data)) ?? [:])
+        if data.isEmpty { return [:] }
+        if let cached = Self.surahCountsCache[data] { return cached }
+        let decoded = (try? Self.decoder.decode([Int: Int].self, from: data)) ?? [:]
+        if Self.surahCountsCache.count > 4 { Self.surahCountsCache.removeAll(keepingCapacity: true) }
+        Self.surahCountsCache[data] = decoded
+        return decoded
     }
 
     func surahOpenCount(_ surahID: Int) -> Int { decodeSurahCounts(surahOpenCountsData)[surahID] ?? 0 }
@@ -729,14 +983,12 @@ final class Settings: ObservableObject {
     /// nothing it reads has changed. Kept next to the storage it hashes: a new counted thing must be
     /// added here or the profile will quietly show a stale number.
     var profileStatsStamp: Int {
+        // `contentGeneration` is bumped by the setter of every field the stats derive from (tracker
+        // marks and exemptions, the menses pause, khatm progress, the plan, bookmarks, favorite surahs
+        // and reciters, the surah counts) - a new counted thing must bump it too, or the profile will
+        // quietly show a stale number. Hashing the blobs themselves cost a pass over megabytes per render.
         var hasher = Hasher()
-        hasher.combine(khatmCompletedAyahsData)
-        hasher.combine(quranPlanData)
-        hasher.combine(bookmarkedAyahsData)
-        hasher.combine(favoriteSurahsData)
-        hasher.combine(favoriteReciterIDsData)
-        hasher.combine(surahOpenCountsData)
-        hasher.combine(surahPlayCountsData)
+        hasher.combine(contentGeneration)
         hasher.combine(Calendar.current.startOfDay(for: Date()))
         return hasher.finalize()
     }
@@ -750,6 +1002,7 @@ final class Settings: ObservableObject {
 
     func recordSurahPlayed(_ surahID: Int) {
         guard (1...114).contains(surahID) else { return }
+        ActivityLog.shared.record(.listen)
         var counts = decodeSurahCounts(surahPlayCountsData)
         counts[surahID, default: 0] += 1
         if let data = try? Self.encoder.encode(counts) { surahPlayCountsData = data }
@@ -762,6 +1015,9 @@ final class Settings: ObservableObject {
     @AppStorage("saveLastListenedAyah") var saveLastListenedAyah: Bool = true
     /// When on, the Quran tab shows the daily "Ayah of the Day" card.
     @AppStorage("showAyahOfTheDay") var showAyahOfTheDay: Bool = true
+    @AppStorage("showWordOfTheDay") var showWordOfTheDay: Bool = true
+    /// The Reminder of the Day presented once a day when the app opens (from the second day on).
+    @AppStorage("showDailyReminderSheet") var showDailyReminderSheet: Bool = true
     /// Day key (yyyy-MM-dd) for which the Ayah of the Day card has been hidden via "Hide for Today".
     @AppStorage("ayahOfTheDayHiddenDate") var ayahOfTheDayHiddenDate: String = ""
     /// A shuffled replacement for TODAY's Ayah of the Day, as "dayKey|surahID|ayahID". Stale days no
@@ -772,11 +1028,62 @@ final class Settings: ObservableObject {
     // SettingsQuran.swift: they name Quran model types, and this core file stays free of every domain's
     // types except the prayer engine it structurally contains. Only the raw `Data` storage lives here
     // (stored properties can't move to extensions); internal so the extension can reach it.
-    @AppStorage("lastListenedAyahData") var lastListenedAyahData: Data?
-    @AppStorage("lastListenedSurahData") var lastListenedSurahData: Data?
+    /// Manual defaults access, not `@AppStorage` (Phase 5 step 3): the wrapper published TWICE per
+    /// write (its own set plus SwiftUI's defaults observer echo), and playback wrote it on every
+    /// ayah advance, re-rendering every Settings observer in the app, the Adhan tab included. The
+    /// player's settled writes go through `setLastListenedAyahData(_:publish:)` silently; a stop,
+    /// a pause or a backgrounding flush publishes, which is when anything off the reader shows it.
+    var lastListenedAyahData: Data? {
+        get { UserDefaults.standard.data(forKey: "lastListenedAyahData") }
+        set { setLastListenedAyahData(newValue, publish: true) }
+    }
+
+    func setLastListenedAyahData(_ data: Data?, publish: Bool) {
+        if publish { objectWillChange.send() }
+        if let data {
+            UserDefaults.standard.set(data, forKey: "lastListenedAyahData")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "lastListenedAyahData")
+        }
+    }
+    /// Manual defaults access like `lastListenedAyahData` above: one publish per write instead of the
+    /// wrapper's two (the typed accessor in SettingsQuran.swift mirrors it to the App Group suite).
+    var lastListenedSurahData: Data? {
+        get { UserDefaults.standard.data(forKey: "lastListenedSurahData") }
+        set {
+            objectWillChange.send()
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: "lastListenedSurahData")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "lastListenedSurahData")
+            }
+        }
+    }
 
     /// Which qiraah/riwayah to show for Arabic text. Empty or "Hafs" = Hafs an Asim (default). Transliteration and translations only apply to Hafs.
-    @AppStorage("displayQiraah") var displayQiraah: String = ""
+    @AppStorage("displayQiraah") var displayQiraah: String = "" {
+        didSet {
+            guard oldValue != displayQiraah else { return }
+            warmRiwayahPacks()
+        }
+    }
+
+    #if os(iOS)
+    /// A riwayah switch inflates its text and tajweed packs on whoever asks first, which was the first
+    /// row or page to render (17.6 MB inflated, then a 1.45 MB JSON parse, on main). Kick both loads
+    /// on a background task the moment the setting changes (Phase 5 step 8); the stores are
+    /// lock-guarded and a row that races the warm simply waits on the same parse.
+    private func warmRiwayahPacks() {
+        let tag = Self.Riwayah.canonicalTag(displayQiraah)
+        guard !tag.isEmpty else { return }
+        Task.detached(priority: .userInitiated) {
+            _ = BetaQiraatStore.shared.text(tag: tag, surah: 1, ayah: 1)
+            _ = QiraahTajweedStore.shared.pack(for: tag)
+        }
+    }
+    #else
+    private func warmRiwayahPacks() {}
+    #endif
 
     /// When on, SurahView shows a qiraat picker above the search bar to compare riwayat in that view.
     @AppStorage("qiraatComparisonMode") var qiraatComparisonMode: Bool = false
@@ -810,7 +1117,6 @@ final class Settings: ObservableObject {
                 BetaQiraatStore.shared.unloadAll()
                 #endif
             }
-            objectWillChange.send()
         }
     }
 
@@ -822,7 +1128,7 @@ final class Settings: ObservableObject {
         These twelve riwayat were digitized by machine from a printed mushaf and have \
         not yet been checked word by word. Their ayah numbering and surah divisions are \
         verified, but individual marks or letters may still be wrong. Please do not rely \
-        on them for memorization or recitation - use Hafs or another verified riwayah \
+        on them for memorization or recitation; use Hafs or another verified riwayah \
         for that.
         """
 
@@ -892,17 +1198,20 @@ final class Settings: ObservableObject {
     /// ON by default, like the tajweed colors (user rule): the divine name reads red out of the box.
     /// A user who explicitly turned it off has a stored false, which this default never overrides.
     @AppStorage("highlightAllahNames") var highlightAllahNames: Bool = true
-    /// Tap a word in the reader to see what it means. ON by default - the meaning is the point of
-    /// reading, and a reader who doesn't know the feature exists will never go looking for it in
-    /// Settings. A tap that lands on a word opens its card; a tap anywhere else in the ayah still marks
-    /// the ayah exactly as before (see `WordByWordTextView.Coordinator`, which only claims the tap when
-    /// it is actually on a word). Only Hafs an Asim - the bundled glosses are indexed against its
-    /// wording, and another riwayah's words would not line up (see `WordByWordStore`, which the iOS
-    /// settings screen unloads when this is switched off).
+    /// Double-tap a word in the reader to see what it means. ON by default (Abu, 2026-09-04,
+    /// reversing the performance plan's off-by-default: he wants the feature findable). The cost
+    /// it carries is unchanged: every ayah row with it on is a UITextView with a tap coordinator,
+    /// and the gloss pack stays resident. It takes TWO taps, in list mode and page mode alike
+    /// (single taps opened cards by accident); a single tap anywhere in the ayah still marks the
+    /// ayah exactly as before (see `WordByWordTextView.Coordinator`). Only Hafs an Asim - the
+    /// bundled glosses are indexed against its wording, and another riwayah's words would not line
+    /// up (see `WordByWordStore`, which the iOS settings screen unloads when both word switches
+    /// are off).
     @AppStorage("wordByWordMeanings") var wordByWordMeanings: Bool = true
     /// Word-by-word INLINE: the reader lays the ayah out word by word with each word's English
-    /// meaning directly beneath it (the study layout). Rides on `wordByWordMeanings`' gloss pack
-    /// and gates (Hafs an Asim display only) - with the parent toggle off this one does nothing.
+    /// meaning directly beneath it (the study layout). Shares the gloss pack and the Hafs-only gate
+    /// with `wordByWordMeanings` but is INDEPENDENT of it: the layout draws with the tap switch
+    /// off, and then its words simply do not open a card.
     @AppStorage("wordByWordInline") var wordByWordInline: Bool = false
     /// Which of the two word-by-word lines the study layout writes under each word. Translation is on
     /// out of the box because it is what "word by word" means to most readers; transliteration is off
@@ -1000,7 +1309,18 @@ final class Settings: ObservableObject {
         hadithSearchHistory.removeAll { $0.caseInsensitiveCompare(query) == .orderedSame }
     }
 
-    @AppStorage("englishFontSize") var englishFontSize: Double = Double(UIFont.preferredFont(forTextStyle: .body).pointSize)
+    /// The reader's default point sizes, iPad and Mac: the same 28 pt Arabic / 17 pt English that
+    /// fill an iPhone column sit in an 800 pt one there, so a fresh install starts 15% larger. Only
+    /// the DEFAULT - a size the user has set is a size the user keeps (2026-09-06 iPad/Mac pass).
+    private static let readerDefaultScale: Double = {
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .phone ? 1 : 1.15
+        #else
+        return 1
+        #endif
+    }()
+
+    @AppStorage("englishFontSize") var englishFontSize: Double = (Double(UIFont.preferredFont(forTextStyle: .body).pointSize) * Settings.readerDefaultScale).rounded()
     
     // MARK: - [Al-Hadith] Hadith display
 
@@ -1014,8 +1334,8 @@ final class Settings: ObservableObject {
     /// ON by default, matching the Quran toggle's new default (user rule).
     @AppStorage("highlightAllahNamesHadith") var highlightAllahNamesHadith: Bool = true
     /// Hadith text sizes, independent of the Quran's own sliders.
-    @AppStorage("hadithArabicFontSize") var hadithArabicFontSize: Double = Double(UIFont.preferredFont(forTextStyle: .body).pointSize + 4)
-    @AppStorage("hadithEnglishFontSize") var hadithEnglishFontSize: Double = Double(UIFont.preferredFont(forTextStyle: .body).pointSize)
+    @AppStorage("hadithArabicFontSize") var hadithArabicFontSize: Double = (Double(UIFont.preferredFont(forTextStyle: .body).pointSize + 4) * Settings.readerDefaultScale).rounded()
+    @AppStorage("hadithEnglishFontSize") var hadithEnglishFontSize: Double = (Double(UIFont.preferredFont(forTextStyle: .body).pointSize) * Settings.readerDefaultScale).rounded()
 
     // MARK: - [Islam tab] Arabic letters & 99 Names
     
@@ -1050,7 +1370,7 @@ final class Settings: ObservableObject {
     }
     
     @AppStorage("THEfontArabic") var fontArabic: String = "KFGQPCHAFSUthmanicScript-Regula"
-    @AppStorage("fontArabicSize") var fontArabicSize: Double = Double(UIFont.preferredFont(forTextStyle: .title1).pointSize)
+    @AppStorage("fontArabicSize") var fontArabicSize: Double = (Double(UIFont.preferredFont(forTextStyle: .title1).pointSize) * Settings.readerDefaultScale).rounded()
     @AppStorage("useFontArabic") var useFontArabic = true
     /// Raw storage for `arabicScriptStyle` (see SettingsQuran). Empty means the reader has never
     /// chosen, which resolves to Madani - the effective default. A value written here is always an
@@ -1326,6 +1646,19 @@ final class Settings: ObservableObject {
             .removingAlifWiqayaForSearch
     }
 
+    /// The transliteration's search twin. The natural-reading scheme the ayahs carry doubles long
+    /// vowels ("Rahmaanir Raheem", "Qaiyoom") and joins particles with hyphens ("wa-laa"), so a
+    /// reader who types "rahman" or "raheem" the short way would miss. The index keeps BOTH the
+    /// plain fold and this one; the query is never folded, so English words ("book", "see") are
+    /// untouched.
+    func foldedTransliterationForSearch(_ text: String) -> String {
+        var folded = cleanSearch(text)
+        for (long, short) in [("aa", "a"), ("ee", "i"), ("ii", "i"), ("oo", "u"), ("uu", "u")] {
+            folded = folded.replacingOccurrences(of: long, with: short)
+        }
+        return folded
+    }
+
     /// The hamza-PRECISION lane: the same fold as `cleanSearch` except every hamza - the bare ء and the
     /// waw/ya-seated ؤ ئ - survives as a single ء instead of being dropped or folded to its seat.
     ///
@@ -1505,6 +1838,17 @@ final class Settings: ObservableObject {
 
     @AppStorage("defaultView") var defaultView: Bool = true
 
+    /// Classic Look: the chrome from before iOS 26 (material pills, opaque bars) instead of Liquid
+    /// Glass on systems that have it. Every app-drawn glass surface routes through
+    /// `ConditionalGlassEffect`, which reads the resolved flag from the appearance snapshot
+    /// (`AppearanceEnvironment.liquidGlass`); the system's own tab bar, navigation bars and sheets
+    /// keep the system look, which only the build-time `UIDesignRequiresCompatibility` key changes.
+    @AppStorage("classicLook") var classicLook: Bool = false
+
+    /// Switch to the Classic Look automatically while Low Power Mode is on. Glass is a per-surface
+    /// backdrop pass; on the reduced tier the classic fallback is a flat fill, the cheapest thing there is.
+    @AppStorage("classicLookInLowPower") var classicLookInLowPower: Bool = true
+
     /// The soft accent-colored radial wash at the top of every list (see `washedListBackground`).
     @AppStorage("showAccentGlow") var showAccentGlow: Bool = true
 
@@ -1614,11 +1958,18 @@ final class Settings: ObservableObject {
 
     /// Tint blended into Liquid Glass cards/controls for custom themes, so glass reads as warm cream
     /// (Sepia) or neutral charcoal (Gray) instead of plain white/black. Nil = untinted system glass.
+    ///
+    /// A faint veil, not a paint: at 0.55 of a saturated tan / mid grey every glass surface came out as
+    /// a solid tinted block (measured on iOS 26: the clear-glass summary tiles were #e1cfa9 on a #ede5d1
+    /// card in Sepia and #47474a on #303033 in Gray, where Light and Dark keep a 4% step), which Abu read
+    /// as "too tinted" with "wayyy too less opacity" (2026-09-05). The colors now sit close to the theme's
+    /// own ground at about a quarter of the strength, so the glass keeps its depth and the theme shows
+    /// through as a hue.
     var themeGlassTint: Color? {
         switch colorSchemeString {
-        case "sepia": return Color(red: 0.85, green: 0.74, blue: 0.50).opacity(0.55)
-        case "gray":  return Color(red: 0.33, green: 0.33, blue: 0.35).opacity(0.55)
-        case "custom": return adjustedCustomBackground(by: (customBackgroundLuminance ?? 1) < 0.5 ? 0.12 : -0.08)?.opacity(0.55)
+        case "sepia": return Color(red: 0.90, green: 0.83, blue: 0.69).opacity(0.32)
+        case "gray":  return Color(red: 0.36, green: 0.36, blue: 0.38).opacity(0.22)
+        case "custom": return adjustedCustomBackground(by: (customBackgroundLuminance ?? 1) < 0.5 ? 0.12 : -0.08)?.opacity(0.25)
         default:      return nil
         }
     }

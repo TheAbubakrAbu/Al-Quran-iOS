@@ -1,9 +1,20 @@
 import SwiftUI
+import Combine
 #if canImport(UIKit)
 import UIKit
 #endif
 #if os(watchOS)
 import WatchKit
+#endif
+
+#if os(watchOS)
+/// The 40 mm face (162 pt wide) truncates what every other watch fits: "Shurooq" in a prayer tile,
+/// a surah's Arabic name beside its transliteration, "Remembrances" beside its icon (2026-09-06 watch
+/// pass). Rows and tiles that stack or slim down for it key off this one number; the 41 mm (176 pt)
+/// and up keep the wide layouts.
+enum WatchScreen {
+    static let isNarrow: Bool = WKInterfaceDevice.current().screenBounds.width < 170
+}
 #endif
 
 // MARK: - App identifiers
@@ -34,8 +45,9 @@ enum AppIdentifiers {
 }
 
 enum AppPerformance {
+    /// 3 GB-class and below - see `PerformanceProfile.isLowEndDevice` for the threshold's reasoning.
     static var isLowMemoryDevice: Bool {
-        ProcessInfo.processInfo.physicalMemory < 3_000_000_000
+        PerformanceProfile.isLowEndDevice
     }
 
     /// Live, not cached: the user can flip Low Power Mode at any moment, and every gate below should follow.
@@ -104,12 +116,125 @@ enum AppPerformance {
         #endif
     }
 
+    /// Capped everywhere now (Phase 5 step 9): nil on 3 GB+ devices pushed all 6,236 ayahs through
+    /// a 5,000-entry cache that evicted itself mid-sweep, so the tail of the sweep undid its head.
     static var prewarmArabicAyahLimit: Int? {
         #if os(watchOS)
         20
         #else
-        isLowMemoryDevice ? 32 : nil
+        isLowMemoryDevice ? 32 : 40
         #endif
+    }
+}
+
+// MARK: - Performance profile (live, observable)
+
+/// The live performance tier, as an object views can react to.
+///
+/// `AppPerformance`'s static gates are correct but inert: a body reads them once and keeps whatever it
+/// decided, so a view already on screen when the user flips Low Power Mode never notices. This object
+/// re-reads the inputs on their notifications (power state, thermal state, Reduce Motion, Reduce
+/// Transparency) and publishes only when the resolved flags actually change. The app root folds it into
+/// `AppearanceEnvironment`, so one publish here re-evaluates every mounted view exactly once, together,
+/// instead of each site subscribing on its own.
+///
+/// Main-thread only (every notification is delivered on the main queue; `shared` is first touched from
+/// the app root).
+final class PerformanceProfile: ObservableObject {
+    static let shared = PerformanceProfile()
+
+    enum Tier: Equatable {
+        /// Materials, shadows, decorative animation, broad prewarms.
+        case full
+        /// Low Power Mode, a serious/critical thermal state, or a 3 GB-class device: flat fills instead of
+        /// material blurs, no drop shadows, decorative animation off, prewarms narrowed to what is on screen.
+        case reduced
+    }
+
+    @Published private(set) var tier: Tier = .full
+    @Published private(set) var isLowPowerMode = false
+    @Published private(set) var isThermallyThrottled = false
+    @Published private(set) var isReduceMotionEnabled = false
+    @Published private(set) var isReduceTransparencyEnabled = false
+
+    /// 3 GB-class and below (iPhone 8, X, XR, the SE line). Memory is the one stable proxy for the GPU
+    /// generation that struggles with stacked material blurs; core count is no use (every iPhone since the
+    /// A11 reports six). 3.5 GB rather than 3: a "3 GB" device reports a little under 3_000_000_000 and
+    /// a "4 GB" one a little under 4_000_000_000, so the old `< 3 GB` test let the XR and X through as fast.
+    static let isLowEndDevice: Bool = ProcessInfo.processInfo.physicalMemory < 3_500_000_000
+
+    /// Decorative animation off: starfield twinkle, forever pulses, launch springs. Functional
+    /// transitions stay animated (Reduce Motion asks for less motion, not a frozen UI).
+    var shouldReduceAnimations: Bool { isLowPowerMode || isReduceMotionEnabled }
+
+    /// Flat fills instead of material blurs, on the pre-Liquid-Glass fallback. Each material is a
+    /// backdrop pass; the Adhan tab alone stacks ~35 of them, which is the single biggest GPU cost on
+    /// A11-A13 hardware. Reduce Transparency is the same request made through accessibility.
+    var shouldFlattenMaterials: Bool { tier == .reduced || isReduceTransparencyEnabled }
+
+    /// Drop shadows are offscreen render passes; skipped entirely on the reduced tier (`.softShadow`).
+    var shouldDropShadows: Bool { tier == .reduced }
+
+    private var observers: [NSObjectProtocol] = []
+
+    private init() {
+        refresh()
+        ObjectPublishCounter.attach(self, label: "PerformanceProfile")
+
+        var names: [Notification.Name] = [
+            .NSProcessInfoPowerStateDidChange,
+            ProcessInfo.thermalStateDidChangeNotification
+        ]
+        #if os(iOS)
+        names.append(UIAccessibility.reduceMotionStatusDidChangeNotification)
+        names.append(UIAccessibility.reduceTransparencyStatusDidChangeNotification)
+        #elseif os(watchOS)
+        names.append(NSNotification.Name.WKAccessibilityReduceMotionStatusDidChange)
+        #endif
+        // `.main` queue: the power-state notification arrives on an arbitrary thread, and the
+        // `@Published` writes below must happen where SwiftUI reads them.
+        observers = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.refresh()
+            }
+        }
+    }
+
+    deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    private func refresh() {
+        #if DEBUG
+        // "-lowPowerMode": pretend Low Power Mode is on (the simulator has no switch for it): the
+        // reduced tier plus everything keyed on the flag itself, such as the Classic Look's automatic rule.
+        let lpm = ProcessInfo.processInfo.isLowPowerModeEnabled
+            || ProcessInfo.processInfo.arguments.contains("-lowPowerMode")
+        #else
+        let lpm = ProcessInfo.processInfo.isLowPowerModeEnabled
+        #endif
+        let thermal = ProcessInfo.processInfo.thermalState
+        let throttled = thermal == .serious || thermal == .critical
+        let reduceMotion = AppPerformance.isReduceMotionEnabled
+        #if os(iOS)
+        let reduceTransparency = UIAccessibility.isReduceTransparencyEnabled
+        #else
+        let reduceTransparency = false
+        #endif
+        var tier: Tier = (lpm || throttled || Self.isLowEndDevice) ? .reduced : .full
+        #if DEBUG
+        // "-perfTierReduced": force the reduced tier on the simulator, where Low Power Mode cannot be
+        // switched on and the host Mac's memory reads as a fast device - the only way to screenshot
+        // the flat-material / no-shadow path headlessly.
+        if ProcessInfo.processInfo.arguments.contains("-perfTierReduced") { tier = .reduced }
+        #endif
+
+        // Assign only what changed: each `@Published` write is a publish, and the root re-renders per publish.
+        if isLowPowerMode != lpm { isLowPowerMode = lpm }
+        if isThermallyThrottled != throttled { isThermallyThrottled = throttled }
+        if isReduceMotionEnabled != reduceMotion { isReduceMotionEnabled = reduceMotion }
+        if isReduceTransparencyEnabled != reduceTransparency { isReduceTransparencyEnabled = reduceTransparency }
+        if self.tier != tier { self.tier = tier }
     }
 }
 
@@ -142,8 +267,19 @@ enum AccentColor: String, CaseIterable, Identifiable {
         // Resolved from the user's stored hex. Views observe `settings`, so changing the hex re-renders them.
         // Cached per hex: `.color`/`.accent1`/`.accent2` are read by nearly every row of every list, and
         // re-parsing the hex string on each read made the custom theme measurably slower than the built-ins.
-        case .custom: return Self.cachedCustomColor(hex: Settings.shared.customAccentColorHex)
+        case .custom: return Self.cachedCustomColor(hex: Self.customHexForThisProcess)
         }
+    }
+
+    /// The custom-accent hex as THIS process can see it. The app reads the live property; a widget or
+    /// complication reads the App Group mirror the app writes on every change, so painting `.custom`
+    /// no longer costs the extension the whole `Settings.init` (three location decodes, ~240 stored
+    /// properties) for one string. Read once per extension process - it is a short-lived one.
+    private static let extensionCustomHex: String = {
+        UserDefaults(suiteName: AppIdentifiers.appGroupSuiteName)?.string(forKey: "customAccentColorHex") ?? "34C759"
+    }()
+    private static var customHexForThisProcess: String {
+        Settings.isAppProcess ? Settings.shared.customAccentColorHex : extensionCustomHex
     }
 
     private static let customColorLock = NSLock()
@@ -215,6 +351,17 @@ extension View {
         }
     }
 
+    #if os(iOS)
+    /// iPad and Mac: the same 17 pt body text that fills an iPhone reads small on an 834-1366 pt
+    /// canvas, so the pad idiom runs one Dynamic Type step above the user's setting whenever that
+    /// setting is at the default `.large` or below (a user who already chose a larger size keeps it).
+    /// Only SwiftUI text follows this: the reader's stored point sizes have their own iPad defaults
+    /// (`Settings.readerDefaultScale`), and UIKit bars keep the system size. 2026-09-06 iPad/Mac pass.
+    func regularIdiomTypeBoost() -> some View {
+        modifier(RegularIdiomTypeBoost())
+    }
+    #endif
+
     /// Declares how Arabic text in this subtree should interact with the app-wide rounded design.
     ///
     /// Pass `true` when a real bundled Arabic face (Uthmani / Qiraat / IndoPak) is in play, which opts the subtree
@@ -233,14 +380,48 @@ extension View {
         }
     }
 
-    /// Indents a setting that only exists because the setting above it is on.
+    /// Marks a setting that only exists because the setting above it is on.
     ///
     /// A dependent switch shown flush with its parent reads as a peer, and a reader hunting for why
-    /// it vanished has nothing to look at; one step of indentation says "this belongs to the row
-    /// above" without a second header or a nested box. Used for the word-by-word lines, Hide Arabic
-    /// Dots under Hide Tashkeel, the nagging schedule under Nagging Mode, and their kin.
+    /// it vanished has nothing to look at. One step of indentation plus a thin accent rail on the
+    /// leading edge says "this belongs to the row above" without a second header or a nested box.
+    /// Used for the word-by-word lines, Hide Arabic Dots under Hide Tashkeel, the nagging schedule
+    /// under Nagging Mode, and their kin. Vertically fixed so a caption wraps instead of truncating
+    /// when the row animates in.
     func settingsDependent() -> some View {
-        padding(.leading, 16).padding(.vertical, 2)
+        modifier(SettingsDependentRail())
+    }
+}
+
+#if os(iOS)
+/// See `regularIdiomTypeBoost()`. Idiom-based, not size-class based: an iPad window in Slide Over
+/// shows the iPhone layouts, but its text is still read from an iPad's distance.
+private struct RegularIdiomTypeBoost: ViewModifier {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    private static let boosts: Bool = UIDevice.current.userInterfaceIdiom != .phone
+
+    func body(content: Content) -> some View {
+        content.dynamicTypeSize(Self.boosts ? max(dynamicTypeSize, .xLarge) : dynamicTypeSize)
+    }
+}
+#endif
+
+/// The indent + accent rail behind `settingsDependent()`. Reads the accent straight off Settings:
+/// every view that uses the rail already observes Settings, so the rail follows accent changes
+/// without observing anything itself (and the watch, which has no appearance environment, compiles).
+private struct SettingsDependentRail: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.leading, 14)
+            .padding(.vertical, 4)
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(Settings.shared.accentColor.color.opacity(0.55))
+                    .frame(width: 3)
+                    .padding(.vertical, 2)
+            }
     }
 }
 
@@ -652,6 +833,48 @@ struct LazyDestination<Content: View>: View {
     var body: Content { build() }
 }
 
+/// Pushes `destination` onto the enclosing navigation stack when `isPresented` turns true, through
+/// `navigationDestination(isPresented:)`, never through a hidden `NavigationLink(isActive:)` row: inside a
+/// `NavigationStack(path:)` such a row crashed (EXC_BAD_ACCESS in SwiftUI's NavigationLinkViewRule.dismiss,
+/// 3 of 6 launches on iOS 26.5) when its push raced the page-mode mushaf auto-open, and a zero-height link
+/// is still a List row that draws a band. Attach it to the List itself (a lazy row's destination never
+/// fires). No-op before iOS 16 / watchOS 9.
+///
+/// Two users: the DEBUG "open this screen on launch" hooks (`debugPushDestination`), and the article
+/// search, whose results open an article's index first and then push the article on top of it
+/// (`ArticleAutoOpen`).
+struct PushDestination<Destination: View>: ViewModifier {
+    @Binding var isPresented: Bool
+    @ViewBuilder let destination: () -> Destination
+
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, watchOS 9.0, *) {
+            content.navigationDestination(isPresented: $isPresented, destination: destination)
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    func pushDestination<Destination: View>(
+        isPresented: Binding<Bool>,
+        @ViewBuilder destination: @escaping () -> Destination
+    ) -> some View {
+        modifier(PushDestination(isPresented: isPresented, destination: destination))
+    }
+
+    #if DEBUG
+    /// The DEBUG launch hooks' spelling of `pushDestination`, kept so their call sites read as what they are.
+    func debugPushDestination<Destination: View>(
+        isPresented: Binding<Bool>,
+        @ViewBuilder destination: @escaping () -> Destination
+    ) -> some View {
+        pushDestination(isPresented: isPresented, destination: destination)
+    }
+    #endif
+}
+
 /// What the mushaf page reader draws as a page's body text. `arabic` is the mushaf itself; the English
 /// cases swap the page's text wholesale for a Latin-script rendering (same canonical page boundaries,
 /// same fit-to-page). Raw values are persisted in `Settings.mushafPageLanguage`.
@@ -726,21 +949,253 @@ extension EnvironmentValues {
     }
 }
 
+/// The DEBUG launch stopwatch (`-launchTiming`): "LAUNCH TIMING <label> +<ms>" lines, measured from the
+/// app struct's init (pre-main time is constant across builds and not something these phases touch). The
+/// marks sit at the hand-offs the launch is built from - stores ready, Quran tab settled, warm, finale,
+/// reveal - so a session can read where a cold launch spends its time instead of guessing from sleeps.
+enum LaunchClock {
+    static let start = Date()
+    static func elapsedMS() -> Int { Int(Date().timeIntervalSince(start) * 1000) }
+    #if DEBUG
+    static let enabled = ProcessInfo.processInfo.arguments.contains("-launchTiming")
+    static func mark(_ label: String) {
+        guard enabled else { return }
+        NSLog("LAUNCH TIMING %@ +%d ms", label, elapsedMS())
+    }
+    #else
+    @inline(__always) static func mark(_ label: String) {}
+    #endif
+}
+
+/// `-renderCounter` (DEBUG): counts the SwiftUI body evaluations of the views that call `hit` and logs
+/// "RENDER COUNT <label> n, ..." once per second, only for seconds that had any. The way to prove
+/// "zero body evaluations per second while idle" headlessly, where the SwiftUI instrument cannot run.
+/// Bodies run on the main thread, so the dictionary needs no lock.
+enum RenderCounter {
+    #if DEBUG
+    static let enabled = ProcessInfo.processInfo.arguments.contains("-renderCounter")
+    private static var counts: [String: Int] = [:]
+    private static var flushScheduled = false
+
+    static func hit(_ label: String) {
+        guard enabled else { return }
+        counts[label, default: 0] += 1
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            flushScheduled = false
+            let line = counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+            counts.removeAll(keepingCapacity: true)
+            NSLog("RENDER COUNT %@", line)
+        }
+    }
+    #else
+    @inline(__always) static func hit(_ label: String) {}
+    #endif
+}
+
+#if DEBUG
+/// `-printChanges` (DEBUG): calls `_printChanges()` from the bodies that also call `RenderCounter.hit`, so
+/// a burst of body evaluations can be read as "which dependency woke this body" (SwiftUI names the
+/// changed @State / @ObservedObject / environment). The lines go to stdout, not the unified log: capture
+/// them with `simctl launch --stdout=<file>`.
+enum ChangePrinter {
+    static let enabled = ProcessInfo.processInfo.arguments.contains("-printChanges")
+    static func hit<V: View>(_ type: V.Type) {
+        guard enabled else { return }
+        V._printChanges()
+    }
+}
+#else
+enum ChangePrinter {
+    @inline(__always) static func hit<V: View>(_ type: V.Type) {}
+}
+#endif
+
+#if DEBUG
+/// `-tsanSelfTest` (DEBUG): a deliberate data race (two threads bump one global with no lock), so a
+/// Thread Sanitizer build of the app can be PROVEN to report before its silence on the real screens is
+/// believed. A TSan run that logs "TSAN SELF TEST" and no "WARNING: ThreadSanitizer" is not instrumented.
+enum SanitizerSelfTest {
+    nonisolated(unsafe) private static var counter = 0
+
+    static func race() {
+        for _ in 0..<2 {
+            Thread.detachNewThread {
+                for _ in 0..<200_000 { counter &+= 1 }
+            }
+        }
+        NSLog("TSAN SELF TEST: race started")
+    }
+}
+#endif
+
+#if DEBUG
+/// `-renderCounter` companion: the process's physical footprint, for before/after checks of image
+/// decodes (the Wallpapers screen, the app-icon tiles). `MemoryFootprint.log("label")` writes one
+/// "FOOTPRINT label 123.4 MB" line; silent without the argument.
+enum MemoryFootprint {
+    static var megabytes: Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return 0 }
+        return Double(info.phys_footprint) / 1_048_576
+    }
+
+    static func log(_ label: String) {
+        guard RenderCounter.enabled else { return }
+        NSLog("FOOTPRINT %@ %.1f MB", label, megabytes)
+    }
+
+    /// Log now and again after `delay`, so a lazy decode that lands a frame later is counted too.
+    static func logLater(_ label: String, delay: Double = 3) {
+        guard RenderCounter.enabled else { return }
+        log(label)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { log(label + " +\(Int(delay))s") }
+    }
+}
+#endif
+
+#if canImport(UIKit)
+/// `UIFont(name:size:)` resolves the face through the font registry every call; the mushaf composer
+/// asked for it ~450 times per page fit and the word-by-word layout once per cell (Phase 5 step 11).
+/// Keyed by name and size, thread-safe, never evicted (a few dozen entries at most).
+enum QuranFontCache {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var fonts: [String: UIFont] = [:]
+
+    static func font(name: String, size: CGFloat) -> UIFont? {
+        let key = "\(name)|\(size)"
+        lock.lock()
+        if let hit = fonts[key] { lock.unlock(); return hit }
+        lock.unlock()
+        guard let font = UIFont(name: name, size: size) else { return nil }
+        lock.lock(); fonts[key] = font; lock.unlock()
+        return font
+    }
+}
+
+#if os(iOS)
+/// The readers' title pill (the surah and hadith-chapter `Menu` labels in the navigation bar) is
+/// navigation-bar chrome: like the system's inline title it stops following Dynamic Type at the
+/// extra-large step, or it outgrows the 44 pt bar and draws over the back and gear buttons (seen at the
+/// largest non-accessibility size with "Sahih al-Bukhari" plus its Arabic). `typeSizeCeiling` clamps the
+/// pill's SwiftUI text styles; `pointSize` applies the same ceiling to the UIKit metric the pills size
+/// their Arabic from, which the SwiftUI clamp never reaches.
+enum NavigationTitlePill {
+    static let typeSizeCeiling: DynamicTypeSize = .xLarge
+
+    static func pointSize(_ style: UIFont.TextStyle, at size: DynamicTypeSize) -> CGFloat {
+        let traits = UITraitCollection(preferredContentSizeCategory: contentSizeCategory(min(size, typeSizeCeiling)))
+        return UIFont.preferredFont(forTextStyle: style, compatibleWith: traits).pointSize
+    }
+
+    private static func contentSizeCategory(_ size: DynamicTypeSize) -> UIContentSizeCategory {
+        switch size {
+        case .xSmall: return .extraSmall
+        case .small: return .small
+        case .medium: return .medium
+        case .large: return .large
+        case .xLarge: return .extraLarge
+        case .xxLarge: return .extraExtraLarge
+        case .xxxLarge: return .extraExtraExtraLarge
+        case .accessibility1: return .accessibilityMedium
+        case .accessibility2: return .accessibilityLarge
+        case .accessibility3: return .accessibilityExtraLarge
+        case .accessibility4: return .accessibilityExtraExtraLarge
+        case .accessibility5: return .accessibilityExtraExtraExtraLarge
+        @unknown default: return .large
+        }
+    }
+}
+#endif
+#endif
+
+/// `-renderCounter` companion for the OTHER observable objects (DEBUG): counts every `objectWillChange`
+/// of an attached object per second and logs "OBJECT PUBLISH <label> n, ...". `Settings` has its own
+/// counter (`-publishCounter`); this one answers "which store woke the readers up?".
+enum ObjectPublishCounter {
+    #if DEBUG
+    private static var counts: [String: Int] = [:]
+    private static var flushScheduled = false
+    private static var subscriptions: [AnyCancellable] = []
+
+    static func attach<Object: ObservableObject>(_ object: Object, label: String) {
+        guard RenderCounter.enabled else { return }
+        subscriptions.append(object.objectWillChange.sink { _ in note(label) })
+    }
+
+    private static func note(_ label: String) {
+        counts[label, default: 0] += 1
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            flushScheduled = false
+            let line = counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+            counts.removeAll(keepingCapacity: true)
+            NSLog("OBJECT PUBLISH %@", line)
+        }
+    }
+    #else
+    @inline(__always) static func attach<Object: ObservableObject>(_ object: Object, label: String) {}
+    #endif
+}
+
+/// `-renderCounter` companion for the bundled-pack parses of the Tilawa stores (DEBUG): every parse
+/// logs "PACK PARSE <name> <inflated KB> <ms> MAIN|bg", so a main-thread parse at launch is a grep
+/// the way `HADITH BLOCK ... MAIN` is for the hadith packs (Tilawa Guide, Phase 8 step 4). `parse`
+/// returns the result with the inflated byte count it parsed (0 when it never got that far).
+enum PackTrace {
+    #if DEBUG
+    static func measure<T>(_ name: String, _ parse: () -> (result: T, bytes: Int)) -> T {
+        guard RenderCounter.enabled else { return parse().result }
+        let start = DispatchTime.now().uptimeNanoseconds
+        let outcome = parse()
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+        NSLog("PACK PARSE %@ %d KB %.1f ms %@", name, outcome.bytes / 1024, ms, Thread.isMainThread ? "MAIN" : "bg")
+        return outcome.result
+    }
+    #else
+    @inline(__always) static func measure<T>(_ name: String, _ parse: () -> (result: T, bytes: Int)) -> T { parse().result }
+    #endif
+}
+
 /// Live mirror of the reveal state for code that checks it from ESCAPING tasks. A value-type modifier's
 /// captured `@Environment(\.appRevealed)` snapshot freezes at capture time - the review prompt's retry
 /// loop, whose capture chain starts before the launch cover lifts, read a stale `false` forever and
 /// silently suppressed the prompt for the whole session. Defaults to `true` for the same reason as the
 /// environment key (Watch app, previews); only the iPhone app root writes it.
 @MainActor enum AppReveal {
-    static var revealed = true
+    static var revealed = true {
+        didSet {
+            guard revealed else { return }
+            let parked = waiters
+            waiters.removeAll()
+            parked.forEach { $0.resume() }
+        }
+    }
+
+    private static var waiters: [CheckedContinuation<Void, Never>] = []
 
     /// Parks a task until the launch/splash cover has lifted. Deferred launch work (the 17-book
     /// hadith sweep, the broad surah sweep, the NLEmbedding probe) waits on this so the under-cover
     /// warm - the window the launch screen's reveal is actually gated on - keeps the main actor and
-    /// the disk to itself. 100ms poll: reveal latency is invisible at that grain.
+    /// the disk to itself. A continuation, not a poll: a dozen tasks park here at launch, and their
+    /// 100 ms wakeups were timers Low Power Mode throttles and the launch window paid for. A parked
+    /// task resumes on the reveal (always within seconds) and checks its own cancellation after.
     static func waitUntilRevealed() async {
-        while !revealed, !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 100_000_000)
+        if revealed || Task.isCancelled { return }
+        await withCheckedContinuation { continuation in
+            if revealed {
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+            }
         }
     }
 }

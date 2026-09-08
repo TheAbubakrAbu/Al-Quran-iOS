@@ -3,18 +3,25 @@ import AVFoundation
 
 struct NowPlayingView: View {
     @ObservedObject var settings = Settings.shared
-    @ObservedObject var quranPlayer = QuranPlayer.shared
+    /// Actions and the `AVPlayer` only: not observed. Playback state comes from `nowPlaying`, which
+    /// republishes once per turn instead of once per player write (see `NowPlayingState`).
+    private let quranPlayer = QuranPlayer.shared
+    @ObservedObject private var nowPlaying = QuranPlayer.shared.nowPlaying
+    /// The progress poll runs at 1 s on the reduced tier (Phase 5 step 11).
+    @Environment(\.appearance) private var appearance
 
     @State private var quranView: Bool
     @Binding private var scrollDown: Int
     @Binding private var searchText: String
     private let onOpenPlayback: ((PlaybackContext) -> Void)?
 
-    @State private var confirmRemoveNote = false
     @State private var confirmClearQueue = false
     /// Last real playback context, kept so the bar can stay mounted (hidden) after playback stops - tearing
-    /// it down inside the stop action was cancelling "Stop Playing".
-    @State private var retainedContext: PlaybackContext?
+    /// it down inside the stop action was cancelling "Stop Playing". A reference box under `@State`, not a
+    /// `@State` value: writing a value here on every context change was a second body evaluation per
+    /// ayah advance for every mounted bar, and nothing needs to render when it changes.
+    private final class RetainedContext { var value: PlaybackContext? }
+    @State private var retained = RetainedContext()
 
     /// Small (default) vs. big player. Stored on `settings` (not @AppStorage) so `withAnimation` animates it.
     private var isExpanded: Bool { settings.nowPlayingExpanded }
@@ -32,13 +39,14 @@ struct NowPlayingView: View {
     }
 
     var body: some View {
+        let _ = RenderCounter.hit(quranView ? "NowPlayingView.quran" : (onOpenPlayback != nil ? "NowPlayingView.reader" : "NowPlayingView.bar"))
         #if os(iOS)
         // The parent inset inserts/removes this view with `if isPlaying||isPaused` + `.animation`, which
         // animates BOTH the fade and the height collapse (a `.frame(height:)` between natural and 0 can't
         // animate - it snaps). `retainedContext` keeps the last context so the bar still has content to render
         // while it fades OUT (otherwise `playbackContext` goes nil on stop and there's nothing to fade). The
         // "Stop Playing" action defers `stop()` so this view isn't torn down mid-action (which cancelled it).
-        guard let ctx = playbackContext ?? retainedContext else {
+        guard let ctx = playbackContext ?? retained.value else {
             return AnyView(EmptyView())
         }
 
@@ -54,17 +62,17 @@ struct NowPlayingView: View {
                             settings.hapticFeedback()
                             onOpenPlayback(ctx)
                         } label: {
-                            playerRow(isPlaying: quranPlayer.isPlaying)
+                            playerRow(isPlaying: nowPlaying.isPlaying)
                         }
                         .buttonStyle(.plain)
                     } else if quranView {
                         NavigationLink {
                             destinationView(for: ctx)
                         } label: {
-                            playerRow(isPlaying: quranPlayer.isPlaying)
+                            playerRow(isPlaying: nowPlaying.isPlaying)
                         }
                     } else {
-                        playerRow(isPlaying: quranPlayer.isPlaying)
+                        playerRow(isPlaying: nowPlaying.isPlaying)
                     }
                 }
                 // Pin a stable full width so the small and big players are the same size and only the
@@ -96,10 +104,10 @@ struct NowPlayingView: View {
                 // (continuous surah playback never changes the key), leaving `retainedContext` nil - so on
                 // stop the bar fell back to EmptyView and vanished without fading. Capturing on appear fixes it.
                 .onAppear {
-                    if let pc = playbackContext { retainedContext = pc }
+                    if let pc = playbackContext { retained.value = pc }
                 }
                 .onChange(of: playbackContextKey) { _ in
-                    if let pc = playbackContext { retainedContext = pc }
+                    if let pc = playbackContext { retained.value = pc }
                 }
             )
         #else
@@ -110,7 +118,7 @@ struct NowPlayingView: View {
             AnyView(
                 Section(header: Text("NOW PLAYING")) {
                     VStack(spacing: 8) {
-                        playerRow(isPlaying: quranPlayer.isPlaying)
+                        playerRow(isPlaying: nowPlaying.isPlaying)
                     }
                     .transition(.opacity)
                 }
@@ -126,28 +134,28 @@ struct NowPlayingView: View {
 
     private var playbackContext: PlaybackContext? {
         guard
-            let surahNumber = quranPlayer.currentSurahNumber,
+            let surahNumber = nowPlaying.currentSurahNumber,
             let surah = quranPlayer.quranData.quran.first(where: { $0.id == surahNumber }),
-            quranPlayer.isPlaying || quranPlayer.isPaused
+            nowPlaying.isPlaying || nowPlaying.isPaused
         else {
             return nil
         }
 
         return PlaybackContext(
             surah: surah,
-            ayahNumber: quranPlayer.currentAyahNumber ?? 1,
-            isPlaying: quranPlayer.isPlaying
+            ayahNumber: nowPlaying.currentAyahNumber ?? 1,
+            isPlaying: nowPlaying.isPlaying
         )
     }
 
     private var bookmarkIndex: Int? {
-        let surah = quranPlayer.currentSurahNumber ?? 1
-        let ayah = quranPlayer.currentAyahNumber ?? 1
+        let surah = nowPlaying.currentSurahNumber ?? 1
+        let ayah = nowPlaying.currentAyahNumber ?? 1
         return settings.bookmarkIndex(surah: surah, ayah: ayah)
     }
 
     private var bookmark: BookmarkedAyah? {
-        settings.bookmarkedAyah(surah: quranPlayer.currentSurahNumber ?? 1, ayah: quranPlayer.currentAyahNumber ?? 1)
+        settings.bookmarkedAyah(surah: nowPlaying.currentSurahNumber ?? 1, ayah: nowPlaying.currentAyahNumber ?? 1)
     }
 
     private var isBookmarkedHere: Bool {
@@ -155,12 +163,12 @@ struct NowPlayingView: View {
     }
 
     private var currentNote: String {
-        settings.bookmarkNoteText(surah: quranPlayer.currentSurahNumber ?? 1, ayah: quranPlayer.currentAyahNumber ?? 1)
+        settings.bookmarkNoteText(surah: nowPlaying.currentSurahNumber ?? 1, ayah: nowPlaying.currentAyahNumber ?? 1)
     }
 
     @ViewBuilder
     private func destinationView(for context: PlaybackContext) -> some View {
-        if quranPlayer.isPlayingSurah {
+        if nowPlaying.isPlayingSurah {
             SurahView(surah: context.surah)
         } else {
             SurahView(surah: context.surah, ayah: context.ayahNumber)
@@ -232,7 +240,7 @@ struct NowPlayingView: View {
         // the periodic timeline kept redrawing this subtree twice a second over a frozen progress bar;
         // paused, one lazy tick keeps it alive, and the play/pause @Published change re-renders (and
         // re-schedules) immediately on resume.
-        TimelineView(.periodic(from: .now, by: isPlaying ? 0.5 : 3600)) { _ in
+        TimelineView(.periodic(from: .now, by: isPlaying ? (appearance.isReducedTier ? 1 : 0.5) : 3600)) { _ in
             let elapsed = CMTimeGetSeconds(quranPlayer.player?.currentTime() ?? .zero)
             let rawTotal = CMTimeGetSeconds(quranPlayer.player?.currentItem?.duration ?? .zero)
             let total = (rawTotal.isFinite && rawTotal > 0) ? rawTotal : 0
@@ -282,30 +290,30 @@ struct NowPlayingView: View {
     }
 
     private func customRangeLineOne(start: Int, end: Int) -> String {
-        let current = quranPlayer.customRangeCurrentIndex ?? 1
-        let total = quranPlayer.customRangeTotalItems
-            ?? max(1, (end - start + 1) * quranPlayer.customRangeRepeatPerAyah * quranPlayer.customRangeRepeatSection)
+        let current = nowPlaying.customRangeCurrentIndex ?? 1
+        let total = nowPlaying.customRangeTotalItems
+            ?? max(1, (end - start + 1) * nowPlaying.customRangeRepeatPerAyah * nowPlaying.customRangeRepeatSection)
         return "Ayahs \(start)-\(end) (\(current)/\(total))"
     }
 
     private func customRangeLineTwo() -> String {
-        let ayahProgress = quranPlayer.customRangeCurrentRepeatWithinAyah ?? 1
-        let ayahTotal = max(1, quranPlayer.customRangeRepeatPerAyah)
-        let sectionProgress = quranPlayer.customRangeRepeatSectionIndex ?? 1
-        let sectionTotal = max(1, quranPlayer.customRangeRepeatSection)
+        let ayahProgress = nowPlaying.customRangeCurrentRepeatWithinAyah ?? 1
+        let ayahTotal = max(1, nowPlaying.customRangeRepeatPerAyah)
+        let sectionProgress = nowPlaying.customRangeRepeatSectionIndex ?? 1
+        let sectionTotal = max(1, nowPlaying.customRangeRepeatSection)
         return "Ayah \(ayahProgress)/\(ayahTotal) · Section \(sectionProgress)/\(sectionTotal)"
     }
 
     /// For a custom range, keep the top title short (just "Name S:A") since the per-ayah/section detail
     /// shows on its own lines below. Other playback uses the full now-playing title.
     private var displayTitle: String? {
-        if quranPlayer.isPlayingCustomRange,
-           let surahNumber = quranPlayer.currentSurahNumber,
-           let ayahNumber = quranPlayer.currentAyahNumber,
+        if nowPlaying.isPlayingCustomRange,
+           let surahNumber = nowPlaying.currentSurahNumber,
+           let ayahNumber = nowPlaying.currentAyahNumber,
            let surah = quranPlayer.quranData.quran.first(where: { $0.id == surahNumber }) {
             return "\(surah.nameTransliteration) \(surahNumber):\(ayahNumber)"
         }
-        return quranPlayer.nowPlayingTitle
+        return nowPlaying.nowPlayingTitle
     }
 
     /// Top-right button that toggles between the small and big player.
@@ -347,18 +355,6 @@ struct NowPlayingView: View {
         // no longer wraps the toggle in a global `withAnimation` (that animated the whole List - squishing
         // rows and resetting the Quran scroll), so there's no longer a second animation to fight with.
         .animation(.easeInOut, value: isExpanded)
-        .confirmationDialog(Settings.bookmarkNoteRemovalDialogTitle, isPresented: $confirmRemoveNote, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) {
-                let surah = quranPlayer.currentSurahNumber ?? 1
-                let ayah = quranPlayer.currentAyahNumber ?? 1
-
-                settings.hapticFeedback()
-                settings.toggleBookmark(surah: surah, ayah: ayah)
-            }
-            Button("Cancel") {}
-        } message: {
-            Text(Settings.bookmarkNoteRemovalDialogMessage)
-        }
         #else
         VStack(alignment: .center, spacing: 6) {
             titleBlock(expanded: false)
@@ -376,7 +372,7 @@ struct NowPlayingView: View {
                 .padding(.trailing, -2)
         }
         .transition(.opacity)
-        .animation(.easeInOut, value: quranPlayer.isPlaying)
+        .animation(.easeInOut, value: nowPlaying.isPlaying)
         #endif
     }
 
@@ -392,7 +388,7 @@ struct NowPlayingView: View {
             // Horizontal inset keeps the centered title clear of the top-right expand button.
             .padding(.horizontal, 24)
 
-            if quranPlayer.isPlaying || quranPlayer.isPaused {
+            if nowPlaying.isPlaying || nowPlaying.isPaused {
                 transportRowWithProgress(isPlaying: isPlaying)
             } else {
                 HStack(spacing: 22) {
@@ -461,7 +457,7 @@ struct NowPlayingView: View {
     private func titleBlock(expanded: Bool) -> some View {
         // Big player mirrors Control Center exactly (full title, with the custom-range ayah/section detail
         // already inline). Small player uses the short title and breaks the detail out onto its own lines.
-        let titleText = expanded ? quranPlayer.nowPlayingTitle : displayTitle
+        let titleText = expanded ? nowPlaying.nowPlayingTitle : displayTitle
         if let title = titleText {
             Text(title)
                 .foregroundColor(.primary)
@@ -475,7 +471,7 @@ struct NowPlayingView: View {
                 #endif
         }
 
-        if let reciter = quranPlayer.nowPlayingReciter {
+        if let reciter = nowPlaying.nowPlayingReciter {
             Text(reciter)
                 .font(.caption2)
                 .foregroundColor(.secondary)
@@ -487,9 +483,9 @@ struct NowPlayingView: View {
 
         // Custom range: the "Ayahs X-Y (n/total)" line shows under the reciter in BOTH sizes; the
         // per-ayah/section breakdown line is small-player only.
-        if quranPlayer.isPlayingCustomRange,
-           let start = quranPlayer.customRangeStartAyah,
-           let end = quranPlayer.customRangeEndAyah {
+        if nowPlaying.isPlayingCustomRange,
+           let start = nowPlaying.customRangeStartAyah,
+           let end = nowPlaying.customRangeEndAyah {
             Text(customRangeLineOne(start: start, end: end))
                 .font(.caption2)
                 .foregroundColor(.secondary)
@@ -516,13 +512,12 @@ struct NowPlayingView: View {
         .tint(.secondary)
     }
 
-    private func toggleBookmarkWithNoteGuard() {
-        let surah = quranPlayer.currentSurahNumber ?? 1
-        let ayah = quranPlayer.currentAyahNumber ?? 1
-
-        if !settings.toggleBookmarkIfNoNoteLoss(surah: surah, ayah: ayah) {
-            confirmRemoveNote = true
-        }
+    /// Bookmarks the playing ayah, or asks before removing its bookmark (`Settings.toggleBookmarkOrConfirm`).
+    private func toggleBookmarkOrConfirm() {
+        settings.toggleBookmarkOrConfirm(
+            surah: nowPlaying.currentSurahNumber ?? 1,
+            ayah: nowPlaying.currentAyahNumber ?? 1
+        )
     }
 
     /// The ±10s seek pair, as a palette-style row at the top of the compact player's context menu.
@@ -591,12 +586,12 @@ struct NowPlayingView: View {
             Label("Add Current Surah to Queue", systemImage: "text.line.last.and.arrowtriangle.forward")
         }
 
-        if !quranPlayer.surahQueue.isEmpty {
+        if !nowPlaying.surahQueue.isEmpty {
             Button(role: .destructive) {
                 settings.hapticFeedback()
                 confirmClearQueue = true
             } label: {
-                Label("Clear Queue (\(quranPlayer.surahQueue.count))", systemImage: "text.badge.xmark")
+                Label("Clear Queue (\(nowPlaying.surahQueue.count))", systemImage: "text.badge.xmark")
             }
         }
 
@@ -604,7 +599,7 @@ struct NowPlayingView: View {
 
         Button(role: isFavorite ? .destructive : nil) {
             settings.hapticFeedback()
-            settings.toggleSurahFavorite(surah: context.surah.id)
+            settings.toggleSurahFavoriteOrConfirm(surah: context.surah.id)
         } label: {
             Label(
                 isFavorite ? "Unfavorite Surah" : "Favorite Surah",
@@ -614,7 +609,7 @@ struct NowPlayingView: View {
 
         Button(role: isBookmarked ? .destructive : nil) {
             settings.hapticFeedback()
-            toggleBookmarkWithNoteGuard()
+            toggleBookmarkOrConfirm()
         } label: {
             Label(
                 isBookmarked ? "Unbookmark Ayah" : "Bookmark Ayah",

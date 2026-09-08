@@ -8,12 +8,12 @@ import WidgetKit
 /// The protocol is a **per-key last-writer-wins merge** (an LWW map). Every synced setting travels with
 /// its own `(timestamp, deviceRank)` stamp, and a device applies an incoming key only when that key's
 /// stamp is newer than the one it already holds (strictly later wall-clock time; the higher-ranked
-/// device — iPhone — wins only an exact-same-instant tie).
+/// device, the iPhone, wins only an exact-same-instant tie).
 ///
 /// Why per-key and not whole-snapshot: the previous protocol stamped the *entire* snapshot with one
 /// timestamp per send. Any send from a device holding one stale value re-asserted that stale value as
 /// "just written," so a watch that hadn't yet received a phone edit could revert it merely by syncing an
-/// unrelated change — the "Hanafi calculation keeps reverting" bug — and the phone's still-queued edit
+/// unrelated change (the "Hanafi calculation keeps reverting" bug), and the phone's still-queued edit
 /// then looked old to the watch and was rejected, which presented as sync being broken entirely. With
 /// per-key stamps a device only fresh-stamps keys whose value it actually changed, so a stale peer loses
 /// exactly the keys it is stale on and nothing else.
@@ -29,7 +29,7 @@ import WidgetKit
 ///   holds; after applying a peer's keys we mark them pushed, so the local didSets an apply fires never
 ///   echo identical state back. Each side compares only against its *own* payload form, so structural
 ///   asymmetries (the watch never sends `travelingMode`) can't cause endless re-send ping-pong.
-/// - **Reliable channel.** `updateApplicationContext` (always delivered, latest-state-wins — safe here
+/// - **Reliable channel.** `updateApplicationContext` (always delivered, latest-state-wins; safe here
 ///   because every payload carries the full field map) plus an immediate `sendMessage` fast path when
 ///   reachable; duplicates are harmless because of the per-key recency check.
 /// - **Clock-skew fencing.** A field stamped absurdly far in our future (mis-set peer clock) is skipped,
@@ -37,7 +37,7 @@ import WidgetKit
 ///   can never run away into the future and freeze out legitimate edits.
 /// - **Legacy interop.** A payload from a peer still on the whole-snapshot build (its single timestamp
 ///   applied to every key) merges through the same per-key gate, seeded from the old protocol's persisted
-///   recency watermark — so a stale legacy peer is rejected exactly as it was before. Outgoing payloads
+///   recency watermark, so a stale legacy peer is rejected exactly as it was before. Outgoing payloads
 ///   still mirror the legacy fields so an un-updated peer keeps receiving.
 ///
 /// All sync bookkeeping is read and mutated only on the main thread (main queue hops + `@MainActor`
@@ -121,9 +121,11 @@ final class WatchConnectivityManager: NSObject, WCSessionDelegate {
         let store = UserDefaults(suiteName: AppIdentifiers.appGroupSuiteName) ?? .standard
         self.store = store
 
+        let seededThisLaunch: Bool
         if let data = store.data(forKey: Self.fieldsKey), let saved = Self.decodeFields(data) {
             self.fields = saved
             self.lastPushedFields = store.data(forKey: Self.pushedKey).flatMap(Self.decodeFields) ?? [:]
+            seededThisLaunch = false
         } else {
             // First run on the per-key protocol (fresh install, or migration from the whole-snapshot
             // build): stamp every currently-held setting at the old protocol's recency watermark - clamped
@@ -145,20 +147,49 @@ final class WatchConnectivityManager: NSObject, WCSessionDelegate {
             // Empty on purpose: the first activation compares the candidate payload against nothing and
             // pushes the full field map, so a peer that has never heard from this build gets everything.
             self.lastPushedFields = [:]
+            seededThisLaunch = true
         }
 
         super.init()
-        persistState()
+        // Only a freshly seeded state needs writing: the decoded one IS what is on disk, and re-encoding
+        // both maps into two plist writes through cfprefsd on every launch bought nothing.
+        if seededThisLaunch { persistState() }
         guard WCSession.isSupported() else { return }
 
         session.delegate = self
         session.activate()
 
         // Push any pending local change shortly after a settings edit (debounced to batch rapid edits).
+        // Hand-rolled rather than Combine's `debounce` so the window can stretch on the reduced tier:
+        // 400 ms normally, 2 s under Low Power Mode - the 122-key snapshot diff is not worth running
+        // on a throttled CPU after every publish.
         Settings.shared.objectWillChange
-            .debounce(for: .milliseconds(400), scheduler: DispatchQueue.main)
-            .sink { [weak self] in self?.sendSnapshotIfChanged() }
+            .sink { [weak self] in self?.scheduleSnapshotPush() }
             .store(in: &cancellables)
+        #if os(watchOS)
+        // A surah read or played on the wrist: the watch's activity days ride in the next context
+        // (`Settings.watchActivityKey`), so the phone's streak counts them.
+        NotificationCenter.default.publisher(for: ActivityLog.didChangeNotification)
+            .sink { [weak self] _ in self?.scheduleSnapshotPush() }
+            .store(in: &cancellables)
+        #endif
+    }
+
+    private var pendingSnapshotPush: DispatchWorkItem?
+
+    private func scheduleSnapshotPush() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.scheduleSnapshotPush() }
+            return
+        }
+        pendingSnapshotPush?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingSnapshotPush = nil
+            self?.sendSnapshotIfChanged()
+        }
+        pendingSnapshotPush = work
+        let delay: TimeInterval = PerformanceProfile.shared.tier == .reduced ? 2.0 : 0.4
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     // MARK: - Persistence
@@ -209,6 +240,11 @@ final class WatchConnectivityManager: NSObject, WCSessionDelegate {
     /// the last send/apply, then pushes the full field map if it differs from what the channel holds.
     private func sendSnapshotIfChanged() {
         guard session.activationState == .activated else { return }
+        #if os(iOS)
+        // No watch, no work: without this, every debounced publish on a phone that has never paired a
+        // watch still built and diffed the 122-key snapshot.
+        guard session.isPaired, session.isWatchAppInstalled else { return }
+        #endif
 
         let snapshot = Settings.shared.watchSyncSnapshot()
         let now = Date().timeIntervalSince1970
@@ -238,11 +274,19 @@ final class WatchConnectivityManager: NSObject, WCSessionDelegate {
 
         var outFields: [String: Any] = [:]
         var legacySettings: [String: Any] = [:]
+        // The fast path below carries only what changed since the last accepted push: the reliable
+        // channel already holds the full map, and re-sending all 122 keys (plus the legacy mirror) in
+        // the message doubled every edit's radio payload for a peer that merges per key anyway.
+        var deltaFields: [String: Any] = [:]
         var maxT = 0.0
         for (key, field) in candidate {
             outFields[key] = field.plist
             legacySettings[key] = field.v
             maxT = max(maxT, field.t)
+            if let pushed = lastPushedFields[key], pushed.t == field.t, pushed.r == field.r, Self.plistEqual(pushed.v, field.v) {
+                continue
+            }
+            deltaFields[key] = field.plist
         }
         let payload: [String: Any] = [
             "fields": outFields,
@@ -262,8 +306,12 @@ final class WatchConnectivityManager: NSObject, WCSessionDelegate {
         }
         persistState()
 
-        if session.isReachable {
-            session.sendMessage(payload, replyHandler: nil) { err in
+        // Skipped on the reduced tier (Low Power Mode, thermal): the context alone reaches the peer on its
+        // next activation, and the message is only the "peer is open right now" fast path.
+        if session.isReachable, !deltaFields.isEmpty, PerformanceProfile.shared.tier != .reduced {
+            // A peer on the whole-snapshot build ignores a message without `settings`; it still gets the
+            // full payload through the application context above.
+            session.sendMessage(["fields": deltaFields], replyHandler: nil) { err in
                 // No bookkeeping involvement: applicationContext (above) is the reliable channel and has
                 // this payload queued; the message is only the fast path for a peer that is open right now.
                 logger.debug("WC sendMessage error: \(err.localizedDescription)")
@@ -472,6 +520,10 @@ extension Settings {
         "travelingMode", "prayerCalculation", "calculationAutomatic",
     ]
 
+    /// The watch's activity days (`ActivityLog.mirrorPayload`): sent by the watch alone, merged by
+    /// the phone alone (`ActivityLog.mergeWatchDays`), never a setting. One way, watch -> phone.
+    static let watchActivityKey = "watchActivityDays"
+
     /// A snapshot of the synced settings, containing **only keys this device has actually set**. A value
     /// the user never touched is absent from its backing store, so it is left out - and the receiver only
     /// writes keys that are present. That is the core safeguard against the "everything reset" bug: a
@@ -489,6 +541,12 @@ extension Settings {
         // `customBackgroundColorHex` deliberately does NOT sync (either direction): the reading themes
         // are phone-only looks. On the watch a themed flat row color erased the native rounded section
         // cards and painted the whole ground gray (user report), so the watch keeps its black ground.
+        #if os(watchOS)
+        // The wrist's own reading and listening days, for the phone's streak (decision C of the
+        // Tilawa Guide). Absent while the watch has nothing to report: "no opinion", never a delete.
+        let activity = ActivityLog.shared.mirrorPayload()
+        if !activity.isEmpty { dict[Self.watchActivityKey] = activity }
+        #endif
 
         // @AppStorage settings - likewise only keys that have been explicitly written.
         let store = UserDefaults.standard
@@ -524,6 +582,14 @@ extension Settings {
         if let v = dict["customAccentColorHex"] as? String, v != customAccentColorHex { customAccentColorHex = v; changed = true }
         // `customBackgroundColorHex` is deliberately NOT applied - reading themes are phone-only (see
         // `watchSyncSnapshot`); an older peer build may still send it, and it must not land here.
+
+        #if os(iOS)
+        // The watch's activity days: merged into the log, not a setting, so they never mark `changed`
+        // (no prayer refetch for a surah read on the wrist).
+        if let activity = dict[Self.watchActivityKey] as? [String: [String: Int]] {
+            ActivityLog.shared.mergeWatchDays(activity)
+        }
+        #endif
 
         let store = UserDefaults.standard
         for key in Self.watchSyncedAppStorageKeys {

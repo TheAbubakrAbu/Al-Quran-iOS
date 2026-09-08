@@ -165,7 +165,7 @@ struct TashkeelLettersView: View {
 
             if isShaddah {
                 // A bare shaddah is only ever half the story - these are the readings it actually appears with.
-                Picker("Shaddah vowel", selection: $shaddahVowelName.animation(.easeInOut)) {
+                Picker("Shaddah vowel", selection: $shaddahVowelName) {
                     Text("Shaddah").tag(String?.none)
                     ForEach(shaddahVowels, id: \.english) { vowel in
                         Text("+ \(vowel.english)").tag(String?.some(vowel.english))
@@ -178,7 +178,7 @@ struct TashkeelLettersView: View {
 
             if isSukoon {
                 // Same mark, two scripts: the plain sukoon, and the Uthmani one a printed mushaf uses.
-                Picker("Sukoon script", selection: $useQuranicSukoon.animation(.easeInOut)) {
+                Picker("Sukoon script", selection: $useQuranicSukoon) {
                     Text("Normal").tag(false)
                     Text("Quranic").tag(true)
                 }
@@ -288,7 +288,7 @@ struct TashkeelLettersView: View {
         } header: {
             Text("EVERY MARK ON EVERY LETTER")
         } footer: {
-            Text("Read each row right to left: fatha, kasra, damma, sukoon, then the three tanween - and beneath them the shaddah carrying each vowel. The \"an\" tanween is written with its silent alif, as it appears at the end of words. Tap a row to select it - the selected row offers play, and a chevron that writes the shaddah line out beneath as the two letters it stands for.")
+            Text("Read each row right to left: fatha, kasra, damma, sukoon, then the three tanween, and beneath them the shaddah carrying each vowel. The \"an\" tanween is written with its silent alif, as it appears at the end of words. Tap a row to select it: the selected row offers play, and a chevron that writes the shaddah line out beneath as the two letters it stands for.")
         }
     }
 
@@ -463,7 +463,7 @@ struct TashkeelLettersView: View {
                 } header: {
                     Text("\(letter.transliteration.uppercased()) WITH SHADDAH")
                 } footer: {
-                    Text("A shaddah doubles the letter: the first is silent (sukoon) and the second carries the vowel. It never appears at the start of a word. Press the chevron to see the doubling written out beneath - the letter with sukoon, then the letter with its vowel.")
+                    Text("A shaddah doubles the letter: the first is silent (sukoon) and the second carries the vowel. It never appears at the start of a word. Press the chevron to see the doubling written out beneath: the letter with sukoon, then the letter with its vowel.")
                 }
             }
             .themedListRowBackground()
@@ -670,7 +670,7 @@ struct ArabicLetterView: View {
                 Section(header: Text("QALQALAH (BOUNCE LETTER)")) {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(alignment: .center, spacing: 12) {
-                            Text("\(letterData.transliteration.capitalized) is one of the five qalqalah letters (قُطۡبُ جَدٍّ - ق ط ب ج د). When it carries a sukoon, or you stop on it, it is pronounced with a short, crisp bounce - a quick echo of the letter, never a flat stop. The Quran reader colors it this way when tajweed colors are on.")
+                            Text("\(letterData.transliteration.capitalized) is one of the five qalqalah letters (قُطۡبُ جَدٍّ: ق ط ب ج د). When it carries a sukoon, or you stop on it, it is pronounced with a short, crisp bounce: a quick echo of the letter, never a flat stop. The Quran reader colors it this way when tajweed colors are on.")
                                 .font(.body)
                                 .fixedSize(horizontal: false, vertical: true)
 
@@ -816,7 +816,7 @@ struct ArabicLetterView: View {
                 } header: {
                     Text("WITH HAMZA")
                 } footer: {
-                    Text("Tap a syllable to select it, then press play to hear it. The last three rows carry a shaddah: select one and press the chevron to see each syllable written out beneath as the two letters the shaddah stands for - the letter with sukoon, then the letter with the tashkeel.")
+                    Text("Tap a syllable to select it, then press play to hear it. The last three rows carry a shaddah: select one and press the chevron to see each syllable written out beneath as the two letters the shaddah stands for: the letter with sukoon, then the letter with the tashkeel.")
                 }
             }
 
@@ -865,7 +865,7 @@ struct ArabicLetterView: View {
             }
             .minimizedBarStyle(barsCollapsed)
             .padding(.horizontal, 24)
-            .padding(.bottom)
+            .padding(.bottom, BottomBarCushion.standard)
             .background(Color.white.opacity(0.00001))
         }
         #endif
@@ -934,7 +934,7 @@ struct ArabicLetterView: View {
             ArabicExampleRow(
                 arabic: "سُورَةُ ٱلۡبَقَرَة",
                 transliteration: "suratu-l-baqarah",
-                note: "Surah al-Baqarah - the first ة is read \"t\"; the last is stopped on as \"h\""
+                note: "Surah al-Baqarah: the first ة is read \"t\", and the last is stopped on as \"h\""
             )
             ArabicExampleRow(
                 arabic: "مَدِينَةُ ٱلنَّبِيِّ",
@@ -985,7 +985,7 @@ struct ArabicLetterView: View {
             ArabicExampleRow(
                 arabic: "عَلَىٰ",
                 transliteration: "'alaa",
-                note: "Upon - the dagger alif above the ى writes the long \"aa\""
+                note: "Upon: the dagger alif above the ى writes the long \"aa\""
             )
             ArabicExampleRow(
                 arabic: "إِلَىٰ",
@@ -995,12 +995,12 @@ struct ArabicLetterView: View {
             ArabicExampleRow(
                 arabic: "مُوسَىٰ",
                 transliteration: "Musaa",
-                note: "Musa (Moses) - names ending in the \"aa\" sound use it too"
+                note: "Musa (Moses): names ending in the \"aa\" sound use it too"
             )
             ArabicExampleRow(
                 arabic: "هُدٗى",
                 transliteration: "hudan",
-                note: "Guidance - with tanween the maqsurah still looks the same"
+                note: "Guidance: with tanween the maqsurah still looks the same"
             )
         } header: {
             Text("WITH THE DAGGER ALIF")
@@ -1017,7 +1017,7 @@ struct ArabicLetterView: View {
             ArabicExampleRow(
                 arabic: "فِي",
                 transliteration: "fee",
-                note: "KASRA before it \u{2192} a yaa, read \"ee\" - dotless in the mushaf"
+                note: "KASRA before it \u{2192} a yaa, read \"ee\", dotless in the mushaf"
             )
             ArabicExampleRow(
                 arabic: "ٱلَّذِي",
@@ -1044,7 +1044,7 @@ struct ArabicLetterView: View {
     private var arabicFontPicker: some View {
         #if os(watchOS)
         // The watch keeps the simple two-way choice; the richer three-way face picker is a phone thing.
-        Picker("Arabic Font", selection: $settings.useFontArabic.animation(.easeInOut)) {
+        Picker("Arabic Font", selection: $settings.useFontArabic) {
             Text("Quranic Font").tag(true)
             Text("Basic Font").tag(false)
         }
@@ -1111,17 +1111,17 @@ struct ArabicLetterView: View {
                     .font(.body)
                 } else if data.transliteration == "alif maqSoorah" {
                     Group {
-                        Text("Alif maqSoorah is an alif written in the SHAPE of a dotless yaa (ى). It only ever appears at the end of a word, and it is pronounced exactly like a regular alif - a 2-count \"aa\".")
-                        Text("In the Quran it usually carries a small dagger alif above it (ىٰ), as in عَلَىٰ and مُوسَىٰ - that tiny mark IS the alif sound, written small. The examples below practise it.")
-                        Text("Telling it apart from yaa: the mushaf writes the final yaa without dots too, so the shape alone cannot decide. Read the vowel before the letter - a fatha before it means alif maqSoorah (\"aa\", as in ٱهۡتَدَىٰ); a kasra before it means yaa (\"ee\", as in فِي and ٱلَّذِي).")
+                        Text("Alif maqSoorah is an alif written in the SHAPE of a dotless yaa (ى). It only ever appears at the end of a word, and it is pronounced exactly like a regular alif, a 2-count \"aa\".")
+                        Text("In the Quran it usually carries a small dagger alif above it (ىٰ), as in عَلَىٰ and مُوسَىٰ. That tiny mark IS the alif sound, written small. The examples below practise it.")
+                        Text("Telling it apart from yaa: the mushaf writes the final yaa without dots too, so the shape alone cannot decide. Read the vowel before the letter: a fatha before it means alif maqSoorah (\"aa\", as in ٱهۡتَدَىٰ); a kasra before it means yaa (\"ee\", as in فِي and ٱلَّذِي).")
                     }
                     .font(.body)
                 } else if data.transliteration == "laam alif" {
                     // The case used to check "laa", which is not this letter's transliteration - so the
                     // PURPOSE section rendered empty for the one ligature letter (user report).
                     Group {
-                        Text("When laam (ل) is followed by alif (ا), the two must be written as one joined shape: لا. It is the only compulsory ligature in Arabic script - writing them side by side unjoined is considered incorrect - which is why it is taught alongside the alphabet.")
-                        Text("The sound does not change: read it simply as laam, then the long alif. Order matters, though - the definite article ٱل is alif then laam, so no ligature forms there.")
+                        Text("When laam (ل) is followed by alif (ا), the two must be written as one joined shape: لا. It is the only compulsory ligature in Arabic script (writing them side by side unjoined is considered incorrect), which is why it is taught alongside the alphabet.")
+                        Text("The sound does not change: read it simply as laam, then the long alif. Order matters, though: the definite article ٱل is alif then laam, so no ligature forms there.")
                         Text("You meet it constantly in the Quran, most familiarly as the word of negation لَا (\"no\" / \"not\") and in لَآ إِلَٰهَ إِلَّا ٱللَّهُ.")
                     }
                     .font(.body)
@@ -1296,7 +1296,11 @@ func shaddahWrittenOut(prefix: String = "", letter: String, vowel: String, suffi
 }
 
 struct TashkeelRow: View {
-    @ObservedObject var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
+    /// Snapshotted at creation (the NameRow rule): this row observes nothing, so the parent hands
+    /// it every Settings field its body reads and rebuilds it when one changes.
+    var letterTypeSize: DynamicTypeSize = Settings.shared.arabicLetterDynamicTypeSize
+    var hideEnglish: Bool = Settings.shared.hideEnglishInArabicLetters
     @ObservedObject private var selection = ArabicPracticeSelection.shared
 
     let letterData: LetterData
@@ -1340,7 +1344,7 @@ struct TashkeelRow: View {
                 let isSelected = selection.isSelected(id)
 
                 VStack(spacing: 4) {
-                    if !settings.hideEnglishInArabicLetters {
+                    if !hideEnglish {
                         Text(reading(tk))
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -1351,11 +1355,11 @@ struct TashkeelRow: View {
                     Text(glyph)
                         .font(
                             useQuranicFontForLetter
-                                ? settings.scalableIslamArabicFont(base: 28, relativeTo: .title)
+                                ? appearance.islamArabicFont(base: 28, relativeTo: .title)
                                 : .title
                         )
-                        .arabicFontDesign(custom: useQuranicFontForLetter && settings.islamUsesCustomArabicFace)
-                        .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                        .arabicFontDesign(custom: useQuranicFontForLetter && appearance.islamUsesCustomArabicFace)
+                        .dynamicTypeSize(letterTypeSize...)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, useQuranicFontForLetter ? 0 : 8)
 
@@ -1366,12 +1370,12 @@ struct TashkeelRow: View {
                             PracticeListenButton(text: glyph)
 
                             Button {
-                                settings.hapticFeedback()
+                                Settings.shared.hapticFeedback()
                                 selectedTashkeel = tk
                             } label: {
                                 Image(systemName: "info.circle")
                                     .font(.caption.weight(.semibold))
-                                    .foregroundColor(settings.accentColor.color)
+                                    .foregroundColor(appearance.accent)
                                     .frame(width: 28, height: 28)
                                     .contentShape(Rectangle())
                                     .conditionalGlassEffect(circle: true)
@@ -1385,7 +1389,7 @@ struct TashkeelRow: View {
                 .contentShape(Rectangle())
                 .arabicPracticeSelection(isSelected, cornerRadius: 10, hInset: -4, vInset: -2)
                 .onTapGesture {
-                    settings.hapticFeedback()
+                    Settings.shared.hapticFeedback()
                     withAnimation(.easeInOut) { selection.toggle(id) }
                 }
                 .accessibilityAddTraits(.isButton)
@@ -1527,7 +1531,11 @@ struct TashkeelDetailSheet: View {
 }
 
 struct HamzaPracticeRow: View {
-    @ObservedObject var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
+    /// Snapshotted at creation (the NameRow rule): this row observes nothing, so the parent hands
+    /// it every Settings field its body reads and rebuilds it when one changes.
+    var letterTypeSize: DynamicTypeSize = Settings.shared.arabicLetterDynamicTypeSize
+    var hideEnglish: Bool = Settings.shared.hideEnglishInArabicLetters
     @ObservedObject private var selection = ArabicPracticeSelection.shared
 
     let letterData: LetterData
@@ -1647,7 +1655,7 @@ struct HamzaPracticeRow: View {
                 let isSelected = selection.isSelected(id)
 
                 VStack(spacing: 4) {
-                    if !settings.hideEnglishInArabicLetters {
+                    if !hideEnglish {
                         Text(syllable.latin)
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -1658,11 +1666,11 @@ struct HamzaPracticeRow: View {
                     Text(syllable.arabic)
                         .font(
                             useQuranicFontForLetter
-                                ? settings.scalableIslamArabicFont(base: 28, relativeTo: .title)
+                                ? appearance.islamArabicFont(base: 28, relativeTo: .title)
                                 : .title
                         )
-                        .arabicFontDesign(custom: useQuranicFontForLetter && settings.islamUsesCustomArabicFace)
-                        .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                        .arabicFontDesign(custom: useQuranicFontForLetter && appearance.islamUsesCustomArabicFace)
+                        .dynamicTypeSize(letterTypeSize...)
                         .lineLimit(1)
                         .minimumScaleFactor(0.5)
                         .frame(maxWidth: .infinity)
@@ -1675,17 +1683,17 @@ struct HamzaPracticeRow: View {
                         Text(expandedArabic)
                             .font(
                                 useQuranicFontForLetter
-                                    ? settings.scalableIslamArabicFont(base: 28, relativeTo: .title)
+                                    ? appearance.islamArabicFont(base: 28, relativeTo: .title)
                                     : .title
                             )
-                            .arabicFontDesign(custom: useQuranicFontForLetter && settings.islamUsesCustomArabicFace)
-                            .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                            .arabicFontDesign(custom: useQuranicFontForLetter && appearance.islamUsesCustomArabicFace)
+                            .dynamicTypeSize(letterTypeSize...)
                             .lineLimit(1)
                             .minimumScaleFactor(0.5)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, useQuranicFontForLetter ? 0 : 8)
 
-                        if !settings.hideEnglishInArabicLetters, let expandedLatin = syllable.expandedLatin {
+                        if !hideEnglish, let expandedLatin = syllable.expandedLatin {
                             Text(expandedLatin)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
@@ -1702,7 +1710,7 @@ struct HamzaPracticeRow: View {
                 .contentShape(Rectangle())
                 .arabicPracticeSelection(isSelected, cornerRadius: 10, hInset: -4, vInset: -2)
                 .onTapGesture {
-                    settings.hapticFeedback()
+                    Settings.shared.hapticFeedback()
                     withAnimation(.easeInOut) { selection.toggle(id) }
                 }
                 .accessibilityAddTraits(.isButton)
@@ -1824,14 +1832,19 @@ struct NonArabicVowelPracticeRow: View {
 /// appears on the selection alone - and the English obeys the same Hide English flag every other practice
 /// table does.
 struct ArabicExampleRow: View {
-    @ObservedObject var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
+    /// Snapshotted at creation (the NameRow rule): this row observes nothing, so the parent hands
+    /// it every Settings field its body reads and rebuilds it when one changes.
+    var letterTypeSize: DynamicTypeSize = Settings.shared.arabicLetterDynamicTypeSize
+    var hideEnglish: Bool = Settings.shared.hideEnglishInArabicLetters
+    var useFontArabic: Bool = Settings.shared.useFontArabic
     @ObservedObject private var selection = ArabicPracticeSelection.shared
 
     let arabic: String
     let transliteration: String
     let note: String
 
-    private var useQuranicFont: Bool { settings.useFontArabic }
+    private var useQuranicFont: Bool { useFontArabic }
 
     var body: some View {
         let id = "example:" + arabic
@@ -1842,7 +1855,7 @@ struct ArabicExampleRow: View {
                 PracticeListenButton(text: arabic)
             }
 
-            if !settings.hideEnglishInArabicLetters {
+            if !hideEnglish {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(transliteration)
                         .font(.subheadline.weight(.semibold))
@@ -1857,9 +1870,9 @@ struct ArabicExampleRow: View {
             Spacer(minLength: 8)
 
             Text(arabic)
-                .font(useQuranicFont ? settings.scalableIslamArabicFont(base: 24, relativeTo: .title2) : .title2)
-                .arabicFontDesign(custom: useQuranicFont && settings.islamUsesCustomArabicFace)
-                .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                .font(useQuranicFont ? appearance.islamArabicFont(base: 24, relativeTo: .title2) : .title2)
+                .arabicFontDesign(custom: useQuranicFont && appearance.islamUsesCustomArabicFace)
+                .dynamicTypeSize(letterTypeSize...)
                 .multilineTextAlignment(.trailing)
                 .lineLimit(2)
                 .minimumScaleFactor(0.5)
@@ -1868,7 +1881,7 @@ struct ArabicExampleRow: View {
         .contentShape(Rectangle())
         .arabicPracticeSelection(isSelected, hInset: -8, vInset: -2)
         .onTapGesture {
-            settings.hapticFeedback()
+            Settings.shared.hapticFeedback()
             withAnimation(.easeInOut) { selection.toggle(id) }
         }
         .accessibilityAddTraits(.isButton)
@@ -1877,7 +1890,7 @@ struct ArabicExampleRow: View {
 }
 
 struct ArabicLetterRow: View, Equatable {
-    @ObservedObject private var settings = Settings.shared
+
     let sizeIndex: Int
     let letterData: LetterData
     let isFavorite: Bool
@@ -1888,6 +1901,9 @@ struct ArabicLetterRow: View, Equatable {
     let useFontArabic: Bool
     let fontArabic: String
     let searchQuery: String
+    /// "Scroll To Letter": clears the search and scrolls the alphabet to this letter's own row. Set
+    /// only on search-result rows; excluded from `==` (a closure - the row's content decides a redraw).
+    let onScrollTo: (() -> Void)?
 
     init(
         letterData: LetterData,
@@ -1895,8 +1911,10 @@ struct ArabicLetterRow: View, Equatable {
         accentColor: AccentColor = Settings.shared.accentColor,
         useFontArabic: Bool = Settings.shared.useFontArabic,
         fontArabic: String = Settings.shared.nonQuranArabicFontName,
-        searchQuery: String = ""
+        searchQuery: String = "",
+        onScrollTo: (() -> Void)? = nil
     ) {
+        self.onScrollTo = onScrollTo
         self.letterData = letterData
         self.isFavorite = isFavorite ?? Settings.shared.isLetterFavorite(letterData: letterData)
         self.accentColor = accentColor
@@ -1904,7 +1922,7 @@ struct ArabicLetterRow: View, Equatable {
         self.useFontArabic = useFontArabic
         self.fontArabic = fontArabic
         self.searchQuery = searchQuery
-        // Snapshotted so `==` sees the size slider: the body applies `settings.arabicLetterDynamicTypeSize`,
+        // Snapshotted so `==` sees the size slider: the body applies `Settings.shared.arabicLetterDynamicTypeSize`,
         // and an Equatable view must not ignore state that changes its rendering.
         self.sizeIndex = Settings.shared.arabicLetterSizeIndex
     }
@@ -1943,7 +1961,7 @@ struct ArabicLetterRow: View, Equatable {
                     guaranteeMatch: matchedLetter
                 )
                 .arabicFontDesign(custom: usesCustomArabicFace)
-                .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                .dynamicTypeSize(Settings.shared.arabicLetterDynamicTypeSize...)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
                 .frame(width: 42, height: 38)
@@ -1959,8 +1977,8 @@ struct ArabicLetterRow: View, Equatable {
                 .contentShape(Rectangle())
                 .highPriorityGesture(
                     TapGesture().onEnded {
-                        settings.hapticFeedback()
-                        settings.toggleLetterFavorite(letterData: letterData)
+                        Settings.shared.hapticFeedback()
+                        Settings.shared.toggleLetterFavorite(letterData: letterData)
                     }
                 )
                 .accessibilityAddTraits(.isButton)
@@ -1975,7 +1993,7 @@ struct ArabicLetterRow: View, Equatable {
                                 : .subheadline
                         )
                         .arabicFontDesign(custom: usesCustomArabicFace)
-                        .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                        .dynamicTypeSize(Settings.shared.arabicLetterDynamicTypeSize...)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
 
@@ -2001,7 +2019,7 @@ struct ArabicLetterRow: View, Equatable {
                             : .caption
                     )
                     .arabicFontDesign(custom: usesCustomArabicFace)
-                    .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                    .dynamicTypeSize(Settings.shared.arabicLetterDynamicTypeSize...)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.5)
@@ -2010,20 +2028,45 @@ struct ArabicLetterRow: View, Equatable {
         }
         #if os(iOS)
         .swipeActions(edge: .leading) { favButton() }
-        .swipeActions(edge: .trailing) { favButton() }
+        .swipeActions(edge: .trailing) {
+            favButton()
+            // The Quran list's trailing arrow: clears the search, scrolls to the letter's own row.
+            if let onScrollTo {
+                Button {
+                    Settings.shared.hapticFeedback()
+                    onScrollTo()
+                } label: {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .tint(.secondary)
+            }
+        }
         // LIST ROWS ONLY. `ArabicLetterGridTile` deliberately has no menu: the grid is a LazyVGrid inside a
         // single List row, so a context menu on a tile lifts the WHOLE row - every tile at once - as its
         // preview. The tile's corner star is the favorite action instead.
-        .contextMenu { arabicLetterContextItems(letterData, isFavorite: isFavorite) }
+        .contextMenu {
+            arabicLetterContextItems(letterData, isFavorite: isFavorite)
+
+            if let onScrollTo {
+                Divider()
+
+                Button {
+                    Settings.shared.hapticFeedback()
+                    onScrollTo()
+                } label: {
+                    Label("Scroll To Letter", systemImage: "arrow.down.circle")
+                }
+            }
+        }
         #endif
     }
 
     @ViewBuilder
     private func favButton() -> some View {
         Button {
-            settings.hapticFeedback()
+            Settings.shared.hapticFeedback()
             withAnimation(.easeInOut) {
-                settings.toggleLetterFavorite(letterData: letterData)
+                Settings.shared.toggleLetterFavorite(letterData: letterData)
             }
         } label: {
             Image(systemName: isFavorite ? "star.fill" : "star")
@@ -2047,7 +2090,11 @@ struct ArabicLetterRow: View, Equatable {
 /// numeral large on the right - the same left-to-right reading order as a letter row, instead of the three
 /// loose columns it used to be.
 struct ArabicNumberRow: View {
-    @ObservedObject private var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
+    /// Snapshotted at creation (the NameRow rule): this row observes nothing, so the parent hands
+    /// it every Settings field its body reads and rebuilds it when one changes.
+    var letterTypeSize: DynamicTypeSize = Settings.shared.arabicLetterDynamicTypeSize
+    var useFontArabic: Bool = Settings.shared.useFontArabic
     let numberData: (number: String, name: String, transliteration: String, englishNumber: String)
 
     var body: some View {
@@ -2061,18 +2108,18 @@ struct ArabicNumberRow: View {
                 .padding(.horizontal, 6)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(settings.accentColor.color.opacity(0.12))
+                        .fill(appearance.accent.opacity(0.12))
                 )
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(numberData.name)
                     .font(
-                        settings.useFontArabic
-                            ? settings.scalableIslamArabicFont(base: 17, relativeTo: .subheadline)
+                        useFontArabic
+                            ? appearance.islamArabicFont(base: 17, relativeTo: .subheadline)
                             : .subheadline
                     )
-                    .arabicFontDesign(custom: settings.useFontArabic && settings.islamUsesCustomArabicFace)
-                    .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                    .arabicFontDesign(custom: useFontArabic && appearance.islamUsesCustomArabicFace)
+                    .dynamicTypeSize(letterTypeSize...)
                     .foregroundColor(.primary)
 
                 Text(numberData.transliteration)
@@ -2084,13 +2131,13 @@ struct ArabicNumberRow: View {
 
             Text(numberData.number)
                 .font(
-                    settings.useFontArabic
-                        ? settings.scalableIslamArabicFont(base: 26, relativeTo: .title2)
+                    useFontArabic
+                        ? appearance.islamArabicFont(base: 26, relativeTo: .title2)
                         : .title2
                 )
-                .arabicFontDesign(custom: settings.useFontArabic && settings.islamUsesCustomArabicFace)
-                .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
-                .foregroundColor(settings.accentColor.color)
+                .arabicFontDesign(custom: useFontArabic && appearance.islamUsesCustomArabicFace)
+                .dynamicTypeSize(letterTypeSize...)
+                .foregroundColor(appearance.accent)
         }
         .lineLimit(1)
         .minimumScaleFactor(0.6)
@@ -2101,7 +2148,7 @@ struct ArabicNumberRow: View {
         // Tapping a number blows it up full screen, exactly like a letter or a name.
         .contentShape(Rectangle())
         .onTapGesture {
-            settings.hapticFeedback()
+            Settings.shared.hapticFeedback()
             FocusOverlayPresenter.shared.present(.number(numberData))
         }
         // LIST ROWS ONLY, same reason as the letter rows - `ArabicNumberGridTile` carries no menu.
@@ -2115,12 +2162,16 @@ struct ArabicNumberRow: View {
 /// just the letters. No `contextMenu`, for the same reason the letter tiles have none: the grid is one List
 /// row, so a menu on a tile lifts every tile at once.
 struct ArabicNumberGridTile: View {
-    @ObservedObject private var settings = Settings.shared
+    @Environment(\.appearance) private var appearance
+    /// Snapshotted at creation (the NameRow rule): this row observes nothing, so the parent hands
+    /// it every Settings field its body reads and rebuilds it when one changes.
+    var letterTypeSize: DynamicTypeSize = Settings.shared.arabicLetterDynamicTypeSize
+    var useFontArabic: Bool = Settings.shared.useFontArabic
     let numberData: (number: String, name: String, transliteration: String, englishNumber: String)
 
     var body: some View {
         Button {
-            settings.hapticFeedback()
+            Settings.shared.hapticFeedback()
             FocusOverlayPresenter.shared.present(.number(numberData))
         } label: {
             VStack(spacing: 3) {
@@ -2128,13 +2179,13 @@ struct ArabicNumberGridTile: View {
                 // than the glyph, and the difference is dead space.
                 Text(numberData.number)
                     .font(
-                        settings.useFontArabic
-                            ? settings.scalableIslamArabicFont(base: 30, relativeTo: .title)
+                        useFontArabic
+                            ? appearance.islamArabicFont(base: 30, relativeTo: .title)
                             : .title
                     )
-                    .arabicFontDesign(custom: settings.useFontArabic && settings.islamUsesCustomArabicFace)
-                    .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
-                    .foregroundColor(settings.accentColor.color)
+                    .arabicFontDesign(custom: useFontArabic && appearance.islamUsesCustomArabicFace)
+                    .dynamicTypeSize(letterTypeSize...)
+                    .foregroundColor(appearance.accent)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
                     .frame(height: 34)
@@ -2170,8 +2221,7 @@ struct StopSignInfo: Identifiable {
 }
 
 struct StopInfoRow: View {
-    @ObservedObject private var settings = Settings.shared
-
+    @Environment(\.appearance) private var appearance
     let title: String
     let symbol: String
     let color: Color
@@ -2182,11 +2232,11 @@ struct StopInfoRow: View {
             // read wrong in SF Rounded.
             Text(symbol)
                 .font(
-                    settings.islamUsesCustomArabicFace
-                        ? Font.arabic(settings.nonQuranArabicFontName, size: 20, relativeTo: .headline)
+                    appearance.islamUsesCustomArabicFace
+                        ? Font.arabic(appearance.islamArabicFontName, size: 20, relativeTo: .headline)
                         : .headline.weight(.semibold)
                 )
-                .arabicFontDesign(custom: settings.islamUsesCustomArabicFace)
+                .arabicFontDesign(custom: appearance.islamUsesCustomArabicFace)
                 .foregroundStyle(color)
                 .frame(width: 42, height: 42)
                 .background(color.opacity(0.12))
@@ -2384,7 +2434,6 @@ func arabicNumberContextItems(
 /// A letter as a tile, mirroring `NameGridTile` on the 99 Names screen. Tapping opens the letter's detail -
 /// the same primary action the list row has.
 struct ArabicLetterGridTile: View, Equatable {
-    @ObservedObject private var settings = Settings.shared
 
     let letterData: LetterData
     let isFavorite: Bool
@@ -2429,7 +2478,7 @@ struct ArabicLetterGridTile: View, Equatable {
 
     var body: some View {
         Button {
-            settings.hapticFeedback()
+            Settings.shared.hapticFeedback()
             onTap()
         } label: {
             tile
@@ -2441,7 +2490,7 @@ struct ArabicLetterGridTile: View, Equatable {
     /// slider, or the letter would be pinned at whatever fits 34pt no matter where the slider sat.
     private var glyphBoxHeight: CGFloat {
         let steps = Settings.arabicLetterDynamicTypeSizes.count - 1
-        let index = min(max(settings.arabicLetterSizeIndex, 0), steps)
+        let index = min(max(sizeIndex, 0), steps)
         return 34 + CGFloat(index) * 7
     }
 
@@ -2451,7 +2500,7 @@ struct ArabicLetterGridTile: View, Equatable {
                 Text(letterData.letter)
                     .font(glyphFont)
                     .arabicFontDesign(custom: usesCustomArabicFace)
-                    .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                    .dynamicTypeSize(Settings.shared.arabicLetterDynamicTypeSize...)
                     .foregroundColor(accentColor.color)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
@@ -2474,7 +2523,7 @@ struct ArabicLetterGridTile: View, Equatable {
                           ? Font.arabic(fontArabic, size: 12, relativeTo: .caption2)
                           : .caption2)
                     .arabicFontDesign(custom: usesCustomArabicFace)
-                    .dynamicTypeSize(settings.arabicLetterDynamicTypeSize...)
+                    .dynamicTypeSize(Settings.shared.arabicLetterDynamicTypeSize...)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.5)
@@ -2496,7 +2545,7 @@ struct ArabicLetterGridTile: View, Equatable {
                 accent: accentColor.color,
                 accessibilityName: letterData.transliteration
             ) {
-                settings.toggleLetterFavorite(letterData: letterData)
+                Settings.shared.toggleLetterFavorite(letterData: letterData)
             }
         }
     }

@@ -323,7 +323,7 @@ extension Settings {
 
     /// Consolidated startup migrations for Quran sort mode and reciter persistence.
     func runQuranStartupMigrations() {
-        let defaults = UserDefaults(suiteName: AppIdentifiers.appGroupSuiteName)
+        let defaults = appGroupUserDefaults
 
         if fontArabic == Self.legacyQiraatFontName {
             fontArabic = Self.hafsUthmaniFontName
@@ -424,6 +424,15 @@ extension Settings {
     /// still re-renders them (the whole point of the user-visible appearance staying live) while unchanged
     /// data keeps skipping body evaluation.
     var ayahRenderSettingsSignature: String {
+        // Memoized until the next publish (any Settings write clears `renderSignatureCache`, see init):
+        // ~47 @AppStorage reads per call, and every reader body pass calls it.
+        if Thread.isMainThread, let cached = renderSignatureCache { return cached }
+        let signature = computeAyahRenderSettingsSignature()
+        if Thread.isMainThread { renderSignatureCache = signature }
+        return signature
+    }
+
+    private func computeAyahRenderSettingsSignature() -> String {
         [
             showArabicText ? "1" : "0",
             highlightAllahNames ? "1" : "0",
@@ -478,30 +487,46 @@ extension Settings {
     // Quran types so it ports to sibling apps without the Quran module. The raw `Data` @AppStorage
     // backing remains in the class body (stored properties can't live in extensions).
 
+    /// Decoded memos keyed on the bytes: every visible ayah row read `lastListenedAyah` per body pass
+    /// (a JSON decode each), and playback republishes it on every ayah advance.
+    private static var lastListenedAyahCache: (data: Data, value: LastListenedAyah?)?
+    private static var lastListenedSurahCache: (data: Data, value: LastListenedSurah?)?
+
     var lastListenedAyah: LastListenedAyah? {
+        get { lastListenedAyahRecord }
+        set { setLastListenedAyah(newValue, publish: true) }
+    }
+
+    /// The typed write, with the publish under the caller's control (see `lastListenedAyahData`).
+    func setLastListenedAyah(_ newValue: LastListenedAyah?, publish: Bool) {
+        if let newValue {
+            do {
+                let encoded = try Self.encoder.encode(newValue)
+                setLastListenedAyahData(encoded, publish: publish)
+                appGroupUserDefaults?.set(encoded, forKey: "lastListenedAyahData")
+                if Thread.isMainThread { Self.lastListenedAyahCache = (encoded, newValue) }
+            } catch {
+                logger.debug("Failed to encode last listened ayah: \(error)")
+            }
+        } else {
+            setLastListenedAyahData(nil, publish: publish)
+            appGroupUserDefaults?.removeObject(forKey: "lastListenedAyahData")
+        }
+    }
+
+    private var lastListenedAyahRecord: LastListenedAyah? {
         get {
             // Fall back to the App Group suite so Siri/AppIntents can resolve this even when they run
             // outside the main app's standard UserDefaults domain (which caused "no last listened").
             guard let data = lastListenedAyahData ?? appGroupUserDefaults?.data(forKey: "lastListenedAyahData") else { return nil }
+            if Thread.isMainThread, let cached = Self.lastListenedAyahCache, cached.data == data { return cached.value }
             do {
-                return try Self.decoder.decode(LastListenedAyah.self, from: data)
+                let decoded = try Self.decoder.decode(LastListenedAyah.self, from: data)
+                if Thread.isMainThread { Self.lastListenedAyahCache = (data, decoded) }
+                return decoded
             } catch {
                 logger.debug("Failed to decode last listened ayah: \(error)")
                 return nil
-            }
-        }
-        set {
-            if let newValue = newValue {
-                do {
-                    let encoded = try Self.encoder.encode(newValue)
-                    lastListenedAyahData = encoded
-                    appGroupUserDefaults?.set(encoded, forKey: "lastListenedAyahData")
-                } catch {
-                    logger.debug("Failed to encode last listened ayah: \(error)")
-                }
-            } else {
-                lastListenedAyahData = nil
-                appGroupUserDefaults?.removeObject(forKey: "lastListenedAyahData")
             }
         }
     }
@@ -511,8 +536,11 @@ extension Settings {
             // Fall back to the App Group suite so Siri/AppIntents can resolve this even when they run
             // outside the main app's standard UserDefaults domain (which caused "no last listened").
             guard let data = lastListenedSurahData ?? appGroupUserDefaults?.data(forKey: "lastListenedSurahData") else { return nil }
+            if Thread.isMainThread, let cached = Self.lastListenedSurahCache, cached.data == data { return cached.value }
             do {
-                return try Self.decoder.decode(LastListenedSurah.self, from: data)
+                let decoded = try Self.decoder.decode(LastListenedSurah.self, from: data)
+                if Thread.isMainThread { Self.lastListenedSurahCache = (data, decoded) }
+                return decoded
             } catch {
                 logger.debug("Failed to decode last listened surah: \(error)")
                 return nil
@@ -798,6 +826,18 @@ extension Settings {
         useFontArabic && islamUsesCustomArabicFace && text.count < Self.arabicShapingCharacterLimit
     }
 
+    /// The face decision with no length cliff: the reading surfaces now render a long narration as
+    /// several `Text`s of at most `hadithArabicChunkLimit` characters each, every one of them in the
+    /// chosen face, instead of dropping the whole hadith to the system face (Abu, 2026-09-07: the
+    /// fallback "doesn't help", keep the hadith font). See `HadithArabicChunks`.
+    var hadithArabicWantsCustomFace: Bool {
+        useFontArabic && islamUsesCustomArabicFace
+    }
+
+    /// The longest single `Text` a custom face is trusted with; the longest known-good render was
+    /// about 3,000 characters, so a chunk stops well before the cliff.
+    static let hadithArabicChunkLimit = 2_600
+
     func cleanedQuranArabic(_ text: String) -> String {
         var out = text
         if cleanArabicText { out = out.removingArabicDiacriticsAndSigns }
@@ -947,7 +987,8 @@ extension Settings {
                 if Task.isCancelled { return }
                 if self.khatmSaveGeneration == lastSeen { break }   // no new marks in the last window
                 lastSeen = self.khatmSaveGeneration
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                // A longer settle on the reduced tier: each flush is a JSON encode of every khatm key.
+                try? await Task.sleep(nanoseconds: PerformanceProfile.shared.tier == .reduced ? 1_000_000_000 : 250_000_000)
             }
             guard let self else { return }
             self.khatmProgressSaveTask = nil
@@ -987,6 +1028,7 @@ extension Settings {
         guard isHafsDisplay else { return }
         let key = khatmKey(surah: surah, ayah: ayah)
         guard khatmCompletedAyahSetCache.insert(key).inserted else { return }
+        ActivityLog.shared.record(.read)
         khatmCompletedAyahIntCache.insert(Self.khatmIntKey(surah: surah, ayah: ayah))
         khatmCompletedSurahCountsCache[surah, default: 0] += 1
         if immediate { objectWillChange.send() }
@@ -1020,9 +1062,6 @@ extension Settings {
         return khatmCompletedAyahSetCache.count
     }
 
-    static let bookmarkNoteRemovalDialogTitle = "Remove bookmark and delete note?"
-    static let bookmarkNoteRemovalDialogMessage = "This ayah has a note. Unbookmarking will delete the note."
-
     func bookmarkIndex(surah: Int, ayah: Int) -> Int? {
         bookmarkLookup["\(surah)-\(ayah)"]
     }
@@ -1046,23 +1085,13 @@ extension Settings {
             if let index = bookmarkIndex(surah: surah, ayah: ayah) {
                 bookmarkedAyahs.remove(at: index)
             } else {
-                bookmarkedAyahs.append(BookmarkedAyah(surah: surah, ayah: ayah))
+                bookmarkedAyahs.append(BookmarkedAyah(surah: surah, ayah: ayah, createdAt: Date()))
             }
         }
     }
 
     func isBookmarked(surah: Int, ayah: Int) -> Bool {
         bookmarkIndex(surah: surah, ayah: ayah) != nil
-    }
-
-    @discardableResult
-    func toggleBookmarkIfNoNoteLoss(surah: Int, ayah: Int) -> Bool {
-        guard !(isBookmarked(surah: surah, ayah: ayah) && bookmarkHasNote(surah: surah, ayah: ayah)) else {
-            return false
-        }
-
-        toggleBookmark(surah: surah, ayah: ayah)
-        return true
     }
 
     func ensureBookmarkExists(surah: Int, ayah: Int) {
@@ -1080,7 +1109,7 @@ extension Settings {
                 bookmark.note = storedNote
                 bookmarkedAyahs[index] = bookmark
             } else {
-                bookmarkedAyahs.append(BookmarkedAyah(surah: surah, ayah: ayah, note: storedNote))
+                bookmarkedAyahs.append(BookmarkedAyah(surah: surah, ayah: ayah, note: storedNote, createdAt: Date()))
             }
         }
     }
@@ -1109,7 +1138,7 @@ extension Settings {
                 bookmark.highlight = color
                 bookmarkedAyahs[index] = bookmark
             } else if let color {
-                bookmarkedAyahs.append(BookmarkedAyah(surah: surah, ayah: ayah, highlightRaw: color.rawValue))
+                bookmarkedAyahs.append(BookmarkedAyah(surah: surah, ayah: ayah, highlightRaw: color.rawValue, createdAt: Date()))
             }
         }
     }
@@ -1251,7 +1280,7 @@ extension Settings {
 
     /// True when the user tapped "Hide for Today" on the Ayah of the Day card for the current day.
     var isAyahOfTheDayHiddenToday: Bool {
-        ayahOfTheDayHiddenDate == Self.dayKey()
+        ayahOfTheDayHiddenDate == dailyDayKey()
     }
 
     /// Words that keep an ayah/hadith out of the daily rotations - not because anything is wrong with
@@ -1322,7 +1351,8 @@ extension Settings {
         let refs = Self.gentleAyahRefs(data)
         guard !refs.isEmpty else { return nil }
 
-        let day = UInt64(bitPattern: Int64(date.timeIntervalSince1970 / 86_400))
+        // The daily-rollover day (Fajr by default), shared with every other "of the day" feature.
+        let day = UInt64(bitPattern: Int64(dailyDayIndex(for: date)))
         // Knuth multiplicative hash (UInt64 to stay valid on 32-bit Int platforms like older watchOS).
         let index = Int((day &* 2_654_435_761) % UInt64(refs.count))
         return refs[index]
@@ -1332,7 +1362,7 @@ extension Settings {
     /// and ignored.
     private func ayahOfTheDayOverrideRef(for date: Date) -> (surahID: Int, ayahID: Int)? {
         let parts = ayahOfTheDayOverride.split(separator: "|")
-        guard parts.count == 3, String(parts[0]) == Self.dayKey(date),
+        guard parts.count == 3, String(parts[0]) == dailyDayKey(for: date),
               let surahID = Int(parts[1]), let ayahID = Int(parts[2]) else { return nil }
         return (surahID, ayahID)
     }
@@ -1354,77 +1384,117 @@ extension Settings {
         }
         guard let pick else { return }
 
-        ayahOfTheDayOverride = "\(Self.dayKey())|\(pick.surahID)|\(pick.ayahID)"
-        refreshQuranWidgets()
+        ayahOfTheDayOverride = "\(dailyDayKey())|\(pick.surahID)|\(pick.ayahID)"
+        refreshQuranWidgets(.ayahOfTheDay)
     }
 
     // MARK: Quran widgets
 
+    /// Which card changed, so the snapshot rebuild and the timeline reload stay scoped to it. WidgetKit
+    /// budgets reloads per placed widget; rebuilding all four cards and reloading all four kinds on
+    /// every last-read write charged the listen widgets for a reading session and vice versa.
+    enum QuranWidgetRefresh: Equatable {
+        case lastRead, lastListenedSurah, lastListenedAyah, ayahOfTheDay
+        /// Every card and every kind: backgrounding (the widgets are about to be visible) and a stale pool.
+        case all
+    }
+
     /// Rebuilds the App Group payload the Quran widgets read (last read ayah, last listened surah, and a
     /// pool of safe random ayahs) and reloads their timelines. Runs only in the main app - the widget
     /// extension just consumes the snapshot. Cheap to call from lifecycle/save hooks.
-    func refreshQuranWidgets() {
-        guard Bundle.main.bundleIdentifier?.contains("Widget") != true else { return }
+    func refreshQuranWidgets(_ reason: QuranWidgetRefresh = .all) {
+        guard Self.isAppProcess else { return }
         let data = QuranData.shared
         guard !data.quran.isEmpty else { return }
 
         // Preserve the existing random pool so this stays cheap when called frequently (e.g. on every
         // surah navigation) - the widget rotates through the pool over time for variety.
         var snapshot = QuranWidgetStore.load() ?? QuranWidgetSnapshot()
-        snapshot.lastRead = nil
+        var kinds: [String] = []
 
-        if lastReadSurah > 0, lastReadAyah > 0,
-           let surah = data.quran.first(where: { $0.id == lastReadSurah }),
-           let ayah = surah.ayahs.first(where: { $0.id == lastReadAyah }) {
-            snapshot.lastRead = quranWidgetAyahCard(surah: surah, ayah: ayah)
+        if reason == .all || reason == .lastRead {
+            snapshot.lastRead = nil
+            if lastReadSurah > 0, lastReadAyah > 0,
+               let surah = data.quran.first(where: { $0.id == lastReadSurah }),
+               let ayah = surah.ayahs.first(where: { $0.id == lastReadAyah }) {
+                snapshot.lastRead = quranWidgetAyahCard(surah: surah, ayah: ayah)
+            }
+            kinds.append("LastReadSurahWidget")
         }
 
-        if let listened = lastListenedSurah {
-            snapshot.lastListened = QuranWidgetSnapshot.ListenCard(
-                name: listened.surahName,
-                reciter: listened.reciter.displayNameForNowPlaying,
-                current: listened.currentDuration,
-                full: listened.fullDuration
-            )
+        if reason == .all || reason == .lastListenedSurah {
+            if let listened = lastListenedSurah {
+                snapshot.lastListened = QuranWidgetSnapshot.ListenCard(
+                    name: listened.surahName,
+                    reciter: listened.reciter.displayNameForNowPlaying,
+                    current: listened.currentDuration,
+                    full: listened.fullDuration
+                )
+            }
+            kinds.append("LastListenedSurahWidget")
         }
 
-        snapshot.lastListenedAyah = nil
-        if saveLastListenedAyah,
-           let listenedAyah = lastListenedAyah,
-           let surah = data.quran.first(where: { $0.id == listenedAyah.surahNumber }),
-           let ayah = surah.ayahs.first(where: { $0.id == listenedAyah.ayahNumber }) {
-            snapshot.lastListenedAyah = quranWidgetAyahCard(surah: surah, ayah: ayah)
+        if reason == .all || reason == .lastListenedAyah {
+            snapshot.lastListenedAyah = nil
+            if saveLastListenedAyah,
+               let listenedAyah = lastListenedAyah,
+               let surah = data.quran.first(where: { $0.id == listenedAyah.surahNumber }),
+               let ayah = surah.ayahs.first(where: { $0.id == listenedAyah.ayahNumber }) {
+                snapshot.lastListenedAyah = quranWidgetAyahCard(surah: surah, ayah: ayah)
+            }
+            kinds.append("LastListenedAyahWidget")
         }
 
-        snapshot.ayahOfTheDay = nil
-        snapshot.ayahOfTheDayDay = nil
-        if showAyahOfTheDay,
-           let ref = ayahOfTheDayReference(data: data),
-           let surah = data.quran.first(where: { $0.id == ref.surahID }),
-           let ayah = surah.ayahs.first(where: { $0.id == ref.ayahID }) {
-            snapshot.ayahOfTheDay = quranWidgetAyahCard(surah: surah, ayah: ayah)
-            // Stamp which day this card is for, so the widget stops showing it once the day rolls over
-            // and falls back to its own daily rotation instead of a days-old "Ayah of the Day".
-            snapshot.ayahOfTheDayDay = QuranWidgetSnapshot.dayBucket()
+        if reason == .all || reason == .ayahOfTheDay {
+            snapshot.ayahOfTheDay = nil
+            snapshot.ayahOfTheDayDay = nil
+            if showAyahOfTheDay,
+               let ref = ayahOfTheDayReference(data: data),
+               let surah = data.quran.first(where: { $0.id == ref.surahID }),
+               let ayah = surah.ayahs.first(where: { $0.id == ref.ayahID }) {
+                snapshot.ayahOfTheDay = quranWidgetAyahCard(surah: surah, ayah: ayah)
+                // Stamp which day this card is for, so the widget stops showing it once the day rolls over
+                // and falls back to its own daily rotation instead of a days-old "Ayah of the Day".
+                snapshot.ayahOfTheDayDay = dailyDayIndex()
+            }
+            kinds.append("RandomAyahWidget")
         }
 
         // Rebuild the pool when it's empty or built by an older app version (cards missing the font tag),
         // so the ayah-of-the-day widget can fall back to it.
         if snapshot.randomPool.isEmpty || snapshot.randomPool.contains(where: { $0.fontName == nil }) {
             snapshot.randomPool = buildQuranWidgetRandomPool(from: data)
+            if !kinds.contains("RandomAyahWidget") { kinds.append("RandomAyahWidget") }
         }
 
+        snapshot.fajrByDay = fajrTable()
         QuranWidgetStore.save(snapshot)
-        // Only the four Quran kinds: this runs on every settled page flip, and reloading the Adhan
-        // widgets too (reloadAllTimelines) burned their WidgetKit refresh budget on reading sessions.
-        for kind in ["LastReadSurahWidget", "LastListenedSurahWidget", "LastListenedAyahWidget", "RandomAyahWidget"] {
-            WidgetCenter.shared.reloadTimelines(ofKind: kind)
+        // Only the kinds whose card changed (and only the placed ones): this runs on every settled
+        // surah change, and reloading the Adhan widgets too (reloadAllTimelines) burned their WidgetKit
+        // refresh budget on reading sessions.
+        Self.reloadWidgetKinds(kinds)
+    }
+
+    /// The launch-time write. The snapshot is rebuilt only when the widgets could be showing something
+    /// wrong: none exists yet, the pool predates the font tag, or the Ayah of the Day card is from an
+    /// earlier day. Every launch used to decode, rebuild, re-encode and reload all four kinds even when
+    /// nothing had changed since the last backgrounding flush.
+    func refreshQuranWidgetsIfStale() {
+        guard Self.isAppProcess else { return }
+        guard let snapshot = QuranWidgetStore.load() else {
+            refreshQuranWidgets(.all)
+            return
+        }
+        if snapshot.randomPool.isEmpty || snapshot.randomPool.contains(where: { $0.fontName == nil }) {
+            refreshQuranWidgets(.all)
+        } else if showAyahOfTheDay, snapshot.ayahOfTheDayDay != dailyDayIndex() {
+            refreshQuranWidgets(.ayahOfTheDay)
         }
     }
 
     /// Builds a widget ayah card with the Arabic rendered per the user's display settings (clean text /
     /// dots) and tagged with the selected Arabic font so the widget can match the in-app look.
-    private func quranWidgetAyahCard(surah: Surah, ayah: Ayah) -> QuranWidgetSnapshot.AyahCard {
+    func quranWidgetAyahCard(surah: Surah, ayah: Ayah) -> QuranWidgetSnapshot.AyahCard {
         let arabic = ayah.displayArabicText(surahId: surah.id, clean: cleanArabicText)
         return QuranWidgetSnapshot.AyahCard(
             arabic: arabic,
