@@ -2,7 +2,7 @@ Al-Quran is your complete companion for reading the Quran, whether you are a lif
 
 ON-DEVICE AI SEARCH
 - Search the Quran by meaning, not just keywords: "patience in hardship" finds ayahs about sabr even when neither word appears.
-- Fully on-device with Apple's language frameworks - private, offline, and free. With Apple Intelligence, Ask AI answers questions citing only the ayahs it shows, never a religious ruling.
+- Fully on-device with Apple's language frameworks: private, offline, and free. With Apple Intelligence, Ask AI answers questions citing only the ayahs it shows, never a religious ruling.
 
 QURAN PLANNER
 - Pick a finish date, or a daily pace, and get a daily reading amount that recalculates itself every day.
@@ -13,7 +13,7 @@ UNIQUE FEATURES
 - Arabic Beginner Mode: Spaces out Arabic letters so they are easier to recognize as you learn.
 - Verse Sharing: Share any verse as clean text or a beautiful image, or select several ayahs and share them together.
 - Notes on Verses: Add personal reflections to any ayah, automatically bookmarked for easy reference.
-- Siri Shortcuts: Play any surah, play a random surah, or resume your last listen - in English and Arabic.
+- Siri Shortcuts: Play any surah, play a random surah, or resume your last listen, in English and Arabic.
 
 THE COMPLETE QURAN
 - Read by Surah, Juz, or page, with dividers and a marker that always shows where you are.
@@ -21,7 +21,7 @@ THE COMPLETE QURAN
 - Arabic text, English transliteration, and translation side by side, with optional color coded tajweed and a tajweed reference.
 - Tafsir for any ayah: Ibn Kathir, Maarif Ul Quran, and Tazkirul Quran in English, plus Ibn Kathir, al-Tabari, and as-Sa'di in Arabic, saved for offline reading.
 - Compare the qiraat and English translations side by side.
-- Find any verse by Surah:Ayah (like 5:27), page, Juz, keyword, or meaning - from wherever you are reading.
+- Find any verse by Surah:Ayah (like 5:27), page, Juz, keyword, or meaning, from wherever you are reading.
 - Listen to over 60 reciters and qiraat, with full Surah and verse by verse playback, offline downloads, and offline ayah timings so single ayahs play in the reciter's own voice.
 - Resume anywhere with your last read and last listened Surah and ayah, plus recent history.
 - Bookmark and favorite verses, remove tashkeel for a cleaner view, or let a random Surah find you.
@@ -33,7 +33,7 @@ ESSENTIAL TOOLS AND LEARNING
 - Tajweed Foundations explains the rules behind the colors before you ever open a mushaf.
 
 MADE YOUR WAY
-- Customize Quran text size, Arabic fonts, accent colors, and more - settings search jumps straight to any option.
+- Customize Quran text size, Arabic fonts, accent colors, and more; settings search jumps straight to any option.
 - Widgets for the Ayah of the Day, your last read ayah, and your last listened surah.
 - Apple Watch support, including full surah recitation on your wrist.
 - A clean, distraction free interface, easy to navigate.

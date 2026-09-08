@@ -72,7 +72,7 @@ Word by Word:
 - Tap any word in the reader for its meaning, or turn on inline mode to see meanings under every word.
 
 The Printed Mushaf:
-- Page-perfect facsimiles of the actual printed mushaf, one for every riwayah - twenty complete mushafs, 604 pages each.
+- Page-perfect facsimiles of the actual printed mushaf, one for every riwayah: twenty complete mushafs, 604 pages each.
 
 Al-Quran:
 - Reading themes: give the reader a sepia, gray, or custom look.
@@ -98,8 +98,8 @@ Bug fixes and optimizations throughout.
 On-device AI search, a Quran planner, tafsir in Arabic and English, a real mushaf, and everything a beginner needs to start reading.
 
 AI Search:
-- Search the Quran by meaning, not just keywords - "patience in hardship" finds ayahs about sabr even when neither word appears. Built with Apple's on-device language frameworks: private, offline, and free.
-- On iPhones with Apple Intelligence, Ask AI answers your question in a few sentences drawn only from the ayahs it cites right below the answer - and it never gives religious rulings.
+- Search the Quran by meaning, not just keywords: "patience in hardship" finds ayahs about sabr even when neither word appears. Built with Apple's on-device language frameworks: private, offline, and free.
+- On iPhones with Apple Intelligence, Ask AI answers your question in a few sentences drawn only from the ayahs it cites right below the answer, and it never gives religious rulings.
 
 Quran Planner:
 - Pick a finish date, or a daily pace, and get a daily amount that adjusts itself when you miss a day.
@@ -107,15 +107,15 @@ Quran Planner:
 - Progress is your khatm itself, so reading in the app advances the plan without any check in.
 
 Al-Quran:
-- Tafsir for any ayah: Ibn Kathir, Maarif Ul Quran, and Tazkirul Quran in English, plus Ibn Kathir, al-Tabari, and as-Sa'di in Arabic - saved for offline reading, with an option to download them all.
+- Tafsir for any ayah: Ibn Kathir, Maarif Ul Quran, and Tazkirul Quran in English, plus Ibn Kathir, al-Tabari, and as-Sa'di in Arabic, saved for offline reading, with an option to download them all.
 - A faster, retypeset mushaf: pages open and flip quicker, every line fills the full width, and spacing is even in Arabic and English alike.
 - Compare the qiraat and English translations side by side, right from any ayah.
-- Search the whole Quran from wherever you are reading, and use Siri too: play any surah, play a random surah, or resume your last listen - in English and Arabic.
+- Search the whole Quran from wherever you are reading, and use Siri too: play any surah, play a random surah, or resume your last listen, in English and Arabic.
 - Offline ayah playback in the reciter's own voice: for a dozen reciters, downloading their surahs also fetches precise ayah timings, so single ayahs and ranges play from the file.
 - Select multiple ayahs at once to share, copy, bookmark, note, or switch to beginner mode together.
 
 Apple Watch:
-- Full-surah recitation now plays on the watch - connect AirPods (or pick a route when asked) and every reciter works in their own voice.
+- Full-surah recitation now plays on the watch; connect AirPods (or pick a route when asked) and every reciter works in their own voice.
 - Settings now sync more reliably between iPhone and Apple Watch, including right after pairing a new watch.
 
 Islamic Tools:
@@ -162,16 +162,16 @@ Introducing the new Liquid Glass look, designed to complement the UI across iOS,
 Liquid Glass & UI:
 
 - Refreshed launch and splash experience for a clearer, more polished first impression.
-- Liquid Glass-style controls across the app—search bars, pickers, and other surfaces updated for a more consistent, modern feel.
+- Liquid Glass-style controls across the app: search bars, pickers, and other surfaces updated for a more consistent, modern feel.
 - General UI polish throughout for clearer layout and smoother day-to-day use.
 
 Al-Quran:
 
-- Tajweed in the Quran: optional color-coded tajweed, and a dedicated Tajweed reference—so rules are easier to notice while you read and listen (in beta).
+- Tajweed in the Quran: optional color-coded tajweed, and a dedicated Tajweed reference, so rules are easier to notice while you read and listen (in beta).
 - Page and Juz structure: new page and Juz dividers, plus an overlay so you always see which Surah and Juz you’re in.
 - Smarter search: find ayahs by Juz and page, whether you’re searching within a Surah or across the whole Quran.
 - Quran search history for quicker repeat lookups.
-- Continue where you left off with your last listened Surah and last read ayah—now with up to 5 recent Surahs and 5 recent ayahs.
+- Continue where you left off with your last listened Surah and last read ayah, now with up to 5 recent Surahs and 5 recent ayahs.
 
 Al-Islamic Tools:
 
