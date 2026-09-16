@@ -1,3 +1,32 @@
+# Version 2.6.5
+
+Everything of the day on one screen, a settings search on every page, and a mushaf that is already open when you come back to it.
+
+Today:
+- One screen gathers the Ayah, the Word, the Dua and the Name of the day, each opening where it lives.
+- Every daily card carries a small Today door, so liking one of them is how you find the rest.
+- The Reminder of the Day now shows the app's own pick of that kind, so the card and the screen never disagree.
+
+Settings:
+- Every settings page has its own search bar, and a result opens the exact screen the setting is on rather than the page's root.
+- The settings rows wear a colour per area, the way iOS Settings does.
+
+Wallpapers:
+- Two new wallpapers: OC Ummah's desert night, and a Free Palestine poster with the Dome of the Rock.
+
+Al-Quran:
+- Word of the Day joins Browse by Theme and History under your summary on the days it is not a tile.
+- Page mode builds the mushaf as you leave the tab, so returning to it no longer waits half a second.
+- Hold an ayah and its actions open while your finger is still down, the same as holding a mushaf page.
+- Choose Surah no longer leaves the reader unable to open Surah Info, Revelation Info or an ayah's actions afterwards.
+- Qiraat Explorer: a transmitter who parts from his imam is shown his own reading rather than his imam's.
+- Hide Arabic Dots now works on its own, so the text can keep its vowel marks while losing its dots, the way the earliest manuscripts were read.
+
+iPad and Mac:
+- Leaving the app and coming back no longer re-seats the navigation: the article you had open, the section you were in, and your place in it are all still there.
+
+Bug fixes and optimizations throughout.
+
 # Version 2.6.4
 
 A daily reminder card, a journal, the 99 Names in depth, the miracles of the Quran, and Sunnah reminders rooted in hadith.

@@ -195,7 +195,7 @@ final class WordOfDayStore: @unchecked Sendable {
 
 /// The Quran tab's Word of the Day tile, the grid's fifth kind of tile - drawn only when the history
 /// tiles leave the grid one short of even, so it squares the grid up rather than sitting alone on a
-/// row (the row form below takes over otherwise). Same construction as `SummaryAyahTile`: a plain
+/// row (a door chip beside Browse by Theme and History takes over otherwise, see `QuranView`). Same construction as `SummaryAyahTile`: a plain
 /// Button (a NavigationLink tile picked up the List's chevron and shrank), ideal-height measurement
 /// feeding `SummaryTileHeightKey`, top-leading in the equalized frame. Title, first appearance, the
 /// word in the reader's own face, its gloss - and no transliteration-and-count line (Abu, 2026-09-07:
@@ -239,11 +239,9 @@ struct SummaryWordTile: View, Equatable {
             Settings.shared.hapticFeedback()
             onTap()
         } label: {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    Image(systemName: "character.book.closed")
-                        .font(.caption)
-                        .foregroundColor(accent)
+                    AccentIconChip(systemImage: "character.book.closed.fill", tint: accent, size: 18)
                     Text(Self.title)
                         .font(.caption2.weight(.semibold))
                         .foregroundColor(accent)
@@ -261,7 +259,7 @@ struct SummaryWordTile: View, Equatable {
 
                 if let arabic {
                     Text(arabic)
-                        .font(Font.arabic(fontName, size: UIFont.preferredFont(forTextStyle: .subheadline).pointSize * 1.35))
+                        .font(Font.arabic(fontName, size: UIFont.preferredFont(forTextStyle: .subheadline).pointSize * 1.2))
                         .arabicFontDesign(custom: customFace)
                         .foregroundColor(.primary)
                         .lineLimit(1)
@@ -275,7 +273,7 @@ struct SummaryWordTile: View, Equatable {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(12)
+            .padding(10)
             // The content keeps its IDEAL height whatever the tile is stretched to, so the measurement
             // below can never depend on the frame it feeds (see `SummaryAyahTile`).
             .fixedSize(horizontal: false, vertical: true)
@@ -288,64 +286,6 @@ struct SummaryWordTile: View, Equatable {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-}
-
-// MARK: - The summary row
-
-/// The Quran tab's Word of the Day row, under the theme door whenever the summary grid is already
-/// even (see `SummaryWordTile`): the word in the reader's own face, its gloss, and where it first
-/// appears. Its host is a plain Button, so it carries no link chevron (Abu, 2026-09-07). Settings
-/// captured at init and Equatable, like the tile.
-struct WordOfDayRow: View, Equatable {
-    let word: WordOfDayEntry
-    let surahName: String
-    private let arabic: String?
-    private let fontName: String
-    private let customFace: Bool
-
-    init(word: WordOfDayEntry, surahName: String) {
-        self.word = word
-        self.surahName = surahName
-        let settings = Settings.shared
-        arabic = settings.showArabicText ? settings.cleanedQuranArabic(word.arabic) : nil
-        fontName = settings.quranDisplayFontName
-        customFace = settings.quranDisplayUsesCustomArabicFace
-    }
-
-    static func == (lhs: WordOfDayRow, rhs: WordOfDayRow) -> Bool {
-        lhs.word.id == rhs.word.id && lhs.surahName == rhs.surahName && lhs.arabic == rhs.arabic
-            && lhs.fontName == rhs.fontName && lhs.customFace == rhs.customFace
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            AccentIconChip(systemImage: "character.book.closed.fill", size: 30)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Word of the Day")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundColor(.primary)
-
-                Text("\(word.meaning) · \(surahName) \(word.surah):\(word.ayah)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-
-            Spacer(minLength: 8)
-
-            if let arabic {
-                Text(arabic)
-                    .font(Font.arabic(fontName, size: UIFont.preferredFont(forTextStyle: .title3).pointSize * 1.1))
-                    .arabicFontDesign(custom: customFace)
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            }
-        }
-        .padding(.vertical, 3)
     }
 }
 

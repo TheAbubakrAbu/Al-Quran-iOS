@@ -1654,8 +1654,8 @@ final class QuranPlayer: ObservableObject {
         _ = retiringPlayer; _ = retiringQueue
 
         statusObserver = firstItem.observe(\.status) { [weak self] itm, _ in
-            guard let self = self else { return }
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
                 self.isLoading = false
                 self.idleTimerSet(true)
                 if itm.status == .readyToPlay {
@@ -1839,8 +1839,8 @@ final class QuranPlayer: ObservableObject {
             _ = retiringPlayer; _ = retiringQueue
 
             statusObserver = firstItem.observe(\.status) { [weak self] itm, _ in
-                guard let self = self else { return }
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
                     self.idleTimerSet(true)
                     if itm.status == .readyToPlay {
                         self.whenAudioSessionReady { [weak self] in
@@ -1933,8 +1933,8 @@ final class QuranPlayer: ObservableObject {
         _ = retiringPlayer; _ = retiringQueue
 
         statusObserver = firstItem.observe(\.status) { [weak self] itm, _ in
-            guard let self = self else { return }
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
                 self.idleTimerSet(true)
                 if itm.status == .readyToPlay {
                     self.whenAudioSessionReady { [weak self] in

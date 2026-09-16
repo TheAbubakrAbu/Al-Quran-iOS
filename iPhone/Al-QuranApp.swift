@@ -137,7 +137,18 @@ private struct MainTabView: View {
     /// True while a launch/splash screen still covers the tabs (drives the under-cover warm below).
     let isCovered: Bool
 
-    private enum AppTab: Hashable { case adhan, quran, hadith, islam, settings }
+    private enum AppTab: String, Hashable { case adhan, quran, hadith, islam, settings }
+
+    #if DEBUG
+    /// Headless tab switching for verification runs: `Settings`' `-settingsProbe` posts this with the
+    /// tab's raw value ("quran") so a probe can change a setting on one tab and then LOOK at another -
+    /// the only way to reproduce cross-tab staleness without tap tooling.
+    ///
+    /// `Settings.swift` syncs down from Al-Islam and has always POSTED this; the observer lives in the
+    /// app entry point, which is a per-app variant the sync keeps as ours, so nothing was listening
+    /// here and every `tab=` step was a silent no-op. Same shape as the `-auditPacks` hook below.
+    static let debugSwitchTabNotification = Notification.Name("AlIslamDebugSwitchTab")
+    #endif
 
     // We land the user on Adhan, so Adhan is the initial tab and builds first. The Quran tab is realized during
     // `warmUnderCover()` - briefly selected so `TabView` builds and RETAINS its heavy view tree, then we settle
@@ -149,6 +160,13 @@ private struct MainTabView: View {
 
     var body: some View {
         tabs
+            #if DEBUG
+            .onReceive(NotificationCenter.default.publisher(for: Self.debugSwitchTabNotification)) { note in
+                if let raw = note.object as? String, let tab = AppTab(rawValue: raw) {
+                    selectedTab = tab
+                }
+            }
+            #endif
             // Launch warmups, one .task per app domain (like AppLifecycle's sections): when this
             // root is copied into a companion app, delete the domains it doesn't ship.
             // Shared: the tab walk behind the launch cover.

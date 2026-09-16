@@ -10,9 +10,15 @@ struct SettingsQuranView: View {
     /// Gates turning ON beta qiraat behind the warning dialog (see `betaQiraatGroup`).
     @State private var confirmEnableBetaQiraat = false
     private let presentedAsSheet: Bool
+    /// A sub-screen to push a beat after the root mounts: what a settings search result lands on
+    /// (`SettingsDeepLink`).
+    private let requestedPage: SettingsQuranPage?
+    @State private var openRequestedPage = false
+    @State private var deepLinkFired = false
 
-    init(presentedAsSheet: Bool = false) {
+    init(presentedAsSheet: Bool = false, openPage: SettingsQuranPage? = nil) {
         self.presentedAsSheet = presentedAsSheet
+        self.requestedPage = openPage
     }
 
     private var includeEnglish: Binding<Bool> {
@@ -50,17 +56,6 @@ struct SettingsQuranView: View {
         )
     }
 
-    private var cleanArabicTextBinding: Binding<Bool> {
-        Binding(
-            get: { settings.cleanArabicText },
-            set: { newValue in
-                settings.cleanArabicText = newValue
-                if !newValue {
-                    settings.removeArabicDots = false
-                }
-            }
-        )
-    }
     
     #if DEBUG && os(iOS)
     /// Headless visual verification (no tap access on the dev machine): `-launchQuranSettingsArabic`
@@ -75,50 +70,16 @@ struct SettingsQuranView: View {
     /// `-launchQuranSettingsSunnah` lands on the Sunnah Reminders screen. DEBUG builds only.
     @State private var autoOpenSunnah =
         ProcessInfo.processInfo.arguments.contains("-launchQuranSettingsSunnah")
+    /// `-launchQuranSettingsThemes` lands on the Highlight Themes screen. DEBUG builds only.
+    @State private var autoOpenThemes =
+        ProcessInfo.processInfo.arguments.contains("-launchQuranSettingsThemes")
+    #endif
+    #if os(iOS)
+    @ObservedObject private var themeHighlights = ThemeHighlights.shared
     #endif
 
     var body: some View {
-        List {
-            Group {
-                Section {
-                    quranSettingsLink(title: "Recitation", systemImage: "headphones") {
-                        recitationDestination
-                    }
-                }
-                // One merged screen for how the Quran LOOKS: the tab layout options and the surah
-                // reading options live as separate sections inside it. (The tab options only affect the
-                // iPhone/iPad Quran tab, so the watch shows just the reading half.)
-                Section {
-                    quranSettingsLink(title: "Reading View", systemImage: "book") {
-                        readingViewsDestination
-                    }
-                }
-                Section {
-                    quranSettingsLink(title: "Arabic Text", systemImage: "textformat.ar") {
-                        arabicTextDestination
-                    }
-                }
-                Section {
-                    quranSettingsLink(title: "English Text", systemImage: "textformat") {
-                        englishTextDestination
-                    }
-                }
-                #if os(iOS)
-                favoritesAndBookmarksSection
-
-                Section {
-                    quranSettingsLink(title: "Sunnah Reminders", systemImage: "bell.badge") {
-                        SunnahRemindersView()
-                    }
-                }
-
-                readingModeSection
-                #endif
-            }
-            .themedListRowBackground()
-        }
-        .applyConditionalListStyle()
-        .compactListSectionSpacing()
+        rootList
         #if DEBUG && os(iOS)
         .background(
             NavigationLink(isActive: $autoOpenArabicText) { arabicTextDestination }
@@ -137,6 +98,21 @@ struct SettingsQuranView: View {
                           label: { EmptyView() }
                 .hidden()
         )
+        .background(
+            NavigationLink(isActive: $autoOpenThemes) { ThemeHighlightsView() }
+                          label: { EmptyView() }
+                .hidden()
+        )
+        #endif
+        #if os(iOS)
+        .modifier(SettingsDeepLink(isPresented: $openRequestedPage, active: requestedPage != nil) {
+            if let page = requestedPage { quranPageDestination(page) }
+        })
+        .onAppear {
+            guard !deepLinkFired, requestedPage != nil else { return }
+            deepLinkFired = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { openRequestedPage = true }
+        }
         #endif
         .navigationTitle("Al-Quran Settings")
         #if os(iOS)
@@ -174,32 +150,87 @@ struct SettingsQuranView: View {
     }
     #endif
 
-    private func quranSettingsLink<Destination: View>(
-        title: String,
-        systemImage: String,
-        @ViewBuilder destination: () -> Destination
+    /// The root's sections, on the page-search scaffold (iOS) or a plain list (the watch).
+    @ViewBuilder
+    private var rootList: some View {
+        #if os(iOS)
+        SettingsScopedSearch(scope: .quran, resolve: resolveSearchDestination) { rootSections }
+        #else
+        List {
+            Group { rootSections }
+                .themedListRowBackground()
+        }
+        .applyConditionalListStyle()
+        .compactListSectionSpacing()
+        #endif
+    }
+
+    /// Two cards (2026-09-16): how the Quran reads and sounds, then the extras; each row with its
+    /// caption, so the screen is a table of contents rather than a column of bare names. Sunnah
+    /// Reminders sit ABOVE Favorites and Bookmarks (Abu, 2026-09-12).
+    @ViewBuilder
+    private var rootSections: some View {
+        Section(header: Text("READING")) {
+            quranPageLink(.recitation) { recitationDestination }
+            quranPageLink(.readingView) { readingViewsDestination }
+            quranPageLink(.arabicText) { arabicTextDestination }
+            quranPageLink(.englishText) { englishTextDestination }
+        }
+
+        #if os(iOS)
+        Section(header: Text("MORE")) {
+            // Highlight Themes: the colour-coded passages, the legend, and the lit themes (ported from
+            // Tilawa). While anything is lit the caption says what, so "why is my page tinted" has an
+            // answer here (a trailing value truncated beside the caption).
+            quranPageLink(.highlightThemes,
+                          caption: themeHighlights.isEmpty ? nil : themeHighlights.summary) { ThemeHighlightsView() }
+            quranPageLink(.sunnahReminders) { SunnahRemindersView() }
+            quranPageLink(.favorites) { favoritesAndBookmarksDestination }
+        }
+
+        readingModeSection
+        #endif
+    }
+
+    private func quranPageLink<Destination: View>(
+        _ page: SettingsQuranPage,
+        caption: String? = nil,
+        @ViewBuilder destination: @escaping () -> Destination
     ) -> some View {
-        NavigationLink {
-            destination()
-        } label: {
-            Label(title, systemImage: systemImage)
-                .padding(.vertical, 4)
+        NavigationLink(destination: LazyDestination(build: destination)) {
+            SettingsRowLabel(title: page.title, systemImage: page.systemImage, subtitle: caption ?? page.caption,
+                             tint: SettingsTint.quran)
         }
         .tint(settings.accentColor.color)
     }
 
     #if os(iOS)
-    /// Bulk-management screens for the user's saved items. One row like every other setting on this screen - 
-    /// the four editors live behind it rather than taking four rows of the root list.
+    /// The sub-screen behind each root row, for the deep links and the page search.
     @ViewBuilder
-    private var favoritesAndBookmarksSection: some View {
-        Section {
-            quranSettingsLink(title: "Favorites and Bookmarks", systemImage: "star") {
-                favoritesAndBookmarksDestination
-            }
+    private func quranPageDestination(_ page: SettingsQuranPage) -> some View {
+        switch page {
+        case .recitation: recitationDestination
+        case .readingView: readingViewsDestination
+        case .arabicText: arabicTextDestination
+        case .englishText: englishTextDestination
+        case .highlightThemes: ThemeHighlightsView()
+        case .sunnahReminders: SunnahRemindersView()
+        case .favorites: favoritesAndBookmarksDestination
         }
     }
 
+    /// The page search's results land on THIS page's sub-screens; the app-wide mapping would push a
+    /// second Quran Settings root first.
+    private func resolveSearchDestination(_ destination: SettingsSearchEntry.Destination) -> AnyView? {
+        switch destination {
+        case .quranPage(let page): return AnyView(quranPageDestination(page))
+        case .reciters: return AnyView(ReciterListView().environmentObject(settings))
+        default: return nil
+        }
+    }
+
+    /// Bulk-management screens for the user's saved items: the four editors live behind one row
+    /// rather than taking four rows of the root list.
     private var favoritesAndBookmarksDestination: some View {
         quranSettingsSubList(title: "Favorites and Bookmarks") {
             Section {
@@ -396,20 +427,6 @@ struct SettingsQuranView: View {
                         .onChange(of: settings.showWordOfTheDay) { _ in settings.hapticFeedback() }
 
                     Text("Shows a piece of Quranic vocabulary each day at the top of the Quran tab, with every ayah it appears in.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.vertical, 2)
-                }
-            }
-
-            if DailyReminderStore.isBundled {
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Reminder of the Day When the App Opens", isOn: $settings.showDailyReminderSheet.animation(.easeInOut))
-                        .font(.subheadline)
-                        .onChange(of: settings.showDailyReminderSheet) { _ in settings.hapticFeedback() }
-
-                    Text("Once a day, the first time the app opens, today's reminder (a verse, a hadith, a Sunnah, a dua, a dhikr or a Name of Allah) comes up as a card. The card always sits at the top of the Islam tab as well.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -709,11 +726,22 @@ struct SettingsQuranView: View {
         cleanArabicTextToggles
     }
 
+    // The two switches are INDEPENDENT, and that is the fix (2026-09-11). Hide Dots used to be
+    // rendered only `if cleanArabicText || removeArabicDots`, and turning Hide Tashkeel off also
+    // force-cleared it, so the pair behaved like nothing else in the app: the second box appeared
+    // and disappeared as you touched the first, and switching the first off silently unchecked the
+    // second. Between them that made "dots hidden, tashkeel shown" - the closest thing to an early
+    // manuscript, which is the whole point of the option - unreachable, with no way to tell that
+    // from a bug. They read the same text through two independent transforms, so they belong on
+    // screen as two independent switches.
+    //
+    // No `.disabled(!showArabicText)` on either: `arabicDisplayControls` already renders this whole
+    // group only while Show Arabic Quran Text is on, so the modifier could never fire and only
+    // suggested that a disabled-but-ticked state existed somewhere.
     private var cleanArabicTextToggles: some View {
         VStack(alignment: .leading) {
-            Toggle("Hide Arabic Tashkeel (Vowel Diacritics) and Signs", isOn: cleanArabicTextBinding.animation(.easeInOut))
+            Toggle("Hide Arabic Tashkeel (Vowel Diacritics) and Signs", isOn: $settings.cleanArabicText.animation(.easeInOut))
                 .font(.subheadline)
-                .disabled(!settings.showArabicText)
                 .onChange(of: settings.cleanArabicText) { _ in settings.hapticFeedback() }
 
             #if os(iOS)
@@ -724,22 +752,18 @@ struct SettingsQuranView: View {
                 .padding(.vertical, 2)
             #endif
             
-            if settings.cleanArabicText || settings.removeArabicDots {
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Hide Arabic Dots", isOn: $settings.removeArabicDots.animation(.easeInOut))
-                        .font(.subheadline)
-                        .disabled(!settings.showArabicText)
-                        .onChange(of: settings.removeArabicDots) { _ in settings.hapticFeedback() }
+            // No `.settingsDependent()` rail any more: that indent marks a row as belonging to the
+            // one above it, which is exactly the relationship this row no longer has.
+            Toggle("Hide Arabic Dots", isOn: $settings.removeArabicDots.animation(.easeInOut))
+                .font(.subheadline)
+                .onChange(of: settings.removeArabicDots) { _ in settings.hapticFeedback() }
 
-                    #if os(iOS)
-                    Text("This removes Arabic dots, such as turning ب into ٮ. It is very difficult to read and is not recommended for beginners, but it allows you to experience how some of the earliest Muslims read and wrote the Quran in early manuscripts such as the Birmingham Manuscript.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    #endif
-                }
-                .settingsDependent()
-            }
+            #if os(iOS)
+            Text("This removes Arabic dots, such as turning ب into ٮ. It is very difficult to read and is not recommended for beginners, but it allows you to experience how some of the earliest Muslims read and wrote the Quran in early manuscripts such as the Birmingham Manuscript.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            #endif
         }
     }
 
@@ -1322,14 +1346,26 @@ extension SettingsSearchEntry {
     static let quranEntries: [SettingsSearchEntry] = [
         .init(title: "Quran Settings", path: "Al-Quran", keywords: "mushaf reading", destination: .quranSettings),
         .init(title: "Reciter", path: "Quran Settings → Recitation", keywords: "reciters audio download favorite minshawi husary sudais qari listen", destination: .reciters),
-        .init(title: "Recitation Type & Random Reciter", path: "Quran Settings → Recitation", keywords: "murattal mujawwad muallim random ayah recitation", destination: .quranSettings),
-        .init(title: "Arabic Text (Quran)", path: "Quran Settings → Arabic Text", keywords: "font size uthmani indopak script clean dots beginner mode spacing", destination: .quranSettings),
-        .init(title: "Tajweed Colors", path: "Quran Settings → Arabic Text", keywords: "tajwid rules colors ghunnah qalqalah madd legend", destination: .quranSettings),
-        .init(title: "Highlight Allah (Quran)", path: "Quran Settings → Arabic Text", keywords: "highlight name of allah red color quran", destination: .quranSettings),
-        .init(title: "Riwayah & Qiraat", path: "Quran Settings → Arabic Text", keywords: "hafs warsh qaloon riwayah qiraat ahruf readings", destination: .quranSettings),
-        .init(title: "Transliteration & English Translations", path: "Quran Settings → English Text", keywords: "saheeh international mustafa khattab translation english transliteration", destination: .quranSettings),
-        .init(title: "Reading Mode (List / Page)", path: "Quran Settings → Reading View", keywords: "page mode mushaf list mode grid last read", destination: .quranSettings),
-        .init(title: "Favorites and Bookmarks (Quran)", path: "Quran Settings → Favorites and Bookmarks", keywords: "manage favorites bookmarks notes surahs ayahs letters", destination: .quranSettings),
+        .init(title: "Recitation Type & Random Reciter", path: "Quran Settings → Recitation", keywords: "murattal mujawwad muallim random ayah recitation", destination: .quranPage(.recitation)),
+        .init(title: "After Surah Recitation Ends", path: "Quran Settings → Recitation", keywords: "next surah previous end stop continue autoplay recitation end", destination: .quranPage(.recitation)),
+        .init(title: "Reading View (List / Pages)", path: "Quran Settings → Reading View", keywords: "page mode mushaf list mode grid last read", destination: .quranPage(.readingView)),
+        .init(title: "Show Full Surah Details", path: "Quran Settings → Reading View", keywords: "revelation type ayah count page count surah list details", destination: .quranPage(.readingView)),
+        .init(title: "Ayah of the Day & Word of the Day", path: "Quran Settings → Reading View", keywords: "daily ayah word vocabulary quran tab summary tiles", destination: .quranPage(.readingView)),
+        .init(title: "Daily Cards Turn Over at Fajr", path: "Quran Settings → Reading View", keywords: "midnight fajr rollover day change hadith dua reminder name", destination: .quranPage(.readingView)),
+        .init(title: "Last Read & Last Listened", path: "Quran Settings → Reading View", keywords: "remember position history last read ayah listened surah summary", destination: .quranPage(.readingView)),
+        .init(title: "Page and Juz Dividers", path: "Quran Settings → Reading View", keywords: "divider juz page label floating reading", destination: .quranPage(.readingView)),
+        .init(title: "Arabic Text (Quran)", path: "Quran Settings → Arabic Text", keywords: "font size uthmani indopak script clean dots beginner mode spacing", destination: .quranPage(.arabicText)),
+        .init(title: "Arabic Font & Size", path: "Quran Settings → Arabic Text", keywords: "uthmani indopak kufi hijazi face font size slider system", destination: .quranPage(.arabicText)),
+        .init(title: "Tajweed Colors", path: "Quran Settings → Arabic Text", keywords: "tajwid rules colors ghunnah qalqalah madd legend", destination: .quranPage(.arabicText)),
+        .init(title: "Tap a Word & Word by Word", path: "Quran Settings → Arabic Text", keywords: "word by word gloss meaning pronunciation transliteration inline tap", destination: .quranPage(.arabicText)),
+        .init(title: "Hide Tashkeel & Dots", path: "Quran Settings → Arabic Text", keywords: "clean arabic tashkeel harakat diacritics dots beginner spacing", destination: .quranPage(.arabicText)),
+        .init(title: "Highlight Allah (Quran)", path: "Quran Settings → Arabic Text", keywords: "highlight name of allah red color quran", destination: .quranPage(.arabicText)),
+        .init(title: "Riwayah & Qiraat", path: "Quran Settings → Arabic Text", keywords: "hafs warsh qaloon riwayah qiraat ahruf readings", destination: .quranPage(.arabicText)),
+        .init(title: "Transliteration & English Translations", path: "Quran Settings → English Text", keywords: "saheeh international mustafa khattab translation english transliteration", destination: .quranPage(.englishText)),
+        .init(title: "English Font Size", path: "Quran Settings → English Text", keywords: "english font size translation slider system", destination: .quranPage(.englishText)),
+        .init(title: "Highlight Themes (Color-Coded Passages)", path: "Quran Settings → Highlight Themes", keywords: "thematic highlighting colors legend passages sections topics wash lit themes browse by theme tilawa", destination: .quranPage(.highlightThemes)),
+        .init(title: "Sunnah Reminders", path: "Quran Settings → Sunnah Reminders", keywords: "al-kahf friday al-mulk sleep muawwidhat reminder notification", destination: .quranPage(.sunnahReminders)),
+        .init(title: "Favorites and Bookmarks (Quran)", path: "Quran Settings → Favorites and Bookmarks", keywords: "manage favorites bookmarks notes surahs ayahs letters khatm", destination: .quranPage(.favorites)),
     ]
 }
 #endif

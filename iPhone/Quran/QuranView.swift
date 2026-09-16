@@ -219,6 +219,9 @@ struct QuranView: View {
     /// summary (the reader's auto-open is suppressed for it, exactly as for the other two).
     private static let debugWantsHistory = ProcessInfo.processInfo.arguments.contains("-openQuranHistory")
     @State private var debugOpenHistory = false
+    /// "-openDailyHub" pushes the Today screen (the summary header's pill) the same way.
+    private static let debugWantsDailyHub = ProcessInfo.processInfo.arguments.contains("-openDailyHub")
+    @State private var debugOpenDailyHub = false
     #endif
     /// Pushes today's Word of the Day screen: the summary tile's and row's tap (and DEBUG's
     /// "-openWordOfDay"). A state push through the List's own destination, not a NavigationLink: a
@@ -592,6 +595,16 @@ struct QuranView: View {
         }
     }
 
+    /// `UIApplication.didEnterBackgroundNotification` on iOS. The watch build compiles this file too
+    /// and has neither that symbol nor page mode, so there it is a name nothing ever posts.
+    private static let didEnterBackgroundNotification: Notification.Name = {
+        #if os(iOS)
+        return UIApplication.didEnterBackgroundNotification
+        #else
+        return Notification.Name("AlIslamQuranNoopDidEnterBackground")
+        #endif
+    }()
+
     @State private var path: [QuranRoute] = []
     /// Guards the once-per-appearance auto-open of the mushaf when page mode is already on.
     @State private var didAutoOpenMushaf = false
@@ -770,6 +783,20 @@ struct QuranView: View {
             path = []
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { path = [route] }
         }
+        #endif
+    }
+
+    /// `openMushafWhereLeftOff` with the animation off, and only when the tab is sitting on the surah
+    /// list with no reader open - going back to the list and STAYING there is deliberate, and it
+    /// survives until the tab (or the app) is left. `openMushafWhereLeftOff` cannot make that call
+    /// itself: on iPad it deliberately re-points the detail column whatever is in it, which would
+    /// throw an iPad user off whatever they had open.
+    private func openMushafUnanimated() {
+        #if os(iOS)
+        guard settings.quranPageMode, path.isEmpty, selectedRoute == nil else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { openMushafWhereLeftOff() }
         #endif
     }
 
@@ -1081,7 +1108,13 @@ struct QuranView: View {
             shouldAutoOpen = shouldAutoOpen || ProcessInfo.processInfo.arguments.contains("-quranListMode")
             // "-openThemes" pushes its own screen the moment the tab appears; a second push from the
             // mushaf auto-open in the same instant was a reproducible crash (see `DebugPushDestination`).
-            if Self.debugWantsThemes || Self.debugWantsWordOfDay || Self.debugWantsHistory { shouldAutoOpen = false }
+            if Self.debugWantsThemes || Self.debugWantsWordOfDay || Self.debugWantsHistory || Self.debugWantsDailyHub { shouldAutoOpen = false }
+            // "-noAutoOpenMushaf": page mode ON but the reader NOT auto-opened, so the tab sits on the
+            // surah list with an empty path. That is the state a user reaches by tapping Back out of the
+            // mushaf, and the only way to reach it headlessly - it is what the tab-exit re-open below is
+            // for, and re-verifying that fix means being able to get here (pair it with
+            // "-settingsProbe tab=adhan@14,tab=quran@22" to leave the tab and come back).
+            if ProcessInfo.processInfo.arguments.contains("-noAutoOpenMushaf") { shouldAutoOpen = false }
             #endif
             // A Sunnah reminder's target is about to open the reader itself (`openPendingQuranTarget`);
             // a second push from the auto-open in the same instant is the crash `-openThemes` hit.
@@ -1089,7 +1122,13 @@ struct QuranView: View {
             if shouldAutoOpen, !didAutoOpenMushaf {
                 didAutoOpenMushaf = true
                 await MushafPagination.buildInBackground(quran: quranData.quran, qiraah: settings.displayQiraahForArabic)
-                openMushafWhereLeftOff()
+                // Unanimated, like every other page-mode open below. Animated, this push IS the
+                // "it goes to the Quran view and THEN opens the page" two-step: the surah list is
+                // already on screen by the time the pagination await returns, so the reader slid in
+                // over it. With the animation off the tab is simply found standing on the mushaf.
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { openMushafWhereLeftOff() }
             }
             #endif
             #if os(iOS)
@@ -1105,21 +1144,65 @@ struct QuranView: View {
             }
             #endif
         }
-        // Coming BACK to the Quran tab (from Adhan, Settings, ...) while page mode is on re-opens the mushaf -
-        // but only when the tab was left sitting on the surah list with no reader open. `openMushafWhereLeftOff`
-        // can't make that call itself: on iPad it deliberately re-points the detail column whatever is in it,
-        // which would throw an iPad user off whatever they had open every time they came back to the tab.
+        // Page mode re-opens the mushaf when the tab is LEFT, not when it is returned to. The pager wraps
+        // ~604 page identities and is the heaviest view realization in the app; built on the way IN, the
+        // return paid all of it at once (measured: the reader appeared 484 ms after the tab came back and
+        // the main thread was not free again for 864 ms) and then slid it in on a push animation - "it
+        // lags a little to open the page" (Abu, 2026-09-09). Built on the way OUT, the same work happens
+        // while the user is on another tab, where nothing is waiting on the main thread, and the tab is
+        // found with the mushaf already standing on it.
+        //
+        // Both directions run the same open. The way out is where it normally happens; the way in is the
+        // backstop for a tab that goes active without ever having been left. Whichever fires first fills
+        // `path`, and the other one's `path.isEmpty` guard then finds nothing to do.
+        //
+        // Either way only when the tab is sitting on the surah list with no reader open - going back to
+        // the list and STAYING there is a deliberate act, and it survives until the tab is left.
+        // `openMushafWhereLeftOff` can't make that call itself: on iPad it deliberately re-points the
+        // detail column whatever is in it, which would throw an iPad user off whatever they had open.
         .onChange(of: isActiveTab) { active in
             #if os(iOS)
-            guard active, settings.quranPageMode, path.isEmpty, selectedRoute == nil else { return }
-            openMushafWhereLeftOff()
+            guard settings.quranPageMode, path.isEmpty, selectedRoute == nil else { return }
+            // The way in (the backstop) opens at once - there is a user waiting on it - and
+            // unanimated, because an animated push here is the user WATCHING the surah list be
+            // replaced, which is the exact two-step page mode is supposed to skip.
+            guard !active else { openMushafUnanimated(); return }
+            // The way out waits a beat first: the pager's build is half a second of main thread, and
+            // the tab being switched TO has its own first frame to paint (Adhan's countdown and sky
+            // animate). Let that land, then build behind it. Re-checked on arrival - the user may have
+            // come straight back, or opened something themselves in between.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                guard settings.quranPageMode, path.isEmpty, selectedRoute == nil else { return }
+                // Unanimated: off screen there is nothing to animate, and a half-finished push
+                // transition is exactly what the returning tab must not walk into.
+                openMushafUnanimated()
+            }
             #endif
+        }
+        // LEAVING THE APP is the same event as leaving the tab, and page mode has to treat it that
+        // way: "if you have page mode on, when you disappear it should just be mushaf" (Abu,
+        // 2026-09-14). Without this, backgrounding the app while the tab sat on the surah list
+        // (a Back tap out of the reader, or a launch that has not opened it yet) meant the next
+        // foreground came back to the LIST - `isActiveTab` never changed, so nothing re-opened it,
+        // and the mushaf only appeared after a trip through another tab.
+        //
+        // `didEnterBackground`, not `willResignActive`: the latter also fires for a pulled-down
+        // notification banner or Control Center, and re-arranging the navigation stack underneath
+        // someone who never actually left is its own bug. Setting `path` here is cheap (it is the
+        // realization that costs, and that happens on the way back in, where it would have anyway);
+        // what it buys is that the return renders the reader directly instead of the list plus a push.
+        .onReceive(NotificationCenter.default.publisher(for: Self.didEnterBackgroundNotification)) { _ in
+            openMushafUnanimated()
         }
         .onChange(of: searchHandoff.pendingQuery) { query in
             guard let query else { return }
             runHandedOffSearch(query)
         }
-        .onChange(of: columnLayoutActive) { columns in
+        // Only for a boundary crossing the USER made: backgrounding the app makes iOS flip the window
+        // compact and back for its app-switcher snapshots, which ran this migration twice with nobody
+        // looking - and here that also re-keys the detail column's `.id`, rebuilding the ~604-page
+        // mushaf pager for nothing. See `ColumnLayoutMigration`.
+        .columnLayoutMigration(columns: columnLayoutActive) { columns in
             handleColumnLayoutChange(toColumns: columns)
         }
         .onDisappear {
@@ -1227,6 +1310,7 @@ struct QuranView: View {
                 // auto-open and crashed inside SwiftUI (3 of 6 launches on iOS 26.5).
                 .debugPushDestination(isPresented: $debugOpenThemes) { themesBrowseDestination }
                 .debugPushDestination(isPresented: $debugOpenHistory) { quranHistoryDestination }
+                .debugPushDestination(isPresented: $debugOpenDailyHub) { dailyHubDestination }
                 #endif
         }
     }
@@ -1577,6 +1661,9 @@ struct QuranView: View {
             }
             if Self.debugWantsHistory {
                 debugOpenHistory = true
+            }
+            if Self.debugWantsDailyHub {
+                debugOpenDailyHub = true
             }
             if ProcessInfo.processInfo.arguments.contains("-openWordOfDay") {
                 openWordOfDay = true
@@ -2219,9 +2306,9 @@ struct QuranView: View {
         // accessibility text sizes, where the tiles simply take their own.
         let rowHeight = dynamicTypeSize.isAccessibilitySize ? nil : summaryTileHeights.values.max()
         // What the grid holds right now, resolved once so the Word of the Day can count it: with 1 or 3
-        // history tiles the word takes the empty slot beside them; with 0, 2 or 4 it sits as a row
-        // under the theme door instead (Abu, 2026-09-07) - never a fifth tile alone on its own row,
-        // never a hole beside three.
+        // history tiles the word takes the empty slot beside them; with 0, 2 or 4 it becomes a chip
+        // beside the Browse by Theme and History doors instead (a row above them from 2026-09-07 to
+        // 2026-09-16) - never a fifth tile alone on its own row, never a hole beside three.
         let hasLastRead = settings.saveLastReadAyah && lastReadSurah != nil && lastReadAyah != nil
         let ayahOfTheDay = showAyah ? ayahOfTheDayPair : nil
         let lastListenedAyah = settings.saveLastListenedAyah ? lastListenedAyahPair : nil
@@ -2239,6 +2326,14 @@ struct QuranView: View {
                     .foregroundStyle(settings.accentColor.color)
                 Text("YOUR SUMMARY")
                     .foregroundStyle(settings.accentColor.color)
+
+                Spacer()
+
+                // Everything of the day on one screen (2026-09-16): the door every daily card carries.
+                NavigationLink(destination: dailyHubDestination) {
+                    DailyHubDoorLabel()
+                }
+                .buttonStyle(.plain)
             }
         ) {
             LazyVGrid(
@@ -2306,52 +2401,74 @@ struct QuranView: View {
                     .transition(.opacity)
             }
 
-            // The Word of the Day's row form, ABOVE the doors (Abu, 2026-09-07), when the grid above
-            // is already even. A Button, not a link, so it carries no chevron; same push as the tile.
-            if !wordFillsGrid, let word, let wordSurah {
-                Button {
-                    settings.hapticFeedback()
-                    openWordOfDay = true
-                } label: {
-                    WordOfDayRow(word: word, surahName: wordSurah.nameTransliteration)
-                        .equatable()
-                        .contentShape(Rectangle())
+            // The doors, side by side on one row (2026-09-16: two full rows were most of the summary's
+            // height). Each chip is its own chevron-less link inside the row (a plain NavigationLink
+            // per chip drew a disclosure chevron after each); the screens introduce themselves in
+            // their own first section, so no caption. (The "-openThemes" launch hook pushes the theme screen from
+            // `pathNavigation`, never from a hidden link row here: a zero-height row is still a List
+            // row that draws its band, and an isActive link inside the path stack crashed against the
+            // mushaf auto-open.) A real push, not a sheet: on iPhone it takes the whole screen, and in
+            // the iPad/Mac split it pushes in the LEFT column, leaving the reader on the right.
+            HStack(spacing: 10) {
+                // The Word of the Day joins the doors as a third chip when the grid above is already
+                // even (Abu, 2026-09-16; it was a full row above them). A Button, not a link, so it
+                // carries no chevron; the same push as the tile.
+                if !wordFillsGrid, word != nil {
+                    Button {
+                        settings.hapticFeedback()
+                        openWordOfDay = true
+                    } label: {
+                        summaryDoorChip(title: SummaryWordTile.title, systemImage: "character.book.closed.fill")
+                    }
+                    .buttonStyle(.plain)
                 }
-            }
 
-            if ThematicTopicsStore.isBundled {
-                // (The "-openThemes" launch hook pushes this same screen from `pathNavigation`, never
-                // from a hidden link row here: a zero-height row is still a List row that draws its
-                // band, and an isActive link inside the path stack crashed against the mushaf auto-open.)
-                //
-                // A real push (LazyDestination so the topic corpus isn't touched until it's opened),
-                // not a sheet: on iPhone it takes the whole screen, and in the iPad/Mac split it pushes
-                // in the LEFT column, leaving the reader on the right - the hadith chapter grammar.
-                // No caption under the title: the screen says what it is when it opens (Abu, 2026-09-07).
-                NavigationLink(destination: themesBrowseDestination) {
-                    summaryDoorLabel(title: "Browse by Theme", systemImage: "square.grid.2x2.fill")
+                if ThematicTopicsStore.isBundled {
+                    summaryDoorChip(title: "Browse by Theme", systemImage: "square.grid.2x2.fill")
+                        .chevronlessLink { themesBrowseDestination }
                 }
-                .tint(settings.accentColor.color)
-            }
 
-            NavigationLink(destination: quranHistoryDestination) {
-                summaryDoorLabel(title: "History", systemImage: "clock.arrow.circlepath")
+                summaryDoorChip(title: "History", systemImage: "clock.arrow.circlepath")
+                    .chevronlessLink { quranHistoryDestination }
             }
-            .tint(settings.accentColor.color)
+            .padding(.vertical, 2)
         }
     }
 
-    /// A door row under the summary tiles: the accent chip and the name, nothing else. The screen it
-    /// opens introduces itself in its own first section.
-    private func summaryDoorLabel(title: String, systemImage: String) -> some View {
-        HStack(spacing: 12) {
-            AccentIconChip(systemImage: systemImage, size: 30)
+    /// A door under the summary tiles: a glass chip with the accent symbol and the name, a half or a
+    /// third of the row wide, so the doors (and the Word of the Day's chip, when it isn't a tile) share
+    /// one line. The screen it opens introduces itself in its own first
+    /// section.
+    private func summaryDoorChip(title: String, systemImage: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(settings.accentColor.color)
 
+            // Two lines, so three chips on an iPhone row keep their whole names ("Word of the
+            // Day", "Browse by Theme" ran to an ellipsis on one line); two chips still take one.
             Text(title)
-                .font(.subheadline.weight(.semibold))
+                .font(.caption.weight(.semibold))
                 .foregroundColor(.primary)
+                .multilineTextAlignment(.leading)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 9)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .conditionalGlassEffect(clear: true, rectangle: true)
+        .contentShape(Rectangle())
+    }
+
+    /// The Today screen, built lazily like the other doors: the header pill's destination and the
+    /// "-openDailyHub" hook's.
+    private var dailyHubDestination: some View {
+        LazyDestination {
+            DailyHubView { surahID, ayahID in
+                push(surahID: surahID, ayahID: ayahID)
+            }
+        }
     }
     #endif
 

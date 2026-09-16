@@ -273,6 +273,34 @@ struct Ayah: Codable, Identifiable, Equatable {
         return result
     }
 
+    /// The vocalized text with its dots removed when Hide Dots is on: the skeleton, still carrying
+    /// every harakah.
+    ///
+    /// This is the half of Hide Dots that was missing (2026-09-11). `removingArabicDots` ran in
+    /// exactly one place, inside `textCleanArabic`, so the option could only ever take effect while
+    /// Hide Tashkeel was ALSO on - switch on Hide Dots by itself and the reader did not change by a
+    /// pixel. The settings screen hid the contradiction rather than fixing it, by rendering the Hide
+    /// Dots row only while Hide Tashkeel was on and force-clearing it whenever Hide Tashkeel went
+    /// off, so the inert state was simply unreachable. Both halves belong to one bug: the switch now
+    /// stands on its own in the UI, and here is where it earns that.
+    ///
+    /// Dots without vowels is a real reading, not a curiosity: the vowel marks were added to the
+    /// mushaf BEFORE the consonant pointing was universal, so a dotless text that keeps its harakat
+    /// is a stage the script genuinely passed through.
+    ///
+    /// Cached in the same NSCache as the clean text, under its own key prefix, because this now runs
+    /// per ayah on every row of the list reader.
+    private func vocalized(_ raw: String, removeDots: Bool?) -> String {
+        guard removeDots ?? Settings.shared.removeArabicDots else { return raw }
+        let key = ("V1:" + raw) as NSString
+        if let cached = CleanArabicTextCache.cache.object(forKey: key) {
+            return cached as String
+        }
+        let result = raw.removingArabicDots
+        CleanArabicTextCache.cache.setObject(result as NSString, forKey: key)
+        return result
+    }
+
     /// True if this ayah exists as its own verse in the given qiraah. In Hafs every ayah exists; in Warsh/Qaloon/etc. some Hafs ayahs are merged, so we only show ayahs that have qiraah-specific text (e.g. Baqarah has 286 in Hafs but 285 in Warsh).
     func existsInQiraah(_ displayQiraah: String?, surahID: Int? = nil) -> Bool {
         guard let qIn = displayQiraah, !qIn.isEmpty, qIn != "Hafs" else {
@@ -310,7 +338,7 @@ struct Ayah: Codable, Identifiable, Equatable {
 
     /// Arabic to show in UI. For Fatiha ayah 1 with clean mode, if the ayah doesn’t start with بسم (e.g. ta'awwudh), shows Bismillah instead.
     /// - Parameter qiraahOverride: When non-nil, use this qiraah instead of Settings (e.g. comparison mode). Use "" for Hafs.
-    /// - Parameter removeDots: With `clean`, whether the dots go too. Nil follows the app setting.
+    /// - Parameter removeDots: Whether the dots go, with or without `clean`. Nil follows the app setting.
     func displayArabicText(surahId: Int, clean: Bool, removeDots: Bool? = nil, qiraahOverride: String? = nil) -> String {
         let qiraah: String? = if let override = qiraahOverride {
             (override.isEmpty || override == "Hafs") ? nil : override
@@ -321,11 +349,12 @@ struct Ayah: Codable, Identifiable, Equatable {
         // maps (all 20 texts ship fully vocalized; the skeleton is derived at render time), and
         // stripping tashkeel + signs is exactly what exposes the shared Uthmani rasm across qiraat.
         let text = if qiraah == nil {
-            clean ? textCleanArabic(for: qiraah, removeDots: removeDots) : textArabic(for: qiraah, surahID: surahId)
+            clean ? textCleanArabic(for: qiraah, removeDots: removeDots)
+                  : vocalized(textArabic(for: qiraah, surahID: surahId), removeDots: removeDots)
         } else if clean {
             textCleanArabic(for: qiraah, surahID: surahId, removeDots: removeDots)
         } else {
-            textArabic(for: qiraah, surahID: surahId).removingArabicSukoon
+            vocalized(textArabic(for: qiraah, surahID: surahId).removingArabicSukoon, removeDots: removeDots)
         }
         if surahId == 1 && id == 1 && clean {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5113,11 +5142,20 @@ enum QiraahComparison {
 
     private static var alignmentCache: [String: Alignment] = [:]
     private static var diffCache: [String: [(Int, Int)]] = [:]
+    /// Guards the three tables (this pair and `hafsSideCache`): the word cards compare a word across
+    /// the riwayat OFF the main thread now (2026-09-16: a cold Al-Baqarah cost 550 ms on it, paid
+    /// while the sheet was still animating in), and the explorer's prewarm already did, while the
+    /// comparison rows read the same tables on it. Held for the lookups and the stores only, never
+    /// across a computation, so a cold surah on one thread never stalls the other; two threads
+    /// computing the same alignment once each is the accepted price.
+    private static let cacheLock = NSLock()
 
     /// Memory-warning purge (AppLifecycle): both tables rebuild on demand from the immutable texts.
     static func purgeCaches() {
+        cacheLock.lock(); defer { cacheLock.unlock() }
         alignmentCache.removeAll()
         diffCache.removeAll()
+        hafsSideCache.removeAll()
     }
 
     /// The alignment for one surah of one riwayah, cached for the app's lifetime (texts are
@@ -5126,7 +5164,10 @@ enum QiraahComparison {
         let canonical = Settings.Riwayah.canonicalTag(tag)
         guard !canonical.isEmpty else { return nil }
         let key = "\(surahID)|\(canonical)"
-        if let cached = alignmentCache[key] { return cached }
+        cacheLock.lock()
+        let cachedAlignment = alignmentCache[key]
+        cacheLock.unlock()
+        if let cachedAlignment { return cachedAlignment }
         #if DEBUG
         var phase = Date()
         func lap(_ slot: Int) { phaseMillis[slot] += Date().timeIntervalSince(phase) * 1000; phase = Date() }
@@ -5170,11 +5211,12 @@ enum QiraahComparison {
                 finalScore = repairedScore.mean
             }
         }
+        cacheLock.lock()
         #if DEBUG
         diagnostics[key] = Diagnostics(countScore: countScore.mean, finalScore: finalScore, walkScore: walkScore)
         #endif
-
         alignmentCache[key] = result
+        cacheLock.unlock()
         return result
     }
 
@@ -5303,10 +5345,15 @@ enum QiraahComparison {
     private static var hafsSideCache: [Int: Side] = [:]
 
     private static func hafsSide(surahID: Int, quranData: QuranData) -> Side? {
-        if let cached = hafsSideCache[surahID] { return cached }
+        cacheLock.lock()
+        let cachedSide = hafsSideCache[surahID]
+        cacheLock.unlock()
+        if let cachedSide { return cachedSide }
         guard let texts = texts(surahID: surahID, tag: nil, quranData: quranData) else { return nil }
         let side = Side(texts: texts)
+        cacheLock.lock()
         hafsSideCache[surahID] = side
+        cacheLock.unlock()
         return side
     }
 
@@ -5609,7 +5656,10 @@ enum QiraahComparison {
     static func differingRanges(in text: String, vs reference: String) -> [Range<String.Index>] {
         guard text != reference else { return [] }
         let key = "\(text)\u{0}\(reference)"
-        if let spans = diffCache[key] {
+        cacheLock.lock()
+        let cachedSpans = diffCache[key]
+        cacheLock.unlock()
+        if let spans = cachedSpans {
             return spans.compactMap { span in
                 guard let lo = utf16Index(span.0, in: text), let hi = utf16Index(span.1, in: text), lo < hi else { return nil }
                 return lo..<hi
@@ -5652,11 +5702,14 @@ enum QiraahComparison {
         for (index, token) in a.enumerated() where !common.contains(index) && !token.folded.isEmpty {
             ranges.append(token.range)
         }
-        diffCache[key] = ranges.map { range in
+        let spans = ranges.map { range in
             (text.utf16.distance(from: text.startIndex, to: range.lowerBound),
              text.utf16.distance(from: text.startIndex, to: range.upperBound))
         }
+        cacheLock.lock()
+        diffCache[key] = spans
         if diffCache.count > 4_000 { diffCache.removeAll(keepingCapacity: true) }
+        cacheLock.unlock()
         return ranges
     }
 

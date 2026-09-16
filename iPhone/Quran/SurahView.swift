@@ -562,6 +562,10 @@ struct SurahView: View {
     @State private var arrivalTerm: String? = nil
     @State private var arrivalAyahID: Int? = nil
     @State private var showingSettingsSheet = false
+    #if DEBUG
+    /// `-launchReaderSettings` presents the sheet once per process (see onAppear).
+    private static var didAutoPresentReaderSettings = false
+    #endif
     @State private var showAlert = false
     @State private var showCustomRangeSheet = false
     /// In page mode the reader crosses surah boundaries, so the toolbar must follow the page rather than the
@@ -578,6 +582,17 @@ struct SurahView: View {
     @State private var showSurahInfoSheet = false
     @State private var showReciterPickerSheet = false
     @State private var showSurahPickerSheet = false
+    /// The surah Choose Surah picked, navigated to from the picker sheet's `onDismiss` rather than from
+    /// the pick itself.
+    ///
+    /// The pick used to navigate 0.15 s after closing the sheet - inside its own dismissal animation.
+    /// Swapping the surah there re-published this whole reader (and wrote `recordSurahOpened`, an
+    /// @AppStorage write, which republishes from the root) while UIKit was still tearing the sheet's
+    /// controller down, and the presentation stack never recovered: the picker closed, the surah
+    /// changed, and from then on NOTHING would present - not a row's actions sheet, not Surah Info,
+    /// not Revelation Info (user report). `onDismiss` runs after the animation has finished and the
+    /// controller is gone, which is the only safe moment to touch the host.
+    @State private var pendingPickedSurah: Surah?
     @State private var confirmConvertQiraahToHafs = false
     /// Consent dialog for switching a beta riwayah's page text from the (exact) facsimile
     /// to its beta transcription - the reader-menu twin of `BetaTextConsentCard`.
@@ -2031,6 +2046,18 @@ struct SurahView: View {
             // in LIST mode (the page reader has "-openPageSheet"), since neither a long press nor the
             // ellipsis menu can be driven headlessly.
             let launchArgs = ProcessInfo.processInfo.arguments
+            // "-launchReaderSettings" presents the READER's own copy of the Quran settings sheet (the
+            // gear), as opposed to "-launchQuranSettings", which presents the surah list's. On iPad the
+            // two live in different columns, so what the sheet does when a setting inside it changes the
+            // reader (2026-09-15: "Show Arabic Quran Text" collapsed it) has to be watched from here.
+            NSLog("SHEETTRACE reader onAppear surah=%d ayah=%d", surah.id, ayah ?? 0)
+            if launchArgs.contains("-launchReaderSettings"), !Self.didAutoPresentReaderSettings {
+                // Once per process: a reader that is torn down and re-created (the iPad detail column
+                // re-identifying itself) must not quietly re-present the sheet, or the collapse being
+                // looked for is hidden by its own repro harness.
+                Self.didAutoPresentReaderSettings = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { showingSettingsSheet = true }
+            }
             if let i = launchArgs.firstIndex(of: "-openRowSheet"), i + 1 < launchArgs.count,
                let target = ayah, let targetAyah = surah.ayahs.first(where: { $0.id == target }) {
                 // "word" opens the word card for the "-wordIndex <n>" token (0-based) of the ayah.
@@ -2123,19 +2150,17 @@ struct SurahView: View {
         } message: {
             Text("Please keep notes Islamic and respectful.")
         }
-        .sheet(isPresented: $showSurahPickerSheet) {
+        // The pick is only RECORDED here; `onDismiss` performs it once the sheet is fully gone. See
+        // `pendingPickedSurah`. The picker closes itself (its `select` calls `dismiss()`), so this
+        // callback must not also write the binding: two dismissals of one presentation is the other
+        // half of the same hazard.
+        .sheet(isPresented: $showSurahPickerSheet, onDismiss: navigateToPickedSurah) {
             // `displayedSurah`, not `surah`: in page mode the reader roams freely, so the surah on
             // SCREEN (pageSurah) is the one the picker must treat as current - comparing against the
             // surah the reader was merely opened from made "Choose Surah" a silent no-op whenever the
             // pick matched it (most commonly: paging away and picking the starting surah to go back).
             SurahPickerSheet(currentSurahID: displayedSurah.id) { selectedSurah in
-                settings.hapticFeedback()
-                showSurahPickerSheet = false
-
-                guard selectedSurah.id != displayedSurah.id else { return }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    navigateToSurah(selectedSurah)
-                }
+                pendingPickedSurah = selectedSurah.id == displayedSurah.id ? nil : selectedSurah
             }
             .environmentObject(settings)
             .environmentObject(quranData)
@@ -3993,6 +4018,10 @@ struct SurahView: View {
         // columns with an empty gray detail pane.
         NavigationView { SettingsQuranView(presentedAsSheet: true) }
             .navigationViewStyle(.stack)
+            #if DEBUG
+            .onAppear { NSLog("SHEETTRACE reader settings sheet appeared") }
+            .onDisappear { NSLog("SHEETTRACE reader settings sheet disappeared") }
+            #endif
     }
     #endif
 
@@ -4171,6 +4200,15 @@ struct SurahView: View {
         }
     }
 
+    /// Runs when the Choose Surah sheet has finished dismissing: the surah swap and everything it
+    /// republishes happens with no presentation in flight. Nothing picked (the sheet was swiped away,
+    /// or the pick was the surah already on screen) means nothing to do.
+    private func navigateToPickedSurah() {
+        guard let picked = pendingPickedSurah else { return }
+        pendingPickedSurah = nil
+        navigateToSurah(picked)
+    }
+
     private func navigateToSurah(_ targetSurah: Surah) {
         // Compare against what's on SCREEN (in page mode the reader may be pages away from `surah`),
         // not the surah this view was opened from - see the picker-sheet note.
@@ -4322,6 +4360,8 @@ private struct SurahPickerSheet: View {
         return quranData.quran[index + 1]
     }
 
+    /// `dismiss()` is this sheet's ONE closing path: the host records the pick in `onSelect` and acts
+    /// on it in the sheet's `onDismiss`, so it must not close the sheet a second time by hand.
     private func select(_ surah: Surah) {
         onSelect(surah)
         dismiss()
@@ -4504,6 +4544,14 @@ struct ArabicTextRiwayahPicker: View {
     /// opening the SAME nested qiraah menu the comparison bar chip uses - one picker grammar
     /// everywhere. `false` = the bare glass chip for toolbars/bars.
     var useMenuRow: Bool = false
+    /// The row's leading title (`useMenuRow`).
+    var title: String = "Arabic Riwayah"
+    /// Whether Hafs is offered. Off for a picker that chooses what to compare AGAINST Hafs.
+    var includeHafs: Bool = true
+    /// A compact side card ("A" / "B") for head-to-head pickers: the side letter over the current
+    /// riwayah, on a soft accent tile. The same nested menu opens from it (user rule: every
+    /// riwayah picker in the app is this one).
+    var sideLabel: String? = nil
 
     private var currentLabel: String {
         Settings.Riwayah.option(for: selection).label
@@ -4521,7 +4569,35 @@ struct ArabicTextRiwayahPicker: View {
     @ViewBuilder
     private var content: some View {
         #if os(iOS)
-        if useMenuRow {
+        if let sideLabel {
+            Menu {
+                qiraahMenuContent
+            } label: {
+                VStack(spacing: 2) {
+                    Text(sideLabel)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+
+                    HStack(spacing: 4) {
+                        Text(currentLabel)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
+                .background(RoundedRectangle(cornerRadius: 10).fill(settings.accentColor.color.opacity(0.08)))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else if useMenuRow {
             // The comparison bar's nested-menu picker (Hafs up top, then one submenu per qiraah), in
             // row form for Forms and sheets: title leading, the current riwayah trailing, the whole
             // row the tap target. This replaced a flat grouped `Picker` that lost the per-qiraah
@@ -4530,7 +4606,7 @@ struct ArabicTextRiwayahPicker: View {
                 qiraahMenuContent
             } label: {
                 HStack {
-                    Text("Arabic Riwayah")
+                    Text(title)
                         .foregroundColor(.primary)
 
                     Spacer()
@@ -4602,15 +4678,17 @@ struct ArabicTextRiwayahPicker: View {
         // The standalone Hafs entry keeps its full "(default)" label but drops the death-year
         // subtitle - that detail belongs on the copy INSIDE the Asim submenu, where Hafs sits next
         // to Shubah and the dates mean something (user rule).
-        qiraahButton(
-            Settings.Riwayah.option(for: Settings.Riwayah.hafsTag),
-            current: current,
-            hideDetail: true
-        )
+        if includeHafs {
+            qiraahButton(
+                Settings.Riwayah.option(for: Settings.Riwayah.hafsTag),
+                current: current,
+                hideDetail: true
+            )
+        }
 
         ForEach(Settings.Riwayah.textGroups) { group in
             Menu {
-                ForEach(group.options, id: \.tag) { option in
+                ForEach(group.options.filter { includeHafs || !$0.tag.isEmpty }, id: \.tag) { option in
                     qiraahButton(option, current: current)
                 }
             } label: {

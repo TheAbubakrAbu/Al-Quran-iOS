@@ -1017,7 +1017,6 @@ final class Settings: ObservableObject {
     @AppStorage("showAyahOfTheDay") var showAyahOfTheDay: Bool = true
     @AppStorage("showWordOfTheDay") var showWordOfTheDay: Bool = true
     /// The Reminder of the Day presented once a day when the app opens (from the second day on).
-    @AppStorage("showDailyReminderSheet") var showDailyReminderSheet: Bool = true
     /// Day key (yyyy-MM-dd) for which the Ayah of the Day card has been hidden via "Hide for Today".
     @AppStorage("ayahOfTheDayHiddenDate") var ayahOfTheDayHiddenDate: String = ""
     /// A shuffled replacement for TODAY's Ayah of the Day, as "dayKey|surahID|ayahID". Stale days no
@@ -1518,10 +1517,10 @@ final class Settings: ObservableObject {
     /// real installed font, so any stray `.custom(_)` with it falls back to the system font anyway.
     static let systemArabicFontName = "AlIslamSystemArabicFont"
 
-    /// The Arabic Alphabet screens (ArabicView / ArabicLetterView) expose a size slider. This is its position
-    /// as an index into `arabicLetterDynamicTypeSizes`. The views apply the result as a Dynamic-Type *floor*
-    /// so text only ever grows from the device size, and the custom Arabic glyphs (built with `relativeTo:`)
-    /// grow along with every other label.
+    /// The Arabic Alphabet screens (ArabicView / ArabicLetterView) expose a size slider. This is its position:
+    /// the number of Dynamic-Type steps the Arabic reads ABOVE the size the screen already reads at (see
+    /// `arabicLetterTypeSize(steps:above:)`), applied as a floor so text only ever grows from the device
+    /// size, and the custom Arabic glyphs (built with `relativeTo:`) grow along with every other label.
     @AppStorage("arabicLetterSizeIndex") var arabicLetterSizeIndex: Int = 0
 
     /// Hides the English readings ("ba", "bi", "bu") under the tashkeel glyphs on the Arabic Alphabet screens, so
@@ -1534,15 +1533,26 @@ final class Settings: ObservableObject {
     /// the script on every letter would get old fast.
     @AppStorage("quranicSukoonInLetterPractice") var quranicSukoonInLetterPractice: Bool = false
 
-    /// Starts at `.xSmall`, not `.large`: a floor is a *minimum*, so anchoring it at `.large` silently forced
-    /// the alphabet up to the default text size for anyone whose system Dynamic Type is set smaller. The
-    /// lowest slider position must mean "whatever the device is set to", which only `.xSmall` guarantees.
-    static let arabicLetterDynamicTypeSizes: [DynamicTypeSize] =
-        [.xSmall, .small, .medium, .large, .xLarge, .xxLarge, .xxxLarge, .accessibility1, .accessibility2, .accessibility3]
+    /// How many steps the slider has (its range is `0...arabicLetterSizeSteps`).
+    ///
+    /// The slider used to index an ABSOLUTE table of sizes (`.xSmall` ... `.accessibility3`) applied as a
+    /// floor. A floor can only raise text that sits below it, so every position at or under the size the
+    /// screen already read at was a no-op: the first four on an iPhone at the default text size, the
+    /// first five on iPad and Mac (`regularIdiomTypeBoost` starts them at `.xLarge`), and the WHOLE
+    /// slider on an iPad whose Larger Text sat at the table's top (user report: "the slider doesn't
+    /// change it, at least on Mac/iPad"). The position is now RELATIVE: steps above whatever the view
+    /// reads at, so every position grows the Arabic on every device until the largest size is reached.
+    static let arabicLetterSizeSteps = 9
 
-    var arabicLetterDynamicTypeSize: DynamicTypeSize {
-        let sizes = Self.arabicLetterDynamicTypeSizes
-        return sizes[min(max(arabicLetterSizeIndex, 0), sizes.count - 1)]
+    /// The Dynamic-Type floor for one slider position: `steps` sizes above `base` (the size the view reads
+    /// at without the floor, from `@Environment(\.dynamicTypeSize)`), clamped to the largest size there is.
+    /// Position 0 is `base` itself, i.e. no floor at all - the alphabet then renders at whatever size the
+    /// device is set to, never smaller.
+    static func arabicLetterTypeSize(steps: Int, above base: DynamicTypeSize) -> DynamicTypeSize {
+        let all = DynamicTypeSize.allCases
+        let baseIndex = all.firstIndex(of: base) ?? all.firstIndex(of: .large) ?? 0
+        let clampedSteps = min(max(steps, 0), arabicLetterSizeSteps)
+        return all[min(baseIndex + clampedSteps, all.count - 1)]
     }
 
     /// The Islam tab's Arabic face (`nonQuranArabicFontName`), scaling with Dynamic Type so the Arabic
