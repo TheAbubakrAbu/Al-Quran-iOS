@@ -717,8 +717,8 @@ final class QuranPlayer: ObservableObject {
             case .ended:
                 if let opts = user[AVAudioSessionInterruptionOptionKey] as? UInt,
                    AVAudioSession.InterruptionOptions(rawValue: opts).contains(.shouldResume) {
-                    self.whenAudioSessionReady { [weak self] in
-                        self?.player?.play()
+                    self.whenAudioSessionReady {
+                        self.player?.play()
                     }
                     self.isPlaying = true
                     self.isPaused = false
@@ -774,8 +774,8 @@ final class QuranPlayer: ObservableObject {
         cmd.playCommand.addTarget { [unowned self] _ in
             guard !isPlaying else { return .commandFailed }
             DispatchQueue.main.async {
-                self.whenAudioSessionReady { [weak self] in
-                    self?.player?.play()
+                self.whenAudioSessionReady {
+                    self.player?.play()
                 }
                 self.isPlaying = true
                 self.isPaused = false
@@ -1660,8 +1660,8 @@ final class QuranPlayer: ObservableObject {
                 self.idleTimerSet(true)
                 if itm.status == .readyToPlay {
                     guard initialIndex >= 0, initialIndex < self.customRangeSequence.count else { return }
-                    self.whenAudioSessionReady { [weak self] in
-                        self?.queuePlayer?.playImmediately(atRate: 1.0)
+                    self.whenAudioSessionReady {
+                        self.queuePlayer?.playImmediately(atRate: 1.0)
                     }
                     self.isPlaying = true
                     self.isPaused = false
@@ -1843,8 +1843,8 @@ final class QuranPlayer: ObservableObject {
                     guard let self else { return }
                     self.idleTimerSet(true)
                     if itm.status == .readyToPlay {
-                        self.whenAudioSessionReady { [weak self] in
-                            self?.player?.playImmediately(atRate: 1.0)
+                        self.whenAudioSessionReady {
+                            self.player?.playImmediately(atRate: 1.0)
                         }
                         // Clear isLoading in the same update that sets isPlaying to avoid a one-frame
                         // play-icon flash before the stop button appears (synchronous writes coalesce).
@@ -1937,8 +1937,8 @@ final class QuranPlayer: ObservableObject {
                 guard let self else { return }
                 self.idleTimerSet(true)
                 if itm.status == .readyToPlay {
-                    self.whenAudioSessionReady { [weak self] in
-                        self?.queuePlayer?.playImmediately(atRate: 1.0)
+                    self.whenAudioSessionReady {
+                        self.queuePlayer?.playImmediately(atRate: 1.0)
                     }
                     let base = "\(surah.nameTransliteration) \(surahNumber):\(ayahNumber)"
                     // Clear isLoading together with isPlaying so the control never flashes the play

@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# Xcode
+xcuserdata/
+DerivedData/
+# Xcode's own output when the project builds to the LEGACY location (in-project ./build)
+# rather than DerivedData: the .app products plus every intermediate, ~8,000 files and
+# 1.2 GB, which flooded the source-control list until it was ignored here. Al-Islam-iOS
+# has carried the same rule since its own build dir did this.
+/build/

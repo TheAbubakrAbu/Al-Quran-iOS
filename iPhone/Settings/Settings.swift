@@ -116,11 +116,24 @@ final class Settings: ObservableObject {
         // Every publish (a `@Published` write or an `@AppStorage` write - both route through
         // `objectWillChange`) invalidates the render-signature memo. Off-main publishes are a bug
         // elsewhere, but must not race the main-only cache, so they hop.
+        // `objectWillChange` fires BEFORE the new value is stored (that is what "will" means), so
+        // clearing the memo here only is not enough: anything that recomputes the signature during
+        // the same turn of the run loop - a SwiftUI body pass this very publish scheduled - reads the
+        // OLD value and caches it again, and every equatable row then compares equal and keeps its
+        // stale text until some later, unrelated publish clears it again. That is the "I change a
+        // setting and it doesn't apply until I do something else first" family of glitches
+        // (Abu, 2026-09-16). Clear it now AND once more after the write has landed, so the first
+        // body pass that can see the new value is also the first one to memoize it.
         selfObservation = objectWillChange.sink { [weak self] _ in
             guard let self else { return }
             if Thread.isMainThread {
                 self.renderSignatureCache = nil
                 self.mushafSignatureCache = nil
+                // After the store commits, before SwiftUI renders.
+                DispatchQueue.main.async {
+                    self.renderSignatureCache = nil
+                    self.mushafSignatureCache = nil
+                }
             } else {
                 DispatchQueue.main.async {
                     self.renderSignatureCache = nil
