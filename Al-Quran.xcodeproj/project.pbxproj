@@ -179,42 +179,8 @@
 		727794DB301ED2F40083B534 /* surahinfos.qpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794D4301ED2E90083B534 /* surahinfos.qpk */; };
 		727794DC301ED2F40083B534 /* quran.qpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794D3301ED2E90083B534 /* quran.qpk */; };
 		727794DD301ED2F40083B534 /* qiraat.qpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794D5301ED2E90083B534 /* qiraat.qpk */; };
-		727794DE301ED2FD0083B534 /* malik.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C7301ED2E90083B534 /* malik.hpk */; };
-		727794DF301ED2FD0083B534 /* tirmidhi.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C5301ED2E90083B534 /* tirmidhi.hpk */; };
-		727794E0301ED2FD0083B534 /* shamail_muhammadiyah.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794CE301ED2E90083B534 /* shamail_muhammadiyah.hpk */; };
-		727794E1301ED2FD0083B534 /* abudawud.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C4301ED2E90083B534 /* abudawud.hpk */; };
 		727794E2301ED2FD0083B534 /* namesofallah.qpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C0301ED2E90083B534 /* namesofallah.qpk */; };
-		727794E3301ED2FD0083B534 /* darimi.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C9301ED2E90083B534 /* darimi.hpk */; };
-		727794E4301ED2FD0083B534 /* nasai.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C6301ED2E90083B534 /* nasai.hpk */; };
-		727794E5301ED2FD0083B534 /* muslim.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C2301ED2E90083B534 /* muslim.hpk */; };
-		727794E6301ED2FD0083B534 /* qudsi40.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794CA301ED2E90083B534 /* qudsi40.hpk */; };
-		727794E7301ED2FD0083B534 /* aladab_almufrad.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794CD301ED2E90083B534 /* aladab_almufrad.hpk */; };
-		727794E8301ED2FD0083B534 /* riyad_assalihin.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794CF301ED2E90083B534 /* riyad_assalihin.hpk */; };
-		727794E9301ED2FD0083B534 /* ibnmajah.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C3301ED2E90083B534 /* ibnmajah.hpk */; };
-		727794EA301ED2FD0083B534 /* ahmed.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C8301ED2E90083B534 /* ahmed.hpk */; };
-		727794EB301ED2FD0083B534 /* nawawi40.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794CB301ED2E90083B534 /* nawawi40.hpk */; };
-		727794EC301ED2FD0083B534 /* mishkat_almasabih.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794D0301ED2E90083B534 /* mishkat_almasabih.hpk */; };
-		727794ED301ED2FD0083B534 /* bulugh_almaram.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794D1301ED2E90083B534 /* bulugh_almaram.hpk */; };
-		727794EE301ED2FD0083B534 /* bukhari.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C1301ED2E90083B534 /* bukhari.hpk */; };
-		727794EF301ED2FD0083B534 /* shahwaliullah40.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794CC301ED2E90083B534 /* shahwaliullah40.hpk */; };
-		727794F0301ED2FD0083B534 /* nawawi40.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794CB301ED2E90083B534 /* nawawi40.hpk */; };
-		727794F1301ED2FD0083B534 /* ibnmajah.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C3301ED2E90083B534 /* ibnmajah.hpk */; };
-		727794F2301ED2FD0083B534 /* ahmed.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C8301ED2E90083B534 /* ahmed.hpk */; };
-		727794F3301ED2FD0083B534 /* darimi.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C9301ED2E90083B534 /* darimi.hpk */; };
 		727794F4301ED2FD0083B534 /* namesofallah.qpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C0301ED2E90083B534 /* namesofallah.qpk */; };
-		727794F5301ED2FD0083B534 /* qudsi40.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794CA301ED2E90083B534 /* qudsi40.hpk */; };
-		727794F6301ED2FD0083B534 /* mishkat_almasabih.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794D0301ED2E90083B534 /* mishkat_almasabih.hpk */; };
-		727794F7301ED2FD0083B534 /* nasai.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C6301ED2E90083B534 /* nasai.hpk */; };
-		727794F8301ED2FD0083B534 /* bukhari.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C1301ED2E90083B534 /* bukhari.hpk */; };
-		727794F9301ED2FD0083B534 /* bulugh_almaram.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794D1301ED2E90083B534 /* bulugh_almaram.hpk */; };
-		727794FA301ED2FD0083B534 /* muslim.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C2301ED2E90083B534 /* muslim.hpk */; };
-		727794FB301ED2FD0083B534 /* tirmidhi.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C5301ED2E90083B534 /* tirmidhi.hpk */; };
-		727794FC301ED2FD0083B534 /* shamail_muhammadiyah.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794CE301ED2E90083B534 /* shamail_muhammadiyah.hpk */; };
-		727794FD301ED2FD0083B534 /* riyad_assalihin.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794CF301ED2E90083B534 /* riyad_assalihin.hpk */; };
-		727794FE301ED2FD0083B534 /* abudawud.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C4301ED2E90083B534 /* abudawud.hpk */; };
-		727794FF301ED2FD0083B534 /* aladab_almufrad.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794CD301ED2E90083B534 /* aladab_almufrad.hpk */; };
-		72779500301ED2FD0083B534 /* malik.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794C7301ED2E90083B534 /* malik.hpk */; };
-		72779501301ED2FD0083B534 /* shahwaliullah40.hpk in Resources */ = {isa = PBXBuildFile; fileRef = 727794CC301ED2E90083B534 /* shahwaliullah40.hpk */; };
 		72779503301ED3480083B534 /* AppLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72779502301ED3480083B534 /* AppLifecycle.swift */; };
 		72779504301ED3480083B534 /* AppLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72779502301ED3480083B534 /* AppLifecycle.swift */; };
 		72779533301ED54D0083B534 /* TasbihView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72779528301ED54D0083B534 /* TasbihView.swift */; };
@@ -519,23 +485,6 @@
 		725C5FFB3014310400DFEC8B /* ArabicSpeech.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArabicSpeech.swift; sourceTree = "<group>"; };
 		725C5FFC3014310400DFEC8B /* Highlighted.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Highlighted.swift; sourceTree = "<group>"; };
 		727794C0301ED2E90083B534 /* namesofallah.qpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = namesofallah.qpk; sourceTree = "<group>"; };
-		727794C1301ED2E90083B534 /* bukhari.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = bukhari.hpk; sourceTree = "<group>"; };
-		727794C2301ED2E90083B534 /* muslim.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = muslim.hpk; sourceTree = "<group>"; };
-		727794C3301ED2E90083B534 /* ibnmajah.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = ibnmajah.hpk; sourceTree = "<group>"; };
-		727794C4301ED2E90083B534 /* abudawud.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = abudawud.hpk; sourceTree = "<group>"; };
-		727794C5301ED2E90083B534 /* tirmidhi.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = tirmidhi.hpk; sourceTree = "<group>"; };
-		727794C6301ED2E90083B534 /* nasai.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = nasai.hpk; sourceTree = "<group>"; };
-		727794C7301ED2E90083B534 /* malik.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = malik.hpk; sourceTree = "<group>"; };
-		727794C8301ED2E90083B534 /* ahmed.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = ahmed.hpk; sourceTree = "<group>"; };
-		727794C9301ED2E90083B534 /* darimi.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = darimi.hpk; sourceTree = "<group>"; };
-		727794CA301ED2E90083B534 /* qudsi40.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = qudsi40.hpk; sourceTree = "<group>"; };
-		727794CB301ED2E90083B534 /* nawawi40.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = nawawi40.hpk; sourceTree = "<group>"; };
-		727794CC301ED2E90083B534 /* shahwaliullah40.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = shahwaliullah40.hpk; sourceTree = "<group>"; };
-		727794CD301ED2E90083B534 /* aladab_almufrad.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = aladab_almufrad.hpk; sourceTree = "<group>"; };
-		727794CE301ED2E90083B534 /* shamail_muhammadiyah.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = shamail_muhammadiyah.hpk; sourceTree = "<group>"; };
-		727794CF301ED2E90083B534 /* riyad_assalihin.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = riyad_assalihin.hpk; sourceTree = "<group>"; };
-		727794D0301ED2E90083B534 /* mishkat_almasabih.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = mishkat_almasabih.hpk; sourceTree = "<group>"; };
-		727794D1301ED2E90083B534 /* bulugh_almaram.hpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = bulugh_almaram.hpk; sourceTree = "<group>"; };
 		727794D3301ED2E90083B534 /* quran.qpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = quran.qpk; sourceTree = "<group>"; };
 		727794D4301ED2E90083B534 /* surahinfos.qpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = surahinfos.qpk; sourceTree = "<group>"; };
 		727794D5301ED2E90083B534 /* qiraat.qpk */ = {isa = PBXFileReference; lastKnownFileType = file; path = qiraat.qpk; sourceTree = "<group>"; };
@@ -727,23 +676,6 @@
 		727794D2301ED2E90083B534 /* Hadith */ = {
 			isa = PBXGroup;
 			children = (
-				727794C1301ED2E90083B534 /* bukhari.hpk */,
-				727794C2301ED2E90083B534 /* muslim.hpk */,
-				727794C3301ED2E90083B534 /* ibnmajah.hpk */,
-				727794C4301ED2E90083B534 /* abudawud.hpk */,
-				727794C5301ED2E90083B534 /* tirmidhi.hpk */,
-				727794C6301ED2E90083B534 /* nasai.hpk */,
-				727794C7301ED2E90083B534 /* malik.hpk */,
-				727794C8301ED2E90083B534 /* ahmed.hpk */,
-				727794C9301ED2E90083B534 /* darimi.hpk */,
-				727794CA301ED2E90083B534 /* qudsi40.hpk */,
-				727794CB301ED2E90083B534 /* nawawi40.hpk */,
-				727794CC301ED2E90083B534 /* shahwaliullah40.hpk */,
-				727794CD301ED2E90083B534 /* aladab_almufrad.hpk */,
-				727794CE301ED2E90083B534 /* shamail_muhammadiyah.hpk */,
-				727794CF301ED2E90083B534 /* riyad_assalihin.hpk */,
-				727794D0301ED2E90083B534 /* mishkat_almasabih.hpk */,
-				727794D1301ED2E90083B534 /* bulugh_almaram.hpk */,
 			);
 			path = Hadith;
 			sourceTree = "<group>";
@@ -1143,24 +1075,7 @@
 				C33F82E863654D4AB0EE71A2 /* tajweed.solidpack in Resources */,
 				E4B1C6F617C14E7893962EB4 /* surah-stats.json in Resources */,
 				60A621495D46423F8BB13EAA /* qiraah.solidpack in Resources */,
-				727794DE301ED2FD0083B534 /* malik.hpk in Resources */,
-				727794DF301ED2FD0083B534 /* tirmidhi.hpk in Resources */,
-				727794E0301ED2FD0083B534 /* shamail_muhammadiyah.hpk in Resources */,
-				727794E1301ED2FD0083B534 /* abudawud.hpk in Resources */,
 				727794E2301ED2FD0083B534 /* namesofallah.qpk in Resources */,
-				727794E3301ED2FD0083B534 /* darimi.hpk in Resources */,
-				727794E4301ED2FD0083B534 /* nasai.hpk in Resources */,
-				727794E5301ED2FD0083B534 /* muslim.hpk in Resources */,
-				727794E6301ED2FD0083B534 /* qudsi40.hpk in Resources */,
-				727794E7301ED2FD0083B534 /* aladab_almufrad.hpk in Resources */,
-				727794E8301ED2FD0083B534 /* riyad_assalihin.hpk in Resources */,
-				727794E9301ED2FD0083B534 /* ibnmajah.hpk in Resources */,
-				727794EA301ED2FD0083B534 /* ahmed.hpk in Resources */,
-				727794EB301ED2FD0083B534 /* nawawi40.hpk in Resources */,
-				727794EC301ED2FD0083B534 /* mishkat_almasabih.hpk in Resources */,
-				727794ED301ED2FD0083B534 /* bulugh_almaram.hpk in Resources */,
-				727794EE301ED2FD0083B534 /* bukhari.hpk in Resources */,
-				727794EF301ED2FD0083B534 /* shahwaliullah40.hpk in Resources */,
 				729E23812B367CA800E1E0DA /* Assets.xcassets in Resources */,
 				725C5F4F30142D5000DFEC8B /* Uthmani.ttf in Resources */,
 				725C5F5030142D5000DFEC8B /* QuranCommon.ttf in Resources */,
@@ -1183,24 +1098,7 @@
 				725C5F4B30142D5000DFEC8B /* Uthmani.ttf in Resources */,
 				725C5F4C30142D5000DFEC8B /* QuranCommon.ttf in Resources */,
 				727794DB301ED2F40083B534 /* surahinfos.qpk in Resources */,
-				727794F0301ED2FD0083B534 /* nawawi40.hpk in Resources */,
-				727794F1301ED2FD0083B534 /* ibnmajah.hpk in Resources */,
-				727794F2301ED2FD0083B534 /* ahmed.hpk in Resources */,
-				727794F3301ED2FD0083B534 /* darimi.hpk in Resources */,
 				727794F4301ED2FD0083B534 /* namesofallah.qpk in Resources */,
-				727794F5301ED2FD0083B534 /* qudsi40.hpk in Resources */,
-				727794F6301ED2FD0083B534 /* mishkat_almasabih.hpk in Resources */,
-				727794F7301ED2FD0083B534 /* nasai.hpk in Resources */,
-				727794F8301ED2FD0083B534 /* bukhari.hpk in Resources */,
-				727794F9301ED2FD0083B534 /* bulugh_almaram.hpk in Resources */,
-				727794FA301ED2FD0083B534 /* muslim.hpk in Resources */,
-				727794FB301ED2FD0083B534 /* tirmidhi.hpk in Resources */,
-				727794FC301ED2FD0083B534 /* shamail_muhammadiyah.hpk in Resources */,
-				727794FD301ED2FD0083B534 /* riyad_assalihin.hpk in Resources */,
-				727794FE301ED2FD0083B534 /* abudawud.hpk in Resources */,
-				727794FF301ED2FD0083B534 /* aladab_almufrad.hpk in Resources */,
-				72779500301ED2FD0083B534 /* malik.hpk in Resources */,
-				72779501301ED2FD0083B534 /* shahwaliullah40.hpk in Resources */,
 				727794DC301ED2F40083B534 /* quran.qpk in Resources */,
 				727794DD301ED2F40083B534 /* qiraat.qpk in Resources */,
 				725C5F4E30142D5000DFEC8B /* Indopak.ttf in Resources */,
