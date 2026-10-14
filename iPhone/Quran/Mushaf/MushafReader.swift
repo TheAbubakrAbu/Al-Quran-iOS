@@ -2721,6 +2721,10 @@ struct SurahPageReader<Controls: View>: View {
         currentAnchor = (surah.id, ayah.id)
         currentAnchorPage = pages[index].page
         onPageAnchor?(surah.id, ayah.id)
+        // A surah picker can land on the page already selected by the pager, so pageIndex may not
+        // change and its persistence hook would never run. Persist the visible anchor whenever the
+        // reader reports it; the settings layer still debounces the actual write.
+        saveLastRead(surahID: surah.id, ayahID: ayah.id)
     }
 
     private func saveLastRead(surahID: Int, ayahID: Int) {

@@ -64,6 +64,7 @@ struct SplashScreen: View {
                     splashBackdrop(scale: s)
 
                     VStack(spacing: 0) {
+                        #if HAS_ICLOUD_BACKUP
                         if step == 2 {
                             ScrollView(showsIndicators: false) {
                                 modeChoice(scale: s)
@@ -74,6 +75,7 @@ struct SplashScreen: View {
                             }
                             .transition(.opacity)
                         } else {
+                        #endif
                         // The greeting and the promises scroll only when they must (a small phone, a
                         // large text size, the sheet); the family row and the button stay put.
                         ScrollView(showsIndicators: false) {
@@ -96,7 +98,9 @@ struct SplashScreen: View {
                             appHeroStack(layoutScale: s)
                                 .zIndex(-1)
                         }
+                        #if HAS_ICLOUD_BACKUP
                         }
+                        #endif
 
                         actionButtons
                             .frame(width: column)
@@ -532,10 +536,16 @@ struct SplashScreen: View {
     private func primaryAction() {
         if presentedAsSheet {
             dismiss()
-        } else if step == 1 {
-            withAnimation(.easeInOut) { step = 2 }
         } else {
+        #if HAS_ICLOUD_BACKUP
+            if step == 1 {
+                withAnimation(.easeInOut) { step = 2 }
+            } else {
+                finishFirstLaunch()
+            }
+        #else
             finishFirstLaunch()
+        #endif
         }
     }
 

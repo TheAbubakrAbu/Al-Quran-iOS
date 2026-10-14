@@ -452,12 +452,6 @@ private struct MainTabView: View {
         }
     }
 
-    @available(iOS 18.0, *)
-    private var settingsTabRole: TabRole {
-        if #available(iOS 27.0, *) { return .prominent }
-        return .search
-    }
-
     @ViewBuilder
     private var quranTab: some View {
         if initialTabMounted {
@@ -483,10 +477,7 @@ private struct MainTabView: View {
                     IslamView()
                 }
 
-                // Settings stands alone at the trailing end of the bar. iOS 26 gave that place to the
-                // search role; iOS 27 keeps the search role in the row and moved the standalone slot
-                // to `.prominent`.
-                Tab("Settings", systemImage: "gearshape", value: AppTab.settings, role: settingsTabRole) {
+                Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
                     SettingsView()
                 }
             }

@@ -9,3 +9,9 @@ DerivedData/
 # 1.2 GB, which flooded the source-control list until it was ignored here. Al-Islam-iOS
 # has carried the same rule since its own build dir did this.
 /build/
+
+# Xcode compiler scratch output
+**/-Xcc/
+
+# Swift Package Manager
+.swiftpm/
