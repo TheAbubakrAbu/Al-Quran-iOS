@@ -61,7 +61,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "72F479F62B36B95D00FCF22C"
             BuildableName = "Beginner Quran.app"
-            BlueprintName = "Watch"
             ReferencedContainer = "container:Al-Quran.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -78,7 +77,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "72F479F62B36B95D00FCF22C"
             BuildableName = "Beginner Quran.app"
-            BlueprintName = "Watch"
             ReferencedContainer = "container:Al-Quran.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

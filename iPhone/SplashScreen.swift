@@ -75,31 +75,10 @@ struct SplashScreen: View {
                             }
                             .transition(.opacity)
                         } else {
-                        #endif
-                        // The greeting and the promises scroll only when they must (a small phone, a
-                        // large text size, the sheet); the family row and the button stay put.
-                        ScrollView(showsIndicators: false) {
-                            VStack(spacing: 18 * s) {
-                                greeting(scale: s)
-                                featureCard
-                                if heroScrolls {
-                                    appHeroStack(layoutScale: s)
-                                }
-                            }
-                            .frame(width: column)
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 10 * s)
-                            .padding(.bottom, 12)
+                            launchContent(scale: s, column: column)
                         }
-
-                        // Under the card, not over it: the aura spreads past its own frame, and on
-                        // top it washed the last row's text.
-                        if !heroScrolls {
-                            appHeroStack(layoutScale: s)
-                                .zIndex(-1)
-                        }
-                        #if HAS_ICLOUD_BACKUP
-                        }
+                        #else
+                        launchContent(scale: s, column: column)
                         #endif
 
                         actionButtons
@@ -140,11 +119,13 @@ struct SplashScreen: View {
         withAnimation(heroSpring) {
             popCenter = true
         }
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             withAnimation(heroSpring) {
                 popLeft = true
             }
         }
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
             withAnimation(heroSpring) {
                 popRight = true
@@ -154,6 +135,28 @@ struct SplashScreen: View {
             withAnimation(.easeInOut(duration: 1.1)) {
                 splashShimmer = 220
             }
+        }
+    }
+
+    @ViewBuilder
+    private func launchContent(scale s: CGFloat, column: CGFloat) -> some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 18 * s) {
+                greeting(scale: s)
+                featureCard
+                if heroScrolls {
+                    appHeroStack(layoutScale: s)
+                }
+            }
+            .frame(width: column)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 10 * s)
+            .padding(.bottom, 12)
+        }
+
+        if !heroScrolls {
+            appHeroStack(layoutScale: s)
+                .zIndex(-1)
         }
     }
 
