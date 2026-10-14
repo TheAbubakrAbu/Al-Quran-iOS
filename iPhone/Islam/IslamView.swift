@@ -9,6 +9,9 @@ struct IslamView: View {
     // window compact - the sidebar/detail layout must collapse to the iPhone shape there (see
     // `usesColumnNavigation`), or the split collapses onto a pre-selected detail with no way back.
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Two resource tiles across at the accessibility text sizes, where three cut the titles to
+    /// "Tajweed Foundati..." and "Prophecies of..." (2026-09-27).
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// iPad: the split view's sidebar selection. Seeded from `-islamDestination` too, so the DEBUG
     /// hook lands on the resource in the detail column as it does on the iPhone stack (2026-09-06).
     @State private var selectedResource: IslamDestination? = Self.launchDestination ?? .arabicAlphabet
@@ -24,6 +27,8 @@ struct IslamView: View {
     @State private var searchText = ""
     /// Apple Music-style bar minimization: true while scrolling down.
     @State private var barsCollapsed = false
+    /// The Reminder of the Day card's header door, pushed from the List that hosts the card (G2).
+    @State private var reminderDoor: ReminderOfTheDayCard.HeaderDoor?
     /// The resource row a result asked to scroll to ("Scroll To ..."), consumed once the search clears.
     @State private var scrollTarget: String?
     @StateObject private var articleSearch = IslamArticleSearchModel()
@@ -80,25 +85,58 @@ struct IslamView: View {
     private enum IslamDestination: String, Hashable, CaseIterable {
         /// The on-device chat. Listed only where Apple Intelligence can run it (`available`).
         case arabicAlphabet
+        // Two tajweed resources again since 2026-10-03 (Abu: "bring back tajweed foundations and tajweed
+        // course"): Foundations is the reference, a rule to a page; the Course teaches the same rules in
+        // order (it kept everything the 2026-09-23 merge put in it). Both are TILES, which with the
+        // alphabet fills LEARN's row of three; the journal is that section's banner.
         case tajweedFoundations
         case tajweedCourse
+        // Listed here, with the resources it belongs to: a section draws its items in CASE ORDER, so
+        // the journal has to sit inside LEARN's run to be LEARN's banner. It was down with the two
+        // locators while it was a TOOLS tile (Abu, 2026-09-23: the tab's "things you do").
+        case journal
         case commonAdhkar
         case commonDuas
         case tasbihCounter
         case zakahCalculator
         case inheritanceCalculator
-        case namesOfAllah
         case hijriCalendarConverter
         case pillarsAndBasics
         case howToGuides
-        case miraclesOfQuran
+        // With Pillars & Beliefs and How-To since the grid was sectioned (2026-10-02): knowing Allah
+        // by His names is the first thing faith is built on, so it sits in FAITH & PRACTICE.
+        case namesOfAllah
         case islamicWallpapers
-        case journal
+        // The three miracle / prophecy screens are one subject, so they are one grid row.
+        case miraclesOfQuran
+        case propheciesOfProphet
+        case miraclesOfProphets
+        // The case that Islam is true (Abu, 2026-09-29). A full-width banner under the grid, like Ask
+        // AI (`bannerResources`), so the grid keeps its eighteen tiles in rows of three.
+        case provingIslam
         case askAI
+        /// Simple Mode's one row standing in for the sections it folds (TOOLS, SIGNS & PROOFS, ASK AI;
+        /// docs/Simple Mode Guide.md). A destination like any resource, so a tile opened from its
+        /// screen stacks on the same path; never `available`, so search, favorites and the grids
+        /// never list it.
+        case moreResources
+
+        /// Screens the door leaves alone. The alphabet, the 99 Names, the inheritance calculator and
+        /// the journal have a trailing button of their own and place the gear themselves, after it
+        /// (`islamSettingsToolbar(own:)`): a gear added from outside lands on the wrong side of that
+        /// button. Ask AI gets none: it is an assistant with its own toolbar, and nothing in Islam
+        /// Settings changes how it reads.
+        var placesOwnSettingsGear: Bool {
+            switch self {
+            case .arabicAlphabet, .namesOfAllah, .inheritanceCalculator, .journal, .askAI: return true
+            default: return false
+            }
+        }
 
         var title: String {
             switch self {
             case .askAI: return "Ask AI"
+            case .moreResources: return "More Resources"
             case .arabicAlphabet: return "Arabic Alphabet"
             case .tajweedFoundations: return "Tajweed Foundations"
             case .tajweedCourse: return "Tajweed Course"
@@ -113,6 +151,9 @@ struct IslamView: View {
             case .pillarsAndBasics: return "Pillars & Beliefs"
             case .howToGuides: return "How-To Guides"
             case .miraclesOfQuran: return "Miracles of the Quran"
+            case .propheciesOfProphet: return "Prophecies of the Prophet"
+            case .miraclesOfProphets: return "Miracles of the Prophets"
+            case .provingIslam: return "Proving Islam"
             case .journal: return "Islamic Journal"
             }
         }
@@ -120,6 +161,7 @@ struct IslamView: View {
         var systemImage: String {
             switch self {
             case .askAI: return "sparkles"
+            case .moreResources: return "square.grid.2x2"
             case .arabicAlphabet: return "textformat.size.ar"
             case .tajweedFoundations: return "waveform"
             case .tajweedCourse: return "graduationcap"
@@ -134,6 +176,9 @@ struct IslamView: View {
             case .pillarsAndBasics: return "moon.stars"
             case .howToGuides: return "list.bullet.rectangle"
             case .miraclesOfQuran: return "sparkle.magnifyingglass"
+            case .propheciesOfProphet: return "checkmark.seal"
+            case .miraclesOfProphets: return "staroflife"
+            case .provingIslam: return "checkmark.shield"
             case .journal: return "square.and.pencil"
             }
         }
@@ -142,9 +187,11 @@ struct IslamView: View {
         var subtitle: String {
             switch self {
             case .askAI: return "Ask anything about Islam, on device"
+            case .moreResources:
+                return OnDeviceAsk.isAvailable ? "Tools, signs and proofs, and Ask AI" : "Tools, and signs and proofs"
             case .arabicAlphabet: return "Letters, forms, diacritics, and signs"
-            case .tajweedFoundations: return "The rules of beautiful recitation"
-            case .tajweedCourse: return "A guided course, lesson by lesson"
+            case .tajweedFoundations: return "Every rule of tajweed, one page each"
+            case .tajweedCourse: return "Lesson by lesson, with ayahs to play and a quiz in each"
             case .commonAdhkar: return "Morning, evening, and daily remembrances"
             case .commonDuas: return "Authenticated supplications with sources"
             case .tasbihCounter: return "Count dhikr with a tap"
@@ -156,6 +203,9 @@ struct IslamView: View {
             case .pillarsAndBasics: return "The Five Pillars and Six Beliefs"
             case .howToGuides: return "Wudu, salah, Jumuah, and more"
             case .miraclesOfQuran: return "Signs in creation, science, and history"
+            case .propheciesOfProphet: return "What he foretold, and what history did"
+            case .miraclesOfProphets: return "The signs given to the prophets, and to him"
+            case .provingIslam: return "The complete case that Islam is true, one line of evidence at a time"
             case .journal: return "Notes from khutbahs, classes, and your reading"
             }
         }
@@ -166,6 +216,7 @@ struct IslamView: View {
         var gridTitle: String {
             switch self {
             case .askAI: return "Ask\nAI"
+            case .moreResources: return "More\nResources"
             case .arabicAlphabet: return "Arabic\nAlphabet"
             case .tajweedFoundations: return "Tajweed\nFoundations"
             case .tajweedCourse: return "Tajweed\nCourse"
@@ -180,6 +231,9 @@ struct IslamView: View {
             case .pillarsAndBasics: return "Pillars &\nBeliefs"
             case .howToGuides: return "How-To\nGuides"
             case .miraclesOfQuran: return "Miracles of\nthe Quran"
+            case .propheciesOfProphet: return "Prophecies of\nthe Prophet"
+            case .miraclesOfProphets: return "Miracles of\nthe Prophets"
+            case .provingIslam: return "Proving\nIslam"
             case .journal: return "Islamic\nJournal"
             }
         }
@@ -188,9 +242,18 @@ struct IslamView: View {
         var searchKeywords: [String] {
             switch self {
             case .askAI: return ["chat", "question", "assistant", "apple intelligence"]
-            case .arabicAlphabet: return ["letters", "harakat", "huruf", "alphabet", "tashkeel", "numbers"]
-            case .tajweedFoundations: return ["recitation", "rules", "makharij", "ghunnah", "qalqalah", "madd"]
-            case .tajweedCourse: return ["lessons", "course", "learn", "practice", "beginner", "step by step", "tajwid"]
+            case .moreResources: return []
+            case .arabicAlphabet: return ["letters", "harakat", "huruf", "alphabet", "tashkeel", "numbers",
+                                          "sifaat", "sifat", "makharij", "whistling", "safeer", "hams", "families",
+                                          "sound-alike", "quiz", "sun letters", "moon letters",
+                                          "reading test", "qaida", "qaidah", "noorani", "spelling", "pronunciation"]
+            case .tajweedFoundations: return ["recitation", "rules", "makharij", "sifaat", "ghunnah", "qalqalah", "madd",
+                                              "noon sakinah", "meem sakinah", "waqf", "hamzatul wasl", "sukoon", "reference", "tajwid",
+                                              // The course's own words too, so "tajweed course" still lands here where
+                                              // the lesson pack is not bundled (`available` drops the course then).
+                                              "lessons", "course", "learn", "practice", "beginner", "step by step"]
+            case .tajweedCourse: return ["lessons", "course", "learn", "practice", "beginner", "step by step", "quiz",
+                                         "recitation", "tajwid", "tilawa"]
             case .commonAdhkar: return ["dhikr", "adhkar", "azkar", "remembrance", "tasbih", "subhanallah"]
             case .commonDuas: return ["dua", "duas", "supplication", "prayer", "invocation"]
             case .tasbihCounter: return ["counter", "beads", "misbaha", "count"]
@@ -202,6 +265,11 @@ struct IslamView: View {
             case .pillarsAndBasics: return ["beliefs", "aqeedah", "articles", "basics", "iman", "faith"]
             case .howToGuides: return ["how to", "guide", "steps", "wudu", "salah", "ghusl"]
             case .miraclesOfQuran: return ["miracles", "miracle", "science", "scientific", "signs", "creation", "embryology", "astronomy", "cosmology", "universe", "ijaz"]
+            case .propheciesOfProphet: return ["prophecy", "prophecies", "foretold", "predicted", "prediction", "future", "signs of the hour", "end times", "fulfilled"]
+            case .provingIslam: return ["proof", "proofs", "prove", "proving", "evidence", "is islam true", "truth of islam", "apologetics", "dawah", "case for islam", "complete case", "provingislam", "fingerprint", "stylometry", "ijaz"]
+            case .miraclesOfProphets: return ["miracles", "prophets", "moses", "musa", "jesus", "isa", "abraham", "ibrahim", "salih", "moon", "splitting", "staff", "sea", "proof", "prophethood",
+                                              "david", "dawud", "solomon", "sulayman", "jonah", "yunus", "whale", "iron", "jinn", "ants", "birds",
+                                              "night journey", "isra", "miraj", "ascension", "aqsa", "cradle", "she-camel", "fire"]
             case .journal: return ["journal", "notes", "note", "diary", "khutbah", "lecture", "class", "study", "reflection", "write"]
             }
         }
@@ -214,15 +282,93 @@ struct IslamView: View {
             ($0, IslamArticles.fold(([$0.title, $0.subtitle] + $0.searchKeywords).joined(separator: " ")))
         })
 
+        /// The section the resource is listed under (`ResourceGroup`).
+        var group: ResourceGroup {
+            switch self {
+            // LEARN in the order the resources are taken up: the letters, the rules as a reference,
+            // then the course that teaches them, with the journal as the banner UNDER them (Abu,
+            // 2026-10-04: "islamic journal as the full row for learn ... and then tajweed foundations
+            // and tajweed course"). Writing down what you studied belongs with the studying.
+            case .arabicAlphabet, .tajweedFoundations, .tajweedCourse, .journal: return .learn
+            case .pillarsAndBasics, .howToGuides, .namesOfAllah: return .faith
+            case .commonAdhkar, .commonDuas, .tasbihCounter: return .remembrance
+            case .miraclesOfQuran, .propheciesOfProphet, .miraclesOfProphets, .provingIslam: return .signs
+            case .zakahCalculator, .inheritanceCalculator, .hijriCalendarConverter, .islamicWallpapers: return .tools
+            // The two location tools come with the prayer times' location (not in Al-Quran).
+            #if HAS_ADHAN
+            case .masjidLocator, .halalFoodLocator: return .tools
+            #endif
+            // Ask AI is last, alone (Abu, 2026-10-04): it is a conversation, not a reference page,
+            // so it closes the resources rather than sitting inside TOOLS where its banner split
+            // that section's tiles in two.
+            case .askAI: return .assistant
+            // Listed nowhere (see `available`); its own screen shows the folded groups.
+            case .moreResources: return .tools
+            }
+        }
+
+        /// The resources the grid draws as full-width banners under its tiles, in this order.
+        /// LEARN's banner is the JOURNAL, not the course (Abu, 2026-10-04): that leaves the three
+        /// study resources as a full row of tiles above it, and the journal - the one you WRITE in
+        /// rather than read - reads as the thing you do with what they taught you.
+        static let bannerResources: [IslamDestination] = [.journal, .provingIslam, .askAI]
+
         /// Every resource this device can show: all of them, minus Ask AI where Apple Intelligence
-        /// can't run it (a row that opens onto "not available here" is worse than no row).
+        /// can't run it (a row that opens onto "not available here" is worse than no row), and minus the
+        /// course when its lesson pack is not in the bundle.
         static var available: [IslamDestination] {
             allCases.filter {
+                if $0 == .moreResources { return false }
                 if $0 == .askAI { return OnDeviceAsk.isAvailable }
-                // The course is a pack, not code: no pack, no tile.
                 if $0 == .tajweedCourse { return TajweedLessonsStore.isBundled }
                 return true
             }
+        }
+    }
+
+    /// The subjects the resources are listed under, one section each, in this order (Abu, 2026-10-02:
+    /// "divide islamic resources into section that it relates to"). Each holds three or six tiles, so
+    /// no grid row is left half empty; the two banners (Proving Islam, Ask AI) close their sections.
+    /// A resource's order inside its section is still the enum's case order.
+    ///
+    /// The ORDER here is the section order on screen, and it is the one Abu gave on 2026-10-05:
+    /// Learn, Remembrance, Tools, Faith & Practice, Signs & Proofs - the daily things first (study,
+    /// dhikr, the calculators and locators you open mid-errand), then the two reading libraries that
+    /// you sit down with. Ask AI stays last, alone.
+    private enum ResourceGroup: CaseIterable {
+        case learn, remembrance, tools, faith, signs, assistant
+
+        var title: String {
+            switch self {
+            case .learn: return "LEARN"
+            case .faith: return "FAITH & PRACTICE"
+            case .remembrance: return "REMEMBRANCE"
+            case .signs: return "SIGNS & PROOFS"
+            case .tools: return "TOOLS"
+            case .assistant: return "ASK AI"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .learn: return "graduationcap"
+            case .faith: return "moon.stars"
+            case .remembrance: return "heart.text.square"
+            case .signs: return "checkmark.seal"
+            case .tools: return "wrench.and.screwdriver"
+            case .assistant: return "sparkles"
+            }
+        }
+
+        /// This group's resources on this device, in case order.
+        var resources: [IslamDestination] {
+            IslamDestination.available.filter { $0.group == self }
+        }
+
+        /// Simple Mode keeps the study, remembrance and faith groups on the tab and folds these into
+        /// one More Resources row (docs/Simple Mode Guide.md); search still finds every resource.
+        var foldsInSimpleMode: Bool {
+            self == .tools || self == .signs || self == .assistant
         }
     }
 
@@ -257,8 +403,14 @@ struct IslamView: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = LaunchClock.markOnce("islam root: first body")
+        #endif
         navigationContainer
             #if os(iOS)
+            // Islam Settings' Text Size, for the whole tab: every resource and article opens inside
+            // this container, so this one modifier sizes them all (see `islamTextSize()`).
+            .islamTextSize()
             // A Reminder of the Day card's "Open": the resource pushed onto this tab's stack (or
             // selected in the iPad sidebar), then the request cleared so it never replays.
             .onReceive(AppNavigation.shared.$pendingIslam) { target in
@@ -270,7 +422,10 @@ struct IslamView: View {
                 case .names(let number):
                     NamesViewModel.shared.pendingNameNumber = number
                     destination = .namesOfAllah
+                #if HAS_QURAN || HAS_HADITH
                 case .hadithTab: destination = nil
+                #endif
+                case .tab: destination = nil
                 }
                 guard let destination else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
@@ -296,10 +451,12 @@ struct IslamView: View {
             .columnLayoutMigration(columns: columnLayoutActive) { columns in
                 guard #available(iOS 16.0, *) else { return }
                 if columns {
-                    if let top = islamPath.last {
+                    // More Resources (Simple Mode) is a stack-only screen, never a detail column: its
+                    // tiles push onto this path. Carry the resource opened from it, or none.
+                    if let top = islamPath.last(where: { $0 != .moreResources }) {
                         selectedResource = top
-                        islamPath.removeAll()
                     }
+                    if !islamPath.isEmpty { islamPath.removeAll() }
                 } else if let selected = selectedResource, islamPath.isEmpty {
                     islamPath = [selected]
                 }
@@ -313,6 +470,7 @@ struct IslamView: View {
             if #available(iOS 16.0, *), usesColumnNavigation {
                 NavigationSplitView {
                     islamSidebar
+                        .splitSidebarColumn()
                 } detail: {
                     // The detail needs its own NavigationStack so NavigationLinks inside a destination
                     // (e.g. tapping a letter in ArabicView) push within the detail column instead of
@@ -351,13 +509,6 @@ struct IslamView: View {
     @ViewBuilder
     private func islamListEntries(split: Bool) -> some View {
         Group {
-            // The Reminder of the Day lives HERE, as the first card of the tab (Abu, 2026-09-12:
-            // "keep it in Islam, don't have it be a sheet"). It renders only once the corpus has
-            // parsed, so the resource grid never waits on it.
-            #if os(iOS)
-            ReminderOfTheDaySection()
-            #endif
-
             Group {
                 #if os(iOS)
                 if split, #available(iOS 16.0, *) {
@@ -372,9 +523,42 @@ struct IslamView: View {
                 #endif
             }
 
-            ProphetQuote()
-            AlIslamAppsSection()
-                .id("apps")
+            // Everything past the resources is reading, not doing: the day's reminder, the quote,
+            // the help doors, the other apps. They all sit at the FOOT of the tab, after Ask AI
+            // closes the resources (Abu, 2026-10-04) - the tab opens on what it is for, and the
+            // informational cards are what you scroll down to.
+            //
+            // The Reminder of the Day lives in the Islam tab (Abu, 2026-09-12: "keep it in Islam,
+            // don't have it be a sheet"). It renders only once the corpus has parsed, so the
+            // resource grid never waits on it.
+            #if os(iOS)
+            // A pill tapped while a resource's path push is still in flight (the last resources sit just
+            // above) would be a second push on the stack in the same instant: dropped.
+            ReminderOfTheDaySection(openDoor: Binding(
+                get: { reminderDoor },
+                set: { new in if new == nil || islamPath.isEmpty { reminderDoor = new } }
+            ))
+                .id("reminder")
+            #endif
+
+            // Simple Mode keeps one daily card on the tab (the Reminder of the Day), and leaves the
+            // other apps to the Settings tab's copy of that card (docs/Simple Mode Guide.md).
+            if !settings.simpleMode {
+                ProphetQuote()
+            }
+
+            #if os(iOS)
+            // Need a Hand?: getting started (while the Start Here guide is not on the tab), the tab's
+            // own text size, and when its day turns over. Above the other apps (Abu, 2026-10-04):
+            // it is still about THIS tab, where the apps card is about leaving it, so the card that
+            // sends you elsewhere closes the screen.
+            HelpDoorsSection(area: .islam)
+            #endif
+
+            if !settings.simpleMode {
+                AlIslamAppsSection()
+                    .id("apps")
+            }
         }
         .themedListRowBackground()
     }
@@ -391,6 +575,11 @@ struct IslamView: View {
                 }
             }
             .applyConditionalListStyle()
+            // The same tight section rhythm the Quran tab and every Islam resource screen use: the
+            // tab is a stack of short sections (five resource groups, then the cards), and the
+            // default spacing put a full gap of empty list between each one.
+            .compactListSectionSpacing()
+            .reminderCardDestination($reminderDoor)
             .navigationTitle("Al-Islam")
             #if DEBUG
             .debugPushDestination(isPresented: $debugOpenArticle) {
@@ -399,17 +588,15 @@ struct IslamView: View {
                 }
             }
             #endif
+            // The Islam Settings gear at the far right (`IslamSettingsToolbar`), and the ⋯ More menu at
+            // the left, as on every tab (Abu, 2026-10-11). The grid toggle was a trailing button
+            // beside the gear until then; it is the menu's item now, hidden while a search is showing
+            // results as the button was.
+            .islamSettingsToolbar()
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .navigationBarLeading) {
                     if #available(iOS 16.0, *), query.isEmpty {
-                        Button {
-                            settings.hapticFeedback()
-                            withAnimation { settings.islamGridMode.toggle() }
-                        } label: {
-                            Image(systemName: settings.islamGridMode ? "list.bullet" : "square.grid.2x2")
-                        }
-                        .accessibilityLabel(settings.islamGridMode ? "Show list" : "Show grid")
-                        .tint(settings.accentColor.accent1)
+                        TabMoreMenu { islamGridMenuItem }
                     }
                 }
             }
@@ -440,6 +627,11 @@ struct IslamView: View {
             if ProcessInfo.processInfo.arguments.contains("-islamScrollToApps") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { scrollTarget = "apps" }
             }
+            // `-islamScrollToReminder`: bring the Reminder of the Day card under the resources
+            // into a screenshot (there is no scroll tooling for the simulator).
+            if ProcessInfo.processInfo.arguments.contains("-islamScrollToReminder") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { scrollTarget = "reminder" }
+            }
             if let seeded = IslamSearchDebug.launchQuery("-islamSearch"), searchText.isEmpty {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { searchText = seeded }
             }
@@ -449,7 +641,7 @@ struct IslamView: View {
             #endif
         }
         .onChange(of: searchText) { text in
-            articleSearch.update(query: text, homes: [.pillars, .guides])
+            articleSearch.update(query: text, homes: [.pillars, .guides, .proving])
             if !text.isEmpty { scrollTarget = nil }
         }
         #else
@@ -457,6 +649,7 @@ struct IslamView: View {
             islamListEntries(split: false)
         }
         .applyConditionalListStyle()
+        .compactListSectionSpacing()
         .navigationTitle("Al-Islam")
         #endif
     }
@@ -466,10 +659,12 @@ struct IslamView: View {
     private func matchingResources(_ query: String) -> [IslamDestination] {
         let terms = IslamArticleSearch.words(query)
         guard !terms.isEmpty else { return [] }
-        return IslamDestination.available.filter { item in
+        let matched = IslamDestination.available.filter { item in
             let blob = item.searchBlob
             return terms.allSatisfy { blob.contains($0) }
         }
+        // A resource NAMED for the query leads the ones that carry it as a keyword.
+        return SearchRank.sorted(matched, by: query) { [$0.title, $0.subtitle] }
     }
 
     /// The search's list: the Ask AI row, matching RESOURCES, then the article matches from both
@@ -481,7 +676,7 @@ struct IslamView: View {
             AskAISearchSection(query: query)
 
             if !resources.isEmpty {
-                Section(header: SectionPillHeader(title: "RESOURCES", count: resources.count)) {
+                Section(header: SectionPillHeader(title: "RESOURCES", count: resources.count, icon: "magnifyingglass")) {
                     ForEach(resources, id: \.self) { item in
                         resourceSearchRow(item, query: query)
                     }
@@ -490,7 +685,7 @@ struct IslamView: View {
 
             IslamArticleSearchSections(
                 query: query,
-                homes: [.pillars, .guides],
+                homes: [.pillars, .guides, .proving],
                 contentHits: articleSearch.contentHits,
                 isSearching: articleSearch.isSearching,
                 showHome: true,
@@ -500,7 +695,11 @@ struct IslamView: View {
                 onScrollTo: { entry in
                     // The article's own row is inside its resource; the nearest thing on THIS screen is
                     // the resource row, so that is where the list scrolls.
-                    scrollToResource(entry.home == .pillars ? .pillarsAndBasics : .howToGuides)
+                    switch entry.home {
+                    case .pillars: scrollToResource(.pillarsAndBasics)
+                    case .guides: scrollToResource(.howToGuides)
+                    case .proving: scrollToResource(.provingIslam)
+                    }
                 }
             )
         }
@@ -509,7 +708,11 @@ struct IslamView: View {
 
     private func scrollToResource(_ item: IslamDestination) {
         withAnimation { searchText = "" }
-        scrollTarget = Self.rowID(item)
+        // In Simple Mode a folded resource has no row of its own on the tab (unless it is a favorite):
+        // the row that holds it is More Resources.
+        let folded = settings.simpleMode && item.group.foldsInSimpleMode
+            && !settings.isIslamResourceFavorite(item.rawValue)
+        scrollTarget = Self.rowID(folded ? .moreResources : item)
     }
 
     private static func rowID(_ item: IslamDestination) -> String { "resource_\(item.rawValue)" }
@@ -579,6 +782,8 @@ struct IslamView: View {
     @available(iOS 16.0, *)
     @ViewBuilder
     private var modernResourceSections: some View {
+        startHereSection(split: false)
+
         let favorites = favoriteResources
         if !favorites.isEmpty {
             Section(header: SectionPillHeader(
@@ -594,34 +799,142 @@ struct IslamView: View {
             }
         }
 
-        Section(header: SectionPillHeader(title: "ISLAMIC RESOURCES", count: IslamDestination.available.count)) {
-            resourceItems(IslamDestination.available)
+        ForEach(ResourceGroup.allCases, id: \.self) { group in
+            let items = group.resources
+            if !items.isEmpty, !(settings.simpleMode && group.foldsInSimpleMode) {
+                Section(header: SectionPillHeader(title: group.title, count: items.count, icon: group.systemImage)) {
+                    resourceItems(items)
+                }
+            }
         }
+
+        if settings.simpleMode {
+            Section {
+                moreResourcesEntry
+            }
+        }
+    }
+
+    /// Simple Mode's door to the folded groups: the banner in grid mode, a row in list mode, pushed
+    /// by value like every resource. No star and no menu: it is a place, not something to favorite.
+    @available(iOS 16.0, *)
+    @ViewBuilder
+    private var moreResourcesEntry: some View {
+        if settings.islamGridMode {
+            // The banners' own `GridTileMenu`, not a Button: a plain Button here never took the tap
+            // (2026-10-10, the UI test tapped it and nothing was pushed).
+            GridTileMenu {
+                settings.hapticFeedback()
+                islamPath.append(.moreResources)
+            } menu: {
+                Button {
+                    settings.hapticFeedback()
+                    islamPath.append(.moreResources)
+                } label: {
+                    Label("Open More Resources", systemImage: "arrow.right.circle")
+                }
+            } label: {
+                resourceBanner(.moreResources)
+            }
+            .accessibilityIdentifier("moreResourcesRow")
+            .id(Self.rowID(.moreResources))
+            .padding(.vertical, 1)
+            .listRowSeparator(.hidden)
+        } else {
+            NavigationLink(value: IslamDestination.moreResources) {
+                toolLabel(IslamDestination.moreResources.title, systemImage: IslamDestination.moreResources.systemImage,
+                          subtitle: IslamDestination.moreResources.subtitle)
+            }
+            .id(Self.rowID(.moreResources))
+        }
+    }
+
+    /// The folded groups, in the tab's own grid or list form, so a resource opened here pushes onto
+    /// the same path as one opened from the tab.
+    @available(iOS 16.0, *)
+    private var moreResourcesScreen: some View {
+        List {
+            ForEach(ResourceGroup.allCases.filter(\.foldsInSimpleMode), id: \.self) { group in
+                let items = group.resources
+                if !items.isEmpty {
+                    Section(header: SectionPillHeader(title: group.title, count: items.count, icon: group.systemImage)) {
+                        resourceItems(items)
+                    }
+                    // On the rows, not the List: `.listRowBackground` reaches the cells only from row
+                    // content (the helper's own note), so on the List the reading theme's wash was lost.
+                    .themedListRowBackground()
+                }
+            }
+        }
+        .applyConditionalListStyle()
+        .compactListSectionSpacing()
+        .navigationTitle("More Resources")
     }
 
     @available(iOS 16.0, *)
     @ViewBuilder
     private func resourceItems(_ items: [IslamDestination]) -> some View {
         if settings.islamGridMode {
-            // No contextMenu on the tiles: a context menu inside a LazyVGrid-in-a-List-row lifts the WHOLE
-            // row (every tile at once) as the preview. Favoriting lives on the star inside each tile instead,
-            // the same pattern the Arabic-letter and 99-Names grids use.
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
-                ForEach(items, id: \.self) { item in
-                    Button {
-                        settings.hapticFeedback()
-                        islamPath.append(item)
-                    } label: {
-                        resourceGridTile(item)
+            // Ask AI is the odd one out: it is a conversation, not a reference page, and at one third
+            // of a row its label had to shrink to "Ask AI" with no room to say what it does. It spans
+            // the full width, with the caption the tiles cannot carry, and sits BELOW the grid
+            // (Abu, 2026-09-19: the references are what the tab is for; the assistant is the thing
+            // you reach for when they have not answered you). As of 2026-10-04 it has a section of
+            // its own at the foot of the resources, so here it is the only thing in `items` and the
+            // `tiles.isEmpty` guard below draws the banner with no grid above it. Pulled OUT of
+            // `items` so it never draws twice. Proving Islam and the Tajweed Course are banners too
+            // (2026-09-29): a whole library with a sentence to say, which as a tile would leave a
+            // row of one - they still close their own sections, above the tiles' rows.
+            let banners = IslamDestination.bannerResources.filter { items.contains($0) }
+            let tiles = items.filter { !IslamDestination.bannerResources.contains($0) }
+
+            // Press-and-hold offers the row's menu through `GridTileMenu` - a plain `contextMenu`
+            // here would lift the WHOLE row (every tile at once) as its preview, since the grid is
+            // one grid inside a single List row.
+            //
+            // The grid and the banner share ONE row, 8 pt apart like the tiles themselves. As two
+            // rows each carried its own ~16 pt inset, so the banner sat 33 pt under the tiles, and a
+            // section holding only Ask AI (Favorites, with it as the one favorite) still drew the
+            // grid's row with nothing in it: an empty block above the banner (Abu, 2026-09-20,
+            // "weird top padding for ask ai").
+            VStack(spacing: 8) {
+                if !tiles.isEmpty {
+                    // Not lazy (`SummaryTileGrid`): a lazy grid in a List row can answer a different
+                    // height on each self-sizing pass, which iOS 26 traps on.
+                    SummaryTileGrid(columns: dynamicTypeSize.isAccessibilitySize ? 2 : 3, spacing: 8) {
+                        ForEach(tiles, id: \.self) { item in
+                            resourceGridStar(item, on: GridTileMenu {
+                                settings.hapticFeedback()
+                                islamPath.append(item)
+                            } menu: {
+                                favoriteToggleButton(item)
+                            } label: {
+                                resourceGridTile(item)
+                            })
+                            .id(Self.rowID(item))
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .id(Self.rowID(item))
+                }
+
+                ForEach(banners, id: \.self) { banner in
+                    resourceGridStar(banner, on: GridTileMenu {
+                        settings.hapticFeedback()
+                        islamPath.append(banner)
+                    } menu: {
+                        favoriteToggleButton(banner)
+                    } label: {
+                        resourceBanner(banner)
+                    })
+                    .id(Self.rowID(banner))
                 }
             }
             // 1, not 4: the section row already carries ~16pt of its own vertical inset, so 4
             // put the tiles 20pt from the container's top and bottom edges against 17pt at the
             // sides. Measured on the iPhone 17 Pro; 1 lands all four insets on 17pt.
             .padding(.vertical, 1)
+            // One cell, so it draws no separator of its own; hidden anyway so a rule can never
+            // appear under the section's last row.
+            .listRowSeparator(.hidden)
         } else {
             ForEach(items, id: \.self) { item in
                 NavigationLink(value: item) {
@@ -651,6 +964,40 @@ struct IslamView: View {
         .tint(settings.accentColor.color)
     }
 
+    /// A full-width banner in grid mode (Proving Islam, Ask AI): the chip, the title, and the caption
+    /// the one-third tile had no room for. Deliberately the same glass and favorite tinting as a tile,
+    /// so it reads as the same family of control at a different size.
+    @available(iOS 16.0, *)
+    private func resourceBanner(_ item: IslamDestination) -> some View {
+        HStack(spacing: 12) {
+            AccentIconChip(systemImage: item.systemImage, size: 32)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+
+                Text(item.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .contentShape(Rectangle())
+        .conditionalGlassEffect(
+            clear: !settings.isIslamResourceFavorite(item.rawValue),
+            rectangle: true,
+            useColor: settings.isIslamResourceFavorite(item.rawValue) ? 0.25 : nil,
+            customTint: settings.isIslamResourceFavorite(item.rawValue) ? settings.accentColor.color : nil
+        )
+    }
+
     @available(iOS 16.0, *)
     private func resourceGridTile(_ item: IslamDestination) -> some View {
         VStack(spacing: 6) {
@@ -660,7 +1007,8 @@ struct IslamView: View {
                 .font(.caption2.weight(.medium))
                 .foregroundColor(.primary)
                 .multilineTextAlignment(.center)
-                .lineLimit(2, reservesSpace: true)
+                // A third line at the accessibility sizes, where even half a row wraps the longer names.
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2, reservesSpace: true)
                 .minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity)
@@ -675,13 +1023,137 @@ struct IslamView: View {
             useColor: settings.isIslamResourceFavorite(item.rawValue) ? 0.25 : nil,
             customTint: settings.isIslamResourceFavorite(item.rawValue) ? settings.accentColor.color : nil
         )
-        .gridFavoriteStar(
+    }
+
+    /// The tile's corner star, applied OUTSIDE `GridTileMenu` (its 30 pt tap target would otherwise
+    /// fight the long press that opens the menu).
+    @available(iOS 16.0, *)
+    private func resourceGridStar<V: View>(_ item: IslamDestination, on view: V) -> some View {
+        view.gridFavoriteStar(
             isFavorite: settings.isIslamResourceFavorite(item.rawValue),
             accent: settings.accentColor.color,
             accessibilityName: item.title
         ) {
             settings.toggleIslamResourceFavorite(item.rawValue)
         }
+    }
+    #endif
+
+    #if os(iOS)
+    /// Start Here: the guided path About You switches on for anyone who is not simply at home in all
+    /// of this already (a revert, someone just getting started, someone learning about Islam). It
+    /// leads the tab, above Favorites, because for that reader it IS what the tab is for; each step
+    /// ticks itself off when its resource is opened (`destinationView(for:)`), and Hide puts the
+    /// whole thing away (About You, in Settings, brings it back).
+    ///
+    /// Always rows, in grid mode too: a path is read top to bottom, and tiles have no order.
+    @available(iOS 16.0, *)
+    @ViewBuilder
+    private func startHereSection(split: Bool) -> some View {
+        if StartHere.isShown(settings), let background = settings.userBackground {
+            let steps = StartHere.steps(for: background)
+            let visited = StartHere.visited(settings)
+            Section(header: startHereHeader(done: steps.filter { visited.contains($0.id) }.count, of: steps.count)) {
+                ForEach(steps) { step in
+                    startHereRow(step, done: visited.contains(step.id), split: split)
+                }
+            }
+        }
+    }
+
+    private func startHereHeader(done: Int, of total: Int) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "flag.fill")
+                .foregroundColor(settings.accentColor.color)
+
+            // One line each, shrinking before they wrap: the iPad sidebar is narrow enough that
+            // "START HERE" broke in two and pushed the count under it.
+            Text("START HERE")
+                .foregroundColor(settings.accentColor.color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .layoutPriority(1)
+
+            Text("\(done) of \(total)")
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            Spacer(minLength: 4)
+
+            Button("Hide") {
+                settings.hapticFeedback()
+                withAnimation(.easeInOut) { settings.startHereHidden = true }
+            }
+            .font(.caption.weight(.semibold))
+            .textCase(nil)
+            .tint(settings.accentColor.color)
+            .accessibilityLabel("Hide Start Here")
+        }
+    }
+
+    @available(iOS 16.0, *)
+    @ViewBuilder
+    private func startHereRow(_ step: StartHereStep, done: Bool, split: Bool) -> some View {
+        let label = startHereLabel(step, done: done)
+        if let resource = step.resource.flatMap(IslamDestination.init(rawValue:)) {
+            if split {
+                // Tagged AND highlighted (2026-10-05). Untagged, this row cleared the sidebar's
+                // selection on every tap - so opening a Start Here step wiped the highlight off the
+                // resource row it had just selected further down the list.
+                Button {
+                    selectSplitResource(resource)
+                } label: {
+                    label
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .tag(resource)
+                .rowSelectionHighlight(selectedResource == resource)
+            } else {
+                NavigationLink(value: resource) { label }
+            }
+        } else {
+            // The one step that leaves the tab: the Quran. `AppNavigation` switches tabs. (Only an app
+            // with the Quran lists that step: `StartHere.steps` drops it elsewhere.)
+            #if HAS_QURAN
+            Button {
+                settings.hapticFeedback()
+                StartHere.markVisited(resource: nil)
+                AppNavigation.shared.open(.tab)
+            } label: {
+                HStack {
+                    label
+                    Spacer(minLength: 8)
+                    Image(systemName: "arrow.up.forward")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            #endif
+        }
+    }
+
+    private func startHereLabel(_ step: StartHereStep, done: Bool) -> some View {
+        HStack(spacing: 12) {
+            AccentIconChip(systemImage: done ? "checkmark" : step.systemImage)
+                .opacity(done ? 0.55 : 1)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(step.title)
+                    .foregroundColor(.primary)
+
+                Text(step.subtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 3)
+        .accessibilityLabel("\(step.title). \(step.subtitle)\(done ? ". Opened" : "")")
     }
     #endif
 
@@ -694,20 +1166,26 @@ struct IslamView: View {
         // The detail column's screens show the Now Playing bar; suppress the sidebar's copy or
         // recitation puts one identical bar in EACH column (the Quran tab's rule).
         .applyConditionalListStyle(disableNowPlayingInset: true)
+        .compactListSectionSpacing()
+        .reminderCardDestination($reminderDoor)
         .navigationTitle("Al-Islam")
-        // The same control, on the same setting, as the iPhone list's - the iPad simply never had it,
-        // so the toggle was unreachable on the one layout where it is shown as a sidebar.
+        // The same More menu, on the same setting, as the iPhone list's: the iPad simply never had
+        // the toggle, so it was unreachable on the one layout where it is shown as a sidebar. The gear
+        // keeps its trailing slot, as on the iPhone.
+        .islamSettingsToolbar()
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    settings.hapticFeedback()
-                    withAnimation { settings.islamGridMode.toggle() }
-                } label: {
-                    Image(systemName: settings.islamGridMode ? "list.bullet" : "square.grid.2x2")
-                }
-                .accessibilityLabel(settings.islamGridMode ? "Show list" : "Show grid")
-                .tint(settings.accentColor.accent1)
+            ToolbarItem(placement: .navigationBarLeading) {
+                TabMoreMenu { islamGridMenuItem }
             }
+        }
+    }
+
+    /// The More menu's one item: the grid or list switch, worded and drawn as the other tabs' are.
+    private var islamGridMenuItem: some View {
+        TabMoreMenuItem(settings.islamGridMode ? "Show as List" : "Show as Grid",
+                        systemImage: settings.islamGridMode ? "list.bullet" : "square.grid.2x2") {
+            settings.hapticFeedback()
+            withAnimation { settings.islamGridMode.toggle() }
         }
     }
 
@@ -720,9 +1198,29 @@ struct IslamView: View {
             .id(islamDetailIdentity)
     }
 
+    /// Every resource carries the Islam Settings gear at its top right (Abu, 2026-09-20). Applied HERE,
+    /// the one door all of them are opened through (the stack, the search rows, the iPad detail), so a
+    /// new resource gets it without being told to.
     @ViewBuilder
     private func destinationView(for destination: IslamDestination) -> some View {
+        Group {
+            if destination.placesOwnSettingsGear {
+                resourceRoot(for: destination)
+            } else {
+                resourceRoot(for: destination).islamSettingsToolbar()
+            }
+        }
+        // Start Here ticks a step off when its resource is opened, by whichever route.
+        .onAppear { StartHere.markVisited(resource: destination.rawValue) }
+    }
+
+    @ViewBuilder
+    private func resourceRoot(for destination: IslamDestination) -> some View {
         switch destination {
+        case .moreResources:
+            if #available(iOS 16.0, *) {
+                moreResourcesScreen
+            }
         case .askAI:
             if #available(iOS 16.0, *) {
                 AskAIChatView()
@@ -743,7 +1241,10 @@ struct IslamView: View {
             TajweedFoundationsView()
             #endif
         case .tajweedCourse:
-            TajweedLessonsView()
+            // Listed only where the course's pack ships (`available`), which is with the Quran.
+            #if HAS_QURAN
+            TajweedCourseView()
+            #endif
         case .commonAdhkar:
             AdhkarView()
         case .commonDuas:
@@ -766,6 +1267,12 @@ struct IslamView: View {
             GuidesView()
         case .miraclesOfQuran:
             MiraclesView()
+        case .propheciesOfProphet:
+            PropheciesView()
+        case .miraclesOfProphets:
+            ProphetMiraclesView()
+        case .provingIslam:
+            ProvingIslamView().openScreen(.provingIslamLibrary)
         case .journal:
             JournalView()
         }
@@ -773,8 +1280,8 @@ struct IslamView: View {
     #endif
 
     private var resourcesSection: some View {
-        Section(header: Text("ISLAMIC RESOURCES")) {
-            resourceLink(title: "Arabic Alphabet", systemImage: "textformat.size.ar") {
+        Section(header: SectionIconHeader("ISLAMIC RESOURCES", icon: "square.grid.2x2.fill")) {
+            resourceLink(title: "Arabic Alphabet", systemImage: "textformat.size.ar", placesOwnSettingsGear: true) {
                 ArabicView()
             }
 
@@ -782,9 +1289,11 @@ struct IslamView: View {
                 TajweedFoundationsView()
             }
 
-            #if os(iOS)
-            resourceLink(title: "Tajweed Course", systemImage: "graduationcap") {
-                TajweedLessonsView()
+            #if HAS_QURAN
+            if TajweedLessonsStore.isBundled {
+                resourceLink(title: "Tajweed Course", systemImage: "graduationcap") {
+                    TajweedCourseView()
+                }
             }
             #endif
 
@@ -805,12 +1314,12 @@ struct IslamView: View {
                 ZakahCalculatorView()
             }
 
-            resourceLink(title: "Inheritance Calculator", systemImage: "divide.circle") {
+            resourceLink(title: "Inheritance Calculator", systemImage: "divide.circle", placesOwnSettingsGear: true) {
                 InheritanceCalculatorView()
             }
             #endif
 
-            resourceLink(title: "99 Names of Allah", systemImage: "signature") {
+            resourceLink(title: "99 Names of Allah", systemImage: "signature", placesOwnSettingsGear: true) {
                 NamesView()
             }
 
@@ -828,6 +1337,12 @@ struct IslamView: View {
                 GuidesView()
             }
 
+            #if os(iOS)
+            resourceLink(title: "Proving Islam", systemImage: "checkmark.shield") {
+                ProvingIslamView()
+            }
+            #endif
+
             resourceLink(title: "Islamic Wallpapers", systemImage: "photo.on.rectangle") {
                 WallpaperView()
             }
@@ -840,39 +1355,76 @@ struct IslamView: View {
     private var resourcesSectionSplit: some View {
         // The sidebar answers to the SAME grid toggle the iPhone list does (Abu, 2026-09-14: "Islam
         // view doesn't have grid mode top right on iPad"). It was list-only on the reasoning that a
-        // grid crammed into a sidebar column reads worse than rows - true at three columns, which is
-        // why this one is two.
+        // grid crammed into a sidebar column reads worse than rows, and then two columns on the
+        // reasoning that three read worse still - but the sidebar on an iPad is WIDER than a whole
+        // iPhone, so two columns made each tile oversized and the section twice as long to scroll.
+        // Three, like the iPhone (Abu, 2026-10-05: "on ipad make it 3 per grid instead of 2 like how
+        // it is on iphone").
+        startHereSection(split: true)
+
         let favorites = favoriteResources
         if !favorites.isEmpty {
-            Section(header: Text("FAVORITES")) {
+            Section(header: SectionIconHeader("FAVORITES", icon: "star.fill", accentTitle: true)) {
                 splitResourceItems(favorites)
             }
         }
 
-        Section(header: Text("ISLAMIC RESOURCES")) {
-            splitResourceItems(IslamDestination.available)
+        ForEach(ResourceGroup.allCases, id: \.self) { group in
+            let items = group.resources
+            if !items.isEmpty {
+                Section(header: SectionIconHeader(group.title, icon: group.systemImage)) {
+                    splitResourceItems(items)
+                }
+            }
         }
     }
 
     /// The sidebar's rows or tiles for one section. Rows keep `List(selection:)`'s own highlight;
-    /// tiles are inside a single list row, so the selection has to be drawn on the tile itself.
+    /// tiles are inside a single list row, so the selection is drawn on the tile itself, with the
+    /// ring every sidebar grid shares (`gridSelectionRing`).
     @available(iOS 16.0, *)
     @ViewBuilder
     private func splitResourceItems(_ items: [IslamDestination]) -> some View {
         if settings.islamGridMode {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2), spacing: 8) {
-                ForEach(items, id: \.self) { item in
-                    Button {
-                        selectSplitResource(item)
-                    } label: {
-                        resourceGridTile(item)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(settings.accentColor.color,
-                                                  lineWidth: selectedResource == item ? 2 : 0)
-                            )
+            // Ask AI spans the full width BELOW the tiles, exactly as in the iPhone grid
+            // (`resourceItems`): as half a sidebar row it was one tile among the references, with
+            // no room for the caption that says what it does (Abu, 2026-09-23: "it should be the full
+            // row similar to how it is on iphone"). Pulled out of `items` so it never draws twice.
+            let banners = IslamDestination.bannerResources.filter { items.contains($0) }
+            let tiles = items.filter { !IslamDestination.bannerResources.contains($0) }
+
+            // One row for the grid and the banners, 8 pt apart like the tiles, for the iPhone grid's
+            // reasons: no gap between two rows' insets, and no empty grid above a banner when it is a
+            // section's only item (Favorites).
+            VStack(spacing: 8) {
+                if !tiles.isEmpty {
+                    // Not lazy (`SummaryTileGrid`): a lazy grid in a List row can answer a different
+                    // height on each self-sizing pass, which iOS 26 traps on (the sidebar's narrow rows).
+                    // Two across, whatever the text size: the sidebar's 320 pt made three 86 pt tiles that
+                    // shrank "Dhikr & Remembrances" to a different size from its neighbours (2026-10-12).
+                    SummaryTileGrid(columns: 2, spacing: 8) {
+                        ForEach(tiles, id: \.self) { item in
+                            resourceGridStar(item, on: GridTileMenu {
+                                selectSplitResource(item)
+                            } menu: {
+                                favoriteToggleButton(item)
+                            } label: {
+                                resourceGridTile(item)
+                                    .gridSelectionRing(selectedResource == item)
+                            })
+                        }
                     }
-                    .buttonStyle(.plain)
+                }
+
+                ForEach(banners, id: \.self) { banner in
+                    resourceGridStar(banner, on: GridTileMenu {
+                        selectSplitResource(banner)
+                    } menu: {
+                        favoriteToggleButton(banner)
+                    } label: {
+                        resourceBanner(banner)
+                            .gridSelectionRing(selectedResource == banner)
+                    })
                 }
             }
             // Same reasoning as the iPhone grid's inset: the section row carries ~16pt of its own.
@@ -907,6 +1459,13 @@ struct IslamView: View {
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .tag(value)
+        // The highlight is DRAWN by the row rather than left to `List(selection:)`. The Settings
+        // sidebar (`SettingsView.splitResourceLink`) has the same fix and says why the native bed
+        // was unreliable: a plain-styled Button never drives it, `themedListRowBackground()` paints
+        // over it on Sepia/Gray/Custom, and `.listStyle(.plain)` draws none. The grid tiles
+        // beside these rows already ringed (`gridSelectionRing`), which is why grid mode looked
+        // right and list mode did not.
+        .rowSelectionHighlight(selectedResource == value)
         .contextMenu { favoriteToggleButton(value) }
     }
     #endif
@@ -914,15 +1473,29 @@ struct IslamView: View {
     private func resourceLink<Destination: View>(
         title: String,
         systemImage: String,
+        placesOwnSettingsGear: Bool = false,
         @ViewBuilder destination: @escaping () -> Destination
     ) -> some View {
         // The destination is wrapped so it is built only when the row is actually pushed. The plain
         // `NavigationLink(destination:)` initializer evaluates its destination immediately, which meant every
         // body pass of this list constructed all nine destination views - the watch's swipe-into-this-tab
         // hitch (iOS 16+ uses the lazy `navigationDestination(for:)` path instead and never hit this).
+        #if os(iOS)
+        // The pre-iOS 16 list pushes through here instead of `destinationView(for:)`: same gear,
+        // and the same exception for the screens that place it themselves.
+        NavigationLink(destination: LazyDestination {
+            // A Group, because `LazyDestination`'s closure is a plain one and not a view builder.
+            Group {
+                if placesOwnSettingsGear { destination() } else { destination().islamSettingsToolbar() }
+            }
+        }) {
+            toolLabel(title, systemImage: systemImage)
+        }
+        #else
         NavigationLink(destination: LazyDestination(build: destination)) {
             toolLabel(title, systemImage: systemImage)
         }
+        #endif
     }
 
     private func toolLabel(_ title: String, systemImage: String, subtitle: String? = nil) -> some View {
@@ -946,11 +1519,14 @@ struct IslamView: View {
                 // The caption column is an iPhone luxury - the 40mm screen has no room for it.
                 #if os(iOS)
                 if let subtitle {
+                    // Two lines, at full size. It used to be one line shrunk to 80%, so the longer
+                    // subtitles ("Divide an estate by the Quranic shares") rendered smaller than
+                    // their neighbours AND still clipped - the rows read as ragged (Abu, 2026-09-19).
                     Text(subtitle)
                         .font(.caption)
                         .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 #endif
             }
@@ -979,7 +1555,7 @@ struct ProphetQuote: View {
     private let attributionText2 = "Jumuah, 9 Dhul-Hijjah 10 AH\nFriday, 6 March 632 CE"
 
     var body: some View {
-        Section(header: Text("PROPHET MUHAMMAD ﷺ QUOTE")) {
+        Section(header: SectionIconHeader("PROPHET MUHAMMAD ﷺ QUOTE", icon: "quote.opening")) {
             ZStack {
                 if appearance.liquidGlass {
                     quoteCardBackground
@@ -1004,19 +1580,21 @@ struct ProphetQuote: View {
                 sweepOffset = -600
                 rotateRing = false
             }
-        }
-        #if os(iOS)
-        .contextMenu {
-            Text("Copy")
-                .foregroundStyle(.secondary)
+            // On the card, not the Section: a Section's context menu lifts its header with the card
+            // (Quality Guide G12).
+            #if os(iOS)
+            .contextMenu {
+                Text("Copy")
+                    .foregroundStyle(.secondary)
 
-            Button {
-                UIPasteboard.general.string = "O people, your Lord is one and your father Adam is one. There is no superiority of an Arab over a non-Arab, nor of a non-Arab over an Arab, nor of a red man over a black man, nor of a black man over a red man, except by taqwa (piety, righteousness, and God-consciousness).\n\n– Farewell Sermon\nMusnad Ahmad 22978\n\nJumuah, 9 Dhul-Hijjah 10 AH\nFriday, 6 March 632 CE"
-            } label: {
-                Label("Copy Text", systemImage: "doc.on.doc")
+                Button {
+                    UIPasteboard.general.string = "O people, your Lord is one and your father Adam is one. There is no superiority of an Arab over a non-Arab, nor of a non-Arab over an Arab, nor of a red man over a black man, nor of a black man over a red man, except by taqwa (piety, righteousness, and God-consciousness).\n\n– Farewell Sermon\nMusnad Ahmad 22978\n\nJumuah, 9 Dhul-Hijjah 10 AH\nFriday, 6 March 632 CE"
+                } label: {
+                    Label("Copy Text", systemImage: "doc.on.doc")
+                }
             }
+            #endif
         }
-        #endif
     }
 
     /// One pass of light across the card - a narrow diagonal band, brighter at its centre, that never
@@ -1189,7 +1767,7 @@ struct AlIslamAppsSection: View {
     #endif
 
     var body: some View {
-        Section(header: Text("AL-ISLAMIC APPS")) {
+        Section(header: SectionIconHeader("AL-ISLAMIC APPS", icon: "apps.iphone")) {
             ZStack {
                 cardBackground
 
@@ -1223,6 +1801,15 @@ struct AlIslamAppsSection: View {
             .onAppear(perform: runAppCardsPopAnimation)
             #if DEBUG
             .onAppear { MemoryFootprint.logLater("app tiles") }
+            #endif
+            #if os(iOS) && DEBUG
+            // `-openLearnMore` (pair it with `-islamScrollToApps`, which brings this card on
+            // screen): opens the Learn More sheet for screenshot runs - taps aren't scriptable.
+            .onAppear {
+                if ProcessInfo.processInfo.arguments.contains("-openLearnMore") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { showLearnMoreSheet = true }
+                }
+            }
             #endif
             .onDisappear {
                 withAnimation {

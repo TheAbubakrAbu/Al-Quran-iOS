@@ -1,0 +1,1441 @@
+import SwiftUI
+
+/// Which part of a word a search term has to cover before it is painted. The Quran search's Match
+/// button decides which ayahs come back; this keeps the PAINT honest to the same rule, so Whole Word
+/// for رب lights the word رب and leaves أربعة and ربهم alone in the same ayah.
+enum SearchWordRule: String {
+    case anywhere, wholeWord, startsWith, endsWith
+
+    /// True when `match` sits in `text` the way this rule asks: a word edge at its start, its end, or both.
+    func accepts(_ match: Range<String.Index>, in text: String) -> Bool {
+        let startsWord = match.lowerBound == text.startIndex
+            || !Self.isWordCharacter(text[text.index(before: match.lowerBound)])
+        let endsWord = match.upperBound == text.endIndex || !Self.isWordCharacter(text[match.upperBound])
+        switch self {
+        case .anywhere: return true
+        case .wholeWord: return startsWord && endsWord
+        case .startsWith: return startsWord
+        case .endsWith: return endsWord
+        }
+    }
+
+    private static func isWordCharacter(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber
+    }
+}
+
+private struct SearchWordRuleKey: EnvironmentKey {
+    static let defaultValue: SearchWordRule = .anywhere
+}
+
+extension EnvironmentValues {
+    /// Set by a search screen whose Match filter is on; read by every highlighter under it.
+    var searchWordRule: SearchWordRule {
+        get { self[SearchWordRuleKey.self] }
+        set { self[SearchWordRuleKey.self] = newValue }
+    }
+}
+
+struct HighlightedSnippet: View {
+    @Environment(\.searchWordRule) private var wordRule
+
+    // Deliberately NOT observing Settings: every snippet on screen re-rendered on every Settings
+    // publish for a helper (`normalizeForAllahHighlight`) nothing called. Every input is a value the
+    // parent passes (Phase 5, section 13 of the performance plan).
+
+    let source: String
+    let term: String
+    let font: Font
+    let accent: Color
+    let fg: Color
+    var preStyledSource: AttributedString? = nil
+    var beginnerMode: Bool = false
+    var trailingSuffix: String = ""
+    var trailingSuffixFont: Font? = nil
+    var trailingSuffixColor: Color? = nil
+    var lineLimit: Int? = nil
+    /// With `lineLimit`, also RESERVE the clamped height (iOS 16+/watchOS 9+; plain clamp below): a
+    /// one-line snippet occupies the same box as a full one, so preview cards line up. NOTE: an outer
+    /// `.lineLimit` can never do this job - the unconditional `.lineLimit(lineLimit)` below sets the
+    /// innermost value (nil = unlimited), which silently overrides whatever a caller wraps around this.
+    var reservesSpace: Bool = false
+    var highlightAllahNames: Bool = false
+    /// When `true`, this field is guaranteed to show at least one highlight: if no confident match is found
+    /// the fuzzy last-resorts (Arabic partial-prefix, closest/longest word) kick in so the user always sees
+    /// *something*. Meant for ayah search, and only for the field(s) that actually matched the query.
+    ///
+    /// When `false` (the default, used by Surah rows and anywhere a single query is shown against several
+    /// fields side-by-side), only high-confidence matches are colored - exact substring, a full
+    /// alef-insensitive Arabic match, or a phrase-prefix. A field that doesn't really contain the term is
+    /// left un-highlighted, so a query that matched only the transliteration doesn't also paint the English
+    /// name and the Arabic name.
+    var guaranteeMatch: Bool = false
+    /// Extra spans (UTF-16 offsets into `source`) colored with the accent IN ADDITION to `term`'s own
+    /// matches. This is the cross-language word highlight's delivery path: the search row computes,
+    /// through the word-by-word gloss pack, which English words align with an Arabic query hit (and
+    /// vice versa) and hands the spans in here - the snippet itself stays language-agnostic.
+    var extraHighlightRanges: [NSRange] = []
+    var body: some View {
+        let resolvedSearchTerm = searchTerm
+        let needsSearchHighlight = !resolvedSearchTerm.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !extraHighlightRanges.isEmpty
+        let needsAttributedWork = needsSearchHighlight || highlightAllahNames || preStyledSource != nil
+        let suffixText = Text(trailingSuffix)
+            .font(trailingSuffixFont ?? font)
+            .foregroundColor(trailingSuffixColor ?? fg)
+
+        if needsAttributedWork {
+            let highlightedText = memoizedHighlightedText(term: resolvedSearchTerm,
+                                                          needsSearchHighlight: needsSearchHighlight)
+
+            limited(Text("\(Text(highlightedText))\(suffixText)"))
+        } else {
+            limited(Text("\(Text(source).foregroundColor(fg))\(suffixText)"))
+        }
+    }
+
+    /// The final string, memoized per (every input) - Phase 5 step 11. The highlight and the
+    /// Allah-name scan re-ran per body pass for every visible row, on every publish.
+    private func memoizedHighlightedText(term: String, needsSearchHighlight: Bool) -> AttributedString {
+        let memoKey = Self.memoKey(
+            source: source, term: term, font: font, accent: accent, fg: fg,
+            preStyled: preStyledSource, beginner: beginnerMode, allah: highlightAllahNames,
+            guarantee: guaranteeMatch, extra: extraHighlightRanges, wordRule: wordRule
+        )
+        if let hit = Self.memo.object(forKey: memoKey) { return hit.value }
+        // When highlighting a search term, base the attributed text on the PLAIN `source` - never a
+        // `preStyledSource` (e.g. tajweed-colored Arabic). The matched ranges are `String.Index` ranges
+        // into `source`; a preStyledSource can have a different character layout (clean text / removed
+        // dots / beginner spacing), so converting those indices into it silently fails (`Index(_, within:)`
+        // returns nil) and a real - even exact - match never gets colored. On a matched row the search
+        // highlight takes priority over tajweed, matching how text-search results are shown elsewhere.
+        let base = needsSearchHighlight ? plainSourceAttributed() : baseAttributedText()
+        let built = applyExtraRanges(
+            to: highlightAllahIfNeeded(
+                source: source,
+                baseAttributed: highlight(source: source, baseAttributed: base, term: term)
+            )
+        )
+        Self.memo.setObject(SnippetBox(built), forKey: memoKey)
+        return built
+    }
+
+    private final class SnippetBox {
+        let value: AttributedString
+        init(_ value: AttributedString) { self.value = value }
+    }
+
+    private static let memo: NSCache<NSString, SnippetBox> = {
+        let cache = NSCache<NSString, SnippetBox>()
+        cache.countLimit = 400
+        return cache
+    }()
+
+    /// Every input the attributed build reads. `font`, `accent` and `fg` fold through their
+    /// descriptions (stable for a given configuration); a pre-styled source folds through its
+    /// render digest (characters plus the colour runs), so a tajweed recolour is a different key.
+    private static func memoKey(source: String, term: String, font: Font, accent: Color, fg: Color,
+                                preStyled: AttributedString?, beginner: Bool, allah: Bool,
+                                guarantee: Bool, extra: [NSRange], wordRule: SearchWordRule) -> NSString {
+        var parts: [String] = [
+            source, term, DescriptionMemo.describe(font), DescriptionMemo.describe(accent), DescriptionMemo.describe(fg),
+            beginner ? "b" : "-", allah ? "a" : "-", guarantee ? "g" : "-", wordRule.rawValue,
+            extra.map { "\($0.location):\($0.length)" }.joined(separator: ","),
+        ]
+        parts.append(preStyled.map { "\($0.renderDigest)" } ?? "plain")
+        return parts.joined(separator: "\u{1F}") as NSString
+    }
+
+    /// Colors `extraHighlightRanges` with the accent. UTF-16 spans (instance-free, like the caches)
+    /// are materialized against THIS `source` instance; a span that doesn't land on character
+    /// boundaries is skipped rather than trusted.
+    private func applyExtraRanges(to attributed: AttributedString) -> AttributedString {
+        guard !extraHighlightRanges.isEmpty else { return attributed }
+        var result = attributed
+        for span in extraHighlightRanges {
+            guard let range = Range(span, in: source),
+                  let start = AttributedString.Index(range.lowerBound, within: result),
+                  let end = AttributedString.Index(range.upperBound, within: result) else { continue }
+            result[start..<end].foregroundColor = accent
+        }
+        return result
+    }
+
+    /// The one place the line clamp lands, so `reservesSpace` and the plain clamp can't drift apart.
+    @ViewBuilder
+    private func limited(_ text: Text) -> some View {
+        if reservesSpace, let lineLimit, #available(iOS 16.0, watchOS 9.0, *) {
+            text.font(font).lineLimit(lineLimit, reservesSpace: true)
+        } else {
+            text.font(font).lineLimit(lineLimit)
+        }
+    }
+
+    private var searchTerm: String {
+        beginnerMode ? term.map(String.init).joined(separator: " ") : term
+    }
+
+    // nonisolated: statics on a View struct inherit @MainActor, but the prewarm path (a detached task)
+    // reads these - the fold tables are immutable and NSCache is thread-safe, so cross-thread access is
+    // the design, not an accident. This is what silences the "main actor-isolated ... can not be
+    // referenced from a nonisolated context" warnings on every target that compiles this file.
+    nonisolated private static let englishHighlightStripSet: CharacterSet = {
+        CharacterSet.punctuationCharacters.union(.symbols).union(.nonBaseCharacters)
+    }()
+
+    // MARK: - Caches
+
+    private final class SourceNormEntry: NSObject {
+        let normalizedSource: String
+        /// UTF-16 offsets, NOT `String.Index`: cache entries are keyed by string CONTENT, so a hit can
+        /// serve an equal-content instance different from the one the entry was built on - and indices
+        /// are only defined for their own instance. Offsets are instance-free; `indices(atUTF16Offsets:in:)`
+        /// rebuilds real indices for the exact string being rendered.
+        let mapUTF16: [Int]
+        init(_ n: String, _ m: [Int]) { normalizedSource = n; mapUTF16 = m }
+    }
+
+    private final class RangeEntry: NSObject {
+        /// (lower, upper) UTF-16 offset pairs - instance-free, same reason as `SourceNormEntry.mapUTF16`.
+        let spans: [(Int, Int)]
+        init(_ s: [(Int, Int)]) { spans = s }
+    }
+
+    /// Rebuilds `String.Index` values for THIS `source` instance from stored UTF-16 offsets
+    /// (non-decreasing; duplicates allowed - a collapsed space maps to the same character as the letter
+    /// after it). One O(n) walk. Returns nil if any offset fails to land on a character boundary of this
+    /// instance - impossible for equal content, but callers treat nil as a cache miss and recompute
+    /// rather than trust the entry.
+    nonisolated private static func indices(atUTF16Offsets offsets: [Int], in source: String) -> [String.Index]? {
+        var result: [String.Index] = []
+        result.reserveCapacity(offsets.count)
+        var i = 0
+        var utf16Pos = 0
+        var idx = source.startIndex
+        while i < offsets.count {
+            if offsets[i] == utf16Pos {
+                result.append(idx)
+                i += 1
+                continue
+            }
+            guard offsets[i] > utf16Pos, idx < source.endIndex else { return nil }
+            let next = source.index(after: idx)
+            utf16Pos += source.utf16.distance(from: idx, to: next)
+            idx = next
+        }
+        return result
+    }
+
+    /// The stored-span twin: materializes `Range<String.Index>` values for THIS instance. Nil means an
+    /// offset didn't line up (callers recompute fresh).
+    nonisolated private static func ranges(fromUTF16Spans spans: [(Int, Int)], in source: String) -> [Range<String.Index>]? {
+        guard !spans.isEmpty else { return [] }
+        let wanted = Set(spans.flatMap { [$0.0, $0.1] }).sorted()
+        guard let landed = indices(atUTF16Offsets: wanted, in: source) else { return nil }
+        let lookup = Dictionary(uniqueKeysWithValues: zip(wanted, landed))
+        var out: [Range<String.Index>] = []
+        out.reserveCapacity(spans.count)
+        for (lo, hi) in spans {
+            guard let l = lookup[lo], let h = lookup[hi], l < h else { return nil }
+            out.append(l..<h)
+        }
+        return out
+    }
+
+    /// Converts a range on THIS instance into instance-free UTF-16 offsets for storage.
+    nonisolated private static func utf16Span(of range: Range<String.Index>, in source: String) -> (Int, Int) {
+        (source.utf16.distance(from: source.startIndex, to: range.lowerBound),
+         source.utf16.distance(from: source.startIndex, to: range.upperBound))
+    }
+
+    /// source → (normalizedSource, mapUTF16): amortises the O(n×k) per-character normalization.
+    /// nonisolated(unsafe): NSCache is thread-safe by contract; the prewarm fills it off-main.
+    nonisolated(unsafe) private static let sourceNormCache: NSCache<NSString, SourceNormEntry> = {
+        let c = NSCache<NSString, SourceNormEntry>()
+        c.countLimit = 7_000
+        return c
+    }()
+
+    /// "source\0normalizedTerm" → matched ranges in original source: amortises the range search.
+    private static let matchRangeCache: NSCache<NSString, RangeEntry> = {
+        let c = NSCache<NSString, RangeEntry>()
+        c.countLimit = 10_000
+        return c
+    }()
+
+    /// source → Allah highlight ranges: amortises the O(n) per-render Allah scan.
+    /// nonisolated(unsafe): NSCache is thread-safe by contract; `arabicAllahRanges` is nonisolated
+    /// because the word-by-word reader and the prewarm call it off the main actor.
+    nonisolated(unsafe) private static let allahRangeCache: NSCache<NSString, RangeEntry> = {
+        let c = NSCache<NSString, RangeEntry>()
+        c.countLimit = 7_000
+        return c
+    }()
+
+    private func normalizeEnglishForHighlight(_ text: String, trimWhitespace: Bool) -> String {
+        Self.normalizeEnglishForHighlightText(text, trimWhitespace: trimWhitespace)
+    }
+
+    /// The SEARCH-side twin of the highlight normalization: same punctuation/symbol strip + lowercase.
+    /// Hadith search folds BOTH its index and its queries through this, so "aishah" matches "'A'ishah"
+    /// exactly where the highlighter would color it - the matcher used to be stricter than the
+    /// highlighter (plain `lowercased()`), silently missing apostrophe/diacritic narrator names.
+    nonisolated static func foldedEnglishForSearch(_ text: String) -> String {
+        normalizeEnglishForHighlightText(text, trimWhitespace: false)
+    }
+
+    nonisolated static func normalizeEnglishForHighlightText(_ text: String, trimWhitespace: Bool) -> String {
+        // Accents fold like every search fold does, so a typed "sahih" paints "Ṣaḥīḥ" in a narration.
+        // An en or em dash is a word break here as in the search fold (`SearchFoldTables.fold`):
+        // stripped like other punctuation it glued "forefathers\u{2014}Abraham" into one word, and
+        // "sabr" was painted across the join.
+        var cleaned = String(String.UnicodeScalarView(text.foldingLatinDiacritics.unicodeScalars.compactMap { scalar -> Unicode.Scalar? in
+            if scalar.value == 0x2013 || scalar.value == 0x2014 { return " " }
+            return Self.englishHighlightStripSet.contains(scalar) ? nil : scalar
+        })).lowercased()
+
+        if trimWhitespace {
+            cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return cleaned
+    }
+
+    /// Populates the fold cache for `sources` - safe to call from ANY thread (NSCache is thread-safe, and the
+    /// fold reads only immutable static tables). The search pipeline calls this from its background task with
+    /// the exact strings the result rows are about to render, so each row's first body evaluation is a cache
+    /// hit instead of paying the O(source × fold) cost on the main thread.
+    // nonisolated: pure string work over thread-safe NSCache, called from a detached task off-main -
+    // View statics otherwise inherit @MainActor and Swift 6 makes that call an error.
+    nonisolated static func prewarmNormalization(of sources: [String]) {
+        for source in sources where !source.isEmpty {
+            let key = source as NSString
+            guard sourceNormCache.object(forKey: key) == nil else { continue }
+            let built = normalizedSourceAndMap(for: source)
+            sourceNormCache.setObject(SourceNormEntry(built.normalized, built.mapUTF16), forKey: key)
+        }
+    }
+
+    /// The fold the highlighter itself matches against, served from (and filling) the same
+    /// content-keyed cache `highlight()` uses - so a "does this field contain the query?" check made
+    /// with it always agrees with the ranges the snippet will actually color.
+    nonisolated static func cachedNormalizedSource(for source: String) -> String {
+        guard !source.isEmpty else { return "" }
+        let key = source as NSString
+        if let cached = sourceNormCache.object(forKey: key) { return cached.normalizedSource }
+        let built = normalizedSourceAndMap(for: source)
+        sourceNormCache.setObject(SourceNormEntry(built.normalized, built.mapUTF16), forKey: key)
+        return built.normalized
+    }
+
+    /// Whether the ladder's confident rungs would color this folded source for this folded term: an
+    /// exact substring, or the phrase-prefix rule (leading words equal, last word a prefix). The
+    /// per-field match test the hadith rows use to decide which field carries the term - the ayah
+    /// rows' `sourceMatchesQuery`, shared. A `false` on every field means the row should force one
+    /// field with `guaranteeMatch` so the user still sees at least one highlight.
+    nonisolated static func foldedSourceMatches(_ normalizedSource: String, normalizedTerm: String) -> Bool {
+        guard !normalizedSource.isEmpty, !normalizedTerm.isEmpty else { return false }
+        if normalizedSource.contains(normalizedTerm) { return true }
+
+        let queryTokens = normalizedTerm
+            .split(separator: " ")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        guard !queryTokens.isEmpty else { return false }
+
+        let sourceTokens = normalizedTokenRanges(in: normalizedSource)
+        guard sourceTokens.count >= queryTokens.count else { return false }
+
+        for start in 0...(sourceTokens.count - queryTokens.count) {
+            var matched = true
+            for offset in queryTokens.indices {
+                let sourceToken = String(normalizedSource[sourceTokens[start + offset]])
+                let queryToken = queryTokens[offset]
+                if offset == queryTokens.count - 1 {
+                    if !sourceToken.hasPrefix(queryToken) {
+                        matched = false
+                        break
+                    }
+                } else if sourceToken != queryToken {
+                    matched = false
+                    break
+                }
+            }
+            if matched { return true }
+        }
+        return false
+    }
+
+    private func normalizeForSearch(_ text: String, trimWhitespace: Bool) -> String {
+        Self.normalizeForSearchText(text, trimWhitespace: trimWhitespace)
+    }
+
+    /// Static so the search pipeline can run it off the main thread (see `prewarmNormalization`). Reads only
+    /// `Settings.shared.cleanSearch`, which is a pure scalar-map fold - thread-safe.
+    nonisolated static func normalizeForSearchText(_ text: String, trimWhitespace: Bool) -> String {
+        // Strip search operators (`# ^ % $ …`) first so a query like `#الله` or `^Allah%` highlights the
+        // residual word instead of failing to match (the source text never contains these characters).
+        let base = text.removingAyahSearchOperators
+        if !base.containsArabicLetters {
+            return Self.normalizeEnglishForHighlightText(base, trimWhitespace: trimWhitespace)
+        }
+        return Settings.shared.cleanSearch(base, whitespace: trimWhitespace)
+            .removingArabicDiacriticsAndSigns
+    }
+
+    private func baseAttributedText() -> AttributedString {
+        if let preStyledSource {
+            return preStyledSource
+        }
+
+        return plainSourceAttributed()
+    }
+
+    /// A plain attributed copy of `source` with the base foreground color - indices always align with
+    /// `source`, so highlight ranges computed against `source` map cleanly onto it.
+    private func plainSourceAttributed() -> AttributedString {
+        var attributed = AttributedString(source)
+        attributed.foregroundColor = fg
+        return attributed
+    }
+
+    private func highlight(source: String, baseAttributed: AttributedString, term: String) -> AttributedString {
+        var attributed = baseAttributed
+
+        let normalizedTerm = normalizeForSearch(term, trimWhitespace: true)
+        guard !normalizedTerm.isEmpty else { return attributed }
+
+        // --- Steps 1 and 2: the fold and the matched ranges, each through its cache ---
+        let matchedRanges = Self.matchedRanges(in: source, normalizedTerm: normalizedTerm,
+                                               guaranteeMatch: guaranteeMatch, wordRule: wordRule)
+
+        // --- Step 3: apply accent colour to each matched range ---
+        for range in matchedRanges {
+            if let start = AttributedString.Index(range.lowerBound, within: attributed),
+               let end = AttributedString.Index(range.upperBound, within: attributed) {
+                attributed[start..<end].foregroundColor = accent
+            }
+        }
+
+        return attributed
+    }
+
+    /// The ranges `highlight` paints for an already-folded term, in the original source: the ladder
+    /// below, behind the two content-keyed caches.
+    private static func matchedRanges(in source: String, normalizedTerm: String, guaranteeMatch: Bool,
+                                      wordRule: SearchWordRule = .anywhere) -> [Range<String.Index>] {
+        // --- Step 1: normalizedSource + UTF-16 map, cached per source CONTENT ---
+        let sourceKey = source as NSString
+        let normEntry: SourceNormEntry
+        if let cached = sourceNormCache.object(forKey: sourceKey) {
+            normEntry = cached
+        } else {
+            let built = normalizedSourceAndMap(for: source)
+            normEntry = SourceNormEntry(built.normalized, built.mapUTF16)
+            sourceNormCache.setObject(normEntry, forKey: sourceKey)
+        }
+
+        // --- Step 2: matched ranges in original source, cached per (source, normalizedTerm, guarantee) ---
+        // `guaranteeMatch` changes which fallbacks run, so it must be part of the key - otherwise the same
+        // source+term shown once as a matched ayah field and once as a non-matching sibling would collide.
+        // Cached as UTF-16 spans and materialized for THIS instance; a nil materialization (offsets that
+        // don't land on this instance's character boundaries - impossible for equal content) falls through
+        // to a fresh compute instead of being trusted.
+        let matchKey = "\(guaranteeMatch ? "1" : "0")\(wordRule.rawValue)\u{0000}\(source)\u{0000}\(normalizedTerm)" as NSString
+        var matchedRanges: [Range<String.Index>]? = nil
+        if let cached = matchRangeCache.object(forKey: matchKey) {
+            matchedRanges = ranges(fromUTF16Spans: cached.spans, in: source)
+        }
+        if matchedRanges == nil {
+            // Instance-true indices for the cached fold; if the entry somehow doesn't fit this instance,
+            // rebuild the fold fresh - the fresh offsets fit by construction.
+            let normalizedSource: String
+            let indexMap: [String.Index]
+            if let materialized = indices(atUTF16Offsets: normEntry.mapUTF16, in: source) {
+                normalizedSource = normEntry.normalizedSource
+                indexMap = materialized
+            } else {
+                let built = normalizedSourceAndMap(for: source)
+                normalizedSource = built.normalized
+                indexMap = indices(atUTF16Offsets: built.mapUTF16, in: source) ?? []
+            }
+
+            let computed = matchRanges(
+                in: source,
+                normalizedSource: normalizedSource,
+                indexMap: indexMap,
+                normalizedTerm: normalizedTerm,
+                guaranteeMatch: guaranteeMatch,
+                wordRule: wordRule
+            )
+            matchRangeCache.setObject(
+                RangeEntry(computed.map { utf16Span(of: $0, in: source) }),
+                forKey: matchKey
+            )
+            matchedRanges = computed
+        }
+        return matchedRanges ?? []
+    }
+
+    /// Where a RAW term lands in `source`, as UTF-16 spans: exactly what a snippet of the whole source
+    /// would paint. For a row that shows only a WINDOW of a long text (the hadith search results) and
+    /// has to know where the match sits before it can choose the window; it hands the spans that
+    /// fall inside back as `extraHighlightRanges`.
+    static func matchSpans(in source: String, term: String, guaranteeMatch: Bool) -> [NSRange] {
+        let normalizedTerm = normalizeForSearchText(term, trimWhitespace: true)
+        guard !source.isEmpty, !normalizedTerm.isEmpty else { return [] }
+        return matchedRanges(in: source, normalizedTerm: normalizedTerm, guaranteeMatch: guaranteeMatch)
+            .map { NSRange($0, in: source) }
+    }
+
+    /// The canonical match-range ladder, shared by the list snippet (`highlight`, via its caches) and the
+    /// mushaf page reader so BOTH surfaces color the same substrings for the same query: exact normalized
+    /// substring → Arabic alef-insensitive skeleton → phrase-prefix → (only with `guaranteeMatch`) the
+    /// closest-word safety net. The caller supplies the already-folded source + index map so a cached fold
+    /// is reused rather than recomputed.
+    nonisolated static func matchRanges(
+        in source: String,
+        normalizedSource: String,
+        indexMap: [String.Index],
+        normalizedTerm: String,
+        guaranteeMatch: Bool,
+        wordRule: SearchWordRule = .anywhere
+    ) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var searchStart = normalizedSource.startIndex
+        while searchStart < normalizedSource.endIndex,
+              let matchRange = normalizedSource.range(of: normalizedTerm, range: searchStart..<normalizedSource.endIndex) {
+            // A hit the Match rule turns down (رب inside أربعة under Whole Word) is stepped over by one
+            // character, not by its length, so a real hit overlapping it is still found.
+            guard wordRule.accepts(matchRange, in: normalizedSource) else {
+                searchStart = normalizedSource.index(after: matchRange.lowerBound)
+                continue
+            }
+            if let orig = originalRange(
+                in: source,
+                normalizedSource: normalizedSource,
+                matchRange: matchRange,
+                indexMap: indexMap
+            ) {
+                ranges.append(orig)
+            }
+            searchStart = matchRange.upperBound
+        }
+        // Words apart: a query whose words are all here but not side by side ("anger control" under All
+        // Words, `mercy & patience`, a ranked hit) painted at most a fallback's guess, because every
+        // other rung looks for the words as ONE run. When EVERY word is present, each is painted where
+        // it stands; short Latin words are skipped so "in" and "of" do not light up half the line.
+        // Ahead of the loose fallbacks on purpose: an English narration carrying ﷺ counts as Arabic
+        // there, and the partial-prefix matcher then painted one word and stopped.
+        if ranges.isEmpty {
+            let words = normalizedTerm.split(separator: " ").map(String.init)
+                .filter { $0.count >= ($0.containsArabicLetters ? 2 : 3) }
+            if words.count > 1 {
+                var apart: [Range<String.Index>] = []
+                var missing = false
+                for word in words {
+                    var from = normalizedSource.startIndex
+                    var foundWord = false
+                    while from < normalizedSource.endIndex,
+                          let found = normalizedSource.range(of: word, range: from..<normalizedSource.endIndex) {
+                        guard wordRule.accepts(found, in: normalizedSource) else {
+                            from = normalizedSource.index(after: found.lowerBound)
+                            continue
+                        }
+                        if let orig = originalRange(in: source, normalizedSource: normalizedSource,
+                                                    matchRange: found, indexMap: indexMap) {
+                            apart.append(orig)
+                            foundWord = true
+                        }
+                        from = found.upperBound
+                    }
+                    if !foundWord { missing = true; break }
+                }
+                if !missing {
+                    ranges = apart.sorted { $0.lowerBound < $1.lowerBound }
+                }
+            }
+        }
+        // Arabic fallback: an alef-insensitive match (so الرحمن / الرحمان / الرحمٰن all match), with a
+        // longest-prefix partial match so something is always highlighted even when the exact phrase
+        // isn't present. This is why exact substring matching alone was missing most Arabic terms.
+        // The loose rungs below know nothing of word edges, so under a Match rule they run only for a
+        // field known to hold the hit (`guaranteeMatch`): a matched row is never left unpainted, and a
+        // sibling field is never painted with a look-alike.
+        let allowsLooseRungs = wordRule == .anywhere || guaranteeMatch
+        if ranges.isEmpty, allowsLooseRungs, source.containsArabicLetters {
+            ranges = arabicLooseRanges(
+                source: source,
+                normalizedSource: normalizedSource,
+                indexMap: indexMap,
+                normalizedTerm: normalizedTerm,
+                guaranteeMatch: guaranteeMatch
+            )
+        }
+        // Phrase-prefix fallback for BOTH scripts: highlights consecutive words where the leading words
+        // match and the final word is a prefix (e.g. "those who believ" → "those who believe"). This is
+        // the same "close match" rule the verse search itself uses, so English close matches - which
+        // previously highlighted nothing - now get colored like the Arabic ones.
+        if ranges.isEmpty, allowsLooseRungs {
+            ranges = phrasePrefixRanges(
+                in: source,
+                normalizedSource: normalizedSource,
+                normalizedTerm: normalizedTerm,
+                indexMap: indexMap
+            )
+        }
+        // Final safety net - ONLY when this field is expected to contain the match (`guaranteeMatch`, i.e.
+        // ayah search on the field that actually matched). If nothing matched yet, highlight the closest
+        // word(s) in THIS field so the user always sees at least one thing for their query. It works on the
+        // original words normalized individually, so it doesn't depend on the whole-string index alignment
+        // the paths above need - which can silently fail on heavily-marked Arabic and leave a real match
+        // un-highlighted. Skipped by default so a query that matched a sibling field doesn't force a
+        // spurious highlight here.
+        // Never across scripts: a Latin query has no "closest word" in an Arabic line (or the other way
+        // round), and asking for one painted an arbitrary word, usually the longest in the ayah,
+        // beside the words the cross-language lookup had correctly lit ("mercy patience" lit
+        // وَيَسْتَخْرِجَا in 18:82). The cross-language spans are that line's highlight.
+        if ranges.isEmpty, guaranteeMatch,
+           normalizedTerm.containsArabicLetters == source.containsArabicLetters {
+            ranges = closestMatchRanges(in: source, normalizedTerm: normalizedTerm)
+        }
+        // A one-letter term would snap every word it touches; below two letters the exact ranges stand.
+        return normalizedTerm.count >= 2 ? snappedToWholeWords(ranges, in: source) : ranges
+    }
+
+    /// Every match painted as WHOLE WORDS. The rungs above find substrings - "صلاة" inside
+    /// "وَٱلصَّلَوٰةِ", "believ" inside "believers", the alef-skeleton prefix "لصل" of a word the loose
+    /// rung could only half-match - and painting exactly the matched letters left words chopped in
+    /// two colors: the head of the word in the accent, its tail in the base color, which read as a
+    /// highlight that had been cut off mid-word. A word either matched or it didn't, so each range
+    /// grows outward to the whitespace on both sides, then sheds the punctuation it picked up at the
+    /// edges (a closing quote, the comma after "ease,") - the accent covers the word and nothing
+    /// else. Overlapping or touching ranges merge, so a phrase reads as one span. Shared by every
+    /// caller of the ladder (list rows, the mushaf page reader, the cross-language token lookup), so
+    /// the same query paints the same words everywhere.
+    nonisolated private static func snappedToWholeWords(
+        _ ranges: [Range<String.Index>],
+        in source: String
+    ) -> [Range<String.Index>] {
+        guard !ranges.isEmpty else { return ranges }
+        var snapped: [Range<String.Index>] = []
+        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            var start = range.lowerBound
+            var end = range.upperBound
+            // A range that ENDS on a space ("patience " as the longest prefix of "patience hardship")
+            // would grow across that space into the next word and paint "patience and". The edge
+            // whitespace is shed first, so only words the range really touches can grow.
+            while start < end, isWordBoundary(source[start]) { start = source.index(after: start) }
+            while end > start, isWordBoundary(source[source.index(before: end)]) { end = source.index(before: end) }
+            guard start < end else { continue }
+            while start > source.startIndex {
+                let previous = source.index(before: start)
+                if isWordBoundary(source[previous]) { break }
+                start = previous
+            }
+            while end < source.endIndex, !isWordBoundary(source[end]) {
+                end = source.index(after: end)
+            }
+            while start < end, !isWordCharacter(source[start]) { start = source.index(after: start) }
+            while end > start, !isWordCharacter(source[source.index(before: end)]) { end = source.index(before: end) }
+            guard start < end else { continue }
+            if let last = snapped.last, last.upperBound >= start {
+                snapped[snapped.count - 1] = last.lowerBound..<max(last.upperBound, end)
+            } else {
+                snapped.append(start..<end)
+            }
+        }
+        return snapped
+    }
+
+    /// Where a snapped range stops growing: whitespace, and the dashes that glue two words together
+    /// without a space (an em or en dash), so "mercy\u{2014}indeed" never paints its neighbour. A
+    /// hyphen is NOT a boundary: "All-Knowing" is one word.
+    nonisolated private static func isWordBoundary(_ character: Character) -> Bool {
+        character.isWhitespace || character == "\u{2014}" || character == "\u{2013}" || character == "/"
+    }
+
+    /// A character that belongs to a word for painting purposes: it carries a letter or a digit, or an
+    /// Arabic mark (a standalone tashkeel cluster after its letter). Quotes, brackets, commas, and the
+    /// like are not, so they are trimmed off the ends of a snapped range.
+    nonisolated private static func isWordCharacter(_ character: Character) -> Bool {
+        character.unicodeScalars.contains { scalar in
+            CharacterSet.letters.contains(scalar)
+                || CharacterSet.decimalDigits.contains(scalar)
+                || scalar.isArabicMarkScalar
+        }
+    }
+
+    /// Convenience for callers without a cached fold (the mushaf page reader): folds `source` fresh, then
+    /// runs the shared ladder. Returns ranges into `source`, empty when the term genuinely isn't present
+    /// (so an English query on an Arabic page highlights nothing rather than washing the whole ayah).
+    nonisolated static func matchRanges(
+        of term: String,
+        in source: String,
+        guaranteeMatch: Bool = false,
+        wordRule: SearchWordRule = .anywhere
+    ) -> [Range<String.Index>] {
+        let normalizedTerm = normalizeForSearchText(term, trimWhitespace: true)
+        guard !normalizedTerm.isEmpty else { return [] }
+        let built = normalizedSourceAndMap(for: source)
+        guard let indexMap = indices(atUTF16Offsets: built.mapUTF16, in: source) else { return [] }
+        return matchRanges(
+            in: source,
+            normalizedSource: built.normalized,
+            indexMap: indexMap,
+            normalizedTerm: normalizedTerm,
+            guaranteeMatch: guaranteeMatch,
+            wordRule: wordRule
+        )
+    }
+
+    nonisolated private static func phrasePrefixRanges(
+        in source: String,
+        normalizedSource: String,
+        normalizedTerm: String,
+        indexMap: [String.Index]
+    ) -> [Range<String.Index>] {
+        let queryTokens = normalizedTerm
+            .split(separator: " ")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        guard !queryTokens.isEmpty else { return [] }
+
+        let sourceTokens = normalizedTokenRanges(in: normalizedSource)
+        guard sourceTokens.count >= queryTokens.count else { return [] }
+
+        var ranges: [Range<String.Index>] = []
+        for start in 0...(sourceTokens.count - queryTokens.count) {
+            var matched = true
+
+            for offset in queryTokens.indices {
+                let tokenRange = sourceTokens[start + offset]
+                let sourceToken = String(normalizedSource[tokenRange])
+                let queryToken = queryTokens[offset]
+
+                if offset == queryTokens.count - 1 {
+                    if !sourceToken.hasPrefix(queryToken) {
+                        matched = false
+                        break
+                    }
+                } else if sourceToken != queryToken {
+                    matched = false
+                    break
+                }
+            }
+
+            guard matched else { continue }
+
+            let lower = sourceTokens[start].lowerBound
+            let lastTokenRange = sourceTokens[start + queryTokens.count - 1]
+            let lastToken = String(normalizedSource[lastTokenRange])
+            let upper: String.Index
+            if lastToken == queryTokens.last {
+                upper = lastTokenRange.upperBound
+            } else {
+                upper = normalizedSource.index(lastTokenRange.lowerBound, offsetBy: queryTokens.last?.count ?? 0)
+            }
+
+            if let orig = originalRange(
+                in: source,
+                normalizedSource: normalizedSource,
+                matchRange: lower..<upper,
+                indexMap: indexMap
+            ) {
+                ranges.append(orig)
+            }
+        }
+
+        return ranges
+    }
+
+    /// Alef-insensitive matching with a longest-prefix partial fallback.
+    ///
+    /// `normalizeForSearch` already folds the dagger alef (ٰ) to a plain alef, so dropping every "ا" from
+    /// both the source and the term produces a skeleton where الرحمن, الرحمان and الرحمٰن all compare equal.
+    /// The kept-character → source-index map lets a skeleton match map back to a contiguous original range.
+    /// If the whole term skeleton isn't found, the longest leading chunk (≥ 2 letters) is highlighted - but
+    /// only when `guaranteeMatch` is set, so this "always sees *something*" fuzziness is limited to fields
+    /// that are meant to contain the match (ayah search) and doesn't leak onto side-by-side sibling fields.
+    nonisolated private static func arabicLooseRanges(
+        source: String,
+        normalizedSource: String,
+        indexMap: [String.Index],
+        normalizedTerm: String,
+        guaranteeMatch: Bool
+    ) -> [Range<String.Index>] {
+        guard indexMap.count == normalizedSource.count else { return [] }
+
+        var skeleton = ""
+        var skeletonMap: [String.Index] = []
+        skeleton.reserveCapacity(normalizedSource.count)
+        skeletonMap.reserveCapacity(normalizedSource.count)
+        var k = 0
+        for ch in normalizedSource {
+            if ch != "ا" {
+                skeleton.append(ch)
+                skeletonMap.append(indexMap[k])
+            }
+            k += 1
+        }
+
+        var termSkeleton = ""
+        for ch in normalizedTerm where ch != "ا" { termSkeleton.append(ch) }
+        guard termSkeleton.count >= 2, !skeleton.isEmpty else { return [] }
+
+        func mapRange(_ r: Range<String.Index>) -> Range<String.Index>? {
+            let lo = skeleton.distance(from: skeleton.startIndex, to: r.lowerBound)
+            let hi = skeleton.distance(from: skeleton.startIndex, to: r.upperBound)
+            guard lo >= 0, hi > lo, hi - 1 < skeletonMap.count else { return nil }
+            var start = skeletonMap[lo]
+            var end = source.index(after: skeletonMap[hi - 1])
+            // Pull a directly-preceding alef (e.g. the ا of الـ) into the highlight so it reads naturally.
+            if start > source.startIndex {
+                let prev = source.index(before: start)
+                if Self.normalizeForSearchText(String(source[prev]), trimWhitespace: false) == "ا" { start = prev }
+            }
+            // Trailing counterpart of that pull, and for the same reason. This skeleton dropped every alef,
+            // and the fold drops hamza and the marks outright - so a match ending on a letter stops dead
+            // there and leaves the rest of the SAME WORD in the base color: searching نساء lit "يَٰنِسَ"
+            // and left "آءَ" dark, which reads as "the hamza isn't highlighted". Absorb that tail.
+            //
+            // The whitespace guard is load-bearing and must stay FIRST: a space folds to the empty string
+            // (the fold trims whitespace), so an `isEmpty` test alone swallows the space AND the next
+            // word's opening alef - "يَٰنِسَآءَ ٱ".
+            while end < source.endIndex {
+                let next = source.index(after: end)
+                let cluster = source[end..<next]
+                guard cluster.first?.isWhitespace != true else { break }
+                let folded = Self.normalizeForSearchText(String(cluster), trimWhitespace: false)
+                guard folded.isEmpty || folded == "ا" else { break }
+                end = next
+            }
+            return start..<end
+        }
+
+        // Full alef-insensitive substring matches.
+        var ranges: [Range<String.Index>] = []
+        var searchStart = skeleton.startIndex
+        while searchStart < skeleton.endIndex,
+              let m = skeleton.range(of: termSkeleton, range: searchStart..<skeleton.endIndex) {
+            if let mapped = mapRange(m) { ranges.append(mapped) }
+            searchStart = m.upperBound
+        }
+        if !ranges.isEmpty { return ranges }
+
+        // Longest-prefix partial: highlight the longest leading chunk of the term we can find. This is a
+        // fuzzy guess (it colors a fragment even when the full term isn't present), so it's reserved for
+        // fields that are supposed to contain the match - otherwise a two-letter overlap on an unrelated
+        // sibling field would light up.
+        guard guaranteeMatch else { return [] }
+        var prefixLen = termSkeleton.count - 1
+        while prefixLen >= 2 {
+            let prefix = String(termSkeleton.prefix(prefixLen))
+            // A prefix ending on the space between two query words says nothing more than the word
+            // before it, and the fold maps that space onto the NEXT word's first letter: "patience "
+            // of "patience hardship" came back as "patience a" and painted "patience and".
+            if prefix.last?.isWhitespace == true {
+                prefixLen -= 1
+                continue
+            }
+            if let m = skeleton.range(of: prefix), let mapped = mapRange(m) {
+                return [mapped]
+            }
+            prefixLen -= 1
+        }
+        return []
+    }
+
+    /// Guarantees at least one highlight: scans the original words (each normalized on its own, so there's
+    /// no fragile whole-string alignment), scores them against the query, and returns every word that
+    /// contains the query - or, if none do, the single closest word. This is the "something is always
+    /// highlighted, the closest match" behavior.
+    nonisolated private static func closestMatchRanges(in source: String, normalizedTerm: String) -> [Range<String.Index>] {
+        // Match against the most specific (longest) query word.
+        guard let primaryQuery = normalizedTerm
+            .split(separator: " ")
+            .map(String.init)
+            .filter({ !$0.isEmpty })
+            .max(by: { $0.count < $1.count })
+        else { return [] }
+
+        var scored: [(range: Range<String.Index>, score: Int)] = []
+        var cursor = source.startIndex
+        while cursor < source.endIndex {
+            while cursor < source.endIndex, source[cursor].isWhitespace { cursor = source.index(after: cursor) }
+            guard cursor < source.endIndex else { break }
+            let start = cursor
+            while cursor < source.endIndex, !source[cursor].isWhitespace { cursor = source.index(after: cursor) }
+            let tokenRange = start..<cursor
+
+            let normToken = Self.normalizeForSearchText(String(source[tokenRange]), trimWhitespace: true)
+            guard !normToken.isEmpty else { continue }
+            let score = wordMatchScore(word: normToken, query: primaryQuery)
+            if score > 0 { scored.append((tokenRange, score)) }
+        }
+
+        guard let best = scored.max(by: { $0.score < $1.score }) else {
+            // Absolute last resort. The row only passes `term` when its field matched the query, so we should
+            // always show *something* - even a 1% match. If no word scored at all (a normalization mismatch
+            // between the verse-search index and this highlighter), highlight the longest word so the user
+            // never sees a "matched but nothing colored" row.
+            return longestWordRange(in: source).map { [$0] } ?? []
+        }
+        // Words that actually contain the query (or equal it) are all highlighted; otherwise fall back to
+        // the single closest word so there's always exactly something.
+        let strong = scored.filter { $0.score >= 70 }.map(\.range)
+        return strong.isEmpty ? [best.range] : strong
+    }
+
+    /// The range of the longest whitespace-delimited word in `source` (the guaranteed-something fallback).
+    nonisolated private static func longestWordRange(in source: String) -> Range<String.Index>? {
+        var best: Range<String.Index>? = nil
+        var bestLen = 0
+        var cursor = source.startIndex
+        while cursor < source.endIndex {
+            while cursor < source.endIndex, source[cursor].isWhitespace { cursor = source.index(after: cursor) }
+            guard cursor < source.endIndex else { break }
+            let start = cursor
+            while cursor < source.endIndex, !source[cursor].isWhitespace { cursor = source.index(after: cursor) }
+            let len = source.distance(from: start, to: cursor)
+            if len > bestLen { bestLen = len; best = start..<cursor }
+        }
+        return best
+    }
+
+    nonisolated private static func wordMatchScore(word: String, query: String) -> Int {
+        if word == query { return 100 }
+        if word.contains(query) { return 70 }
+        if query.contains(word) { return 60 }
+        let lcp = commonPrefixLength(word, query)
+        return lcp >= 2 ? lcp : 0
+    }
+
+    nonisolated private static func commonPrefixLength(_ a: String, _ b: String) -> Int {
+        var count = 0
+        var i = a.startIndex
+        var j = b.startIndex
+        while i < a.endIndex, j < b.endIndex, a[i] == b[j] {
+            count += 1
+            i = a.index(after: i)
+            j = b.index(after: j)
+        }
+        return count
+    }
+
+    nonisolated private static func normalizedTokenRanges(in text: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var cursor = text.startIndex
+
+        while cursor < text.endIndex {
+            while cursor < text.endIndex, text[cursor].isWhitespace {
+                cursor = text.index(after: cursor)
+            }
+            guard cursor < text.endIndex else { break }
+
+            let start = cursor
+            while cursor < text.endIndex, !text[cursor].isWhitespace {
+                cursor = text.index(after: cursor)
+            }
+            ranges.append(start..<cursor)
+        }
+
+        return ranges
+    }
+
+    private func highlightAllahIfNeeded(source: String, baseAttributed: AttributedString) -> AttributedString {
+        guard highlightAllahNames else { return baseAttributed }
+
+        var attributed = baseAttributed
+
+        if !source.containsArabicLetters {
+            highlightEnglishAllah(source: source, attributed: &attributed)
+            return attributed
+        }
+
+        highlightArabicAllah(source: source, attributed: &attributed)
+
+        return attributed
+    }
+
+    private func highlightEnglishAllah(source: String, attributed: inout AttributedString) {
+        var searchStart = source.startIndex
+        while searchStart < source.endIndex,
+              let matchRange = source.range(
+                of: "Allah",
+                options: [.caseInsensitive, .diacriticInsensitive],
+                range: searchStart..<source.endIndex
+              ) {
+            if let start = AttributedString.Index(matchRange.lowerBound, within: attributed),
+               let end = AttributedString.Index(matchRange.upperBound, within: attributed) {
+                attributed[start..<end].foregroundColor = .red
+            }
+
+            searchStart = matchRange.upperBound
+        }
+    }
+
+    private func highlightArabicAllah(source: String, attributed: inout AttributedString) {
+        for range in Self.arabicAllahRanges(in: source) {
+            if let start = AttributedString.Index(range.lowerBound, within: attributed),
+               let end = AttributedString.Index(range.upperBound, within: attributed) {
+                attributed[start..<end].foregroundColor = .red
+            }
+        }
+    }
+
+    /// Every occurrence of the name الله in `source`, cached. Static and shared because the word-by-word
+    /// reader paints the same red name onto an `NSAttributedString` it builds itself (see
+    /// `WordByWordText`) - it renders through a text view rather than a `Text`, so it cannot go through
+    /// `HighlightedSnippet`, and a second copy of this scan would be a second thing to keep in sync.
+    nonisolated static func arabicAllahRanges(in source: String) -> [Range<String.Index>] {
+        let cacheKey = source as NSString
+        // Cached as instance-free UTF-16 spans; a nil materialization (can't happen for equal content)
+        // falls through to a fresh scan rather than being trusted.
+        if let cached = allahRangeCache.object(forKey: cacheKey),
+           let materialized = ranges(fromUTF16Spans: cached.spans, in: source) {
+            return materialized
+        }
+
+        var found: [Range<String.Index>] = []
+        for start in source.indices {
+            if let range = arabicAllahRange(startingAt: start, in: source) {
+                found.append(range)
+            }
+        }
+        allahRangeCache.setObject(
+            RangeEntry(found.map { utf16Span(of: $0, in: source) }),
+            forKey: cacheKey
+        )
+        return found
+    }
+
+    nonisolated private static func arabicAllahRange(startingAt start: String.Index, in source: String) -> Range<String.Index>? {
+        if source[start].allahBase?.isAllahAlif == true,
+           let afterAlif = nextNonMarkIndex(after: start, in: source),
+           source[afterAlif].allahBase == "ل",
+           let secondLam = nextNonMarkIndex(after: afterAlif, in: source),
+           source[secondLam].allahBase == "ل",
+           let heh = nextNonMarkIndex(after: secondLam, in: source),
+           source[heh].allahBase == "ه",
+           nameEndsTheWord(atHeh: heh, in: source) {
+            return start..<rangeUpperBound(afterBaseAt: heh, in: source)
+        }
+
+        if source[start].allahBase == "ل",
+           nameStartsTheWord(atFirstLam: start, in: source),
+           let secondLam = nextNonMarkIndex(after: start, in: source),
+           source[secondLam].allahBase == "ل",
+           let heh = nextNonMarkIndex(after: secondLam, in: source),
+           source[heh].allahBase == "ه",
+           nameEndsTheWord(atHeh: heh, in: source) {
+            return start..<rangeUpperBound(afterBaseAt: heh, in: source)
+        }
+
+        return nil
+    }
+
+    /// The name must END its word - `ٱللَّهِ`, `لِلَّهِ` - with the one exception of the vocative `ٱللَّهُمَّ` (Allahumma).
+    /// Without this every word whose letters happen to run ل + ل + ه was painted red: `لَلۡهُدَىٰ` (92:12,
+    /// "the guidance" - Abu's report), `ٱللَّهۡوِ` (62:11, the amusement) and `ٱللَّهَبِ` (77:31, the flame).
+    /// A digit, a punctuation mark, an ayah medallion or a tatweel all count as the end of the word.
+    nonisolated private static func nameEndsTheWord(atHeh heh: String.Index, in source: String) -> Bool {
+        guard let next = nextNonMarkIndex(after: heh, in: source) else { return true }
+        guard let letter = source[next].arabicWordLetter else { return true }
+        guard letter == "م" else { return false }
+        guard let afterMeem = nextNonMarkIndex(after: next, in: source) else { return true }
+        return source[afterMeem].arabicWordLetter == nil
+    }
+
+    /// Alif-less `لله` is the name only where `لِ` is the word's own opening - `لِلَّهِ`, or that behind the
+    /// conjunctions و and ف (`وَلِلَّهِ`, `فَلِلَّهِ`). Every other preceding letter makes it an ordinary
+    /// doubled-lam word that the shadda-less spelling only looks like: `يُضۡلِلۡهُ`, `ظَلَّلَهُ`,
+    /// `خِلَٰلَهَا`. (Every preposition other than لِ keeps the alif - `بِٱللَّهِ` - so it lands in the alif branch.)
+    nonisolated private static func nameStartsTheWord(atFirstLam lam: String.Index, in source: String) -> Bool {
+        guard let previous = previousNonMarkIndex(before: lam, in: source) else { return true }
+        guard let letter = source[previous].arabicWordLetter else { return true }
+        return letter == "و" || letter == "ف"
+    }
+
+    nonisolated private static func nextNonMarkIndex(after index: String.Index, in source: String) -> String.Index? {
+        var cursor = source.index(after: index)
+        while cursor < source.endIndex {
+            // Stop at a word boundary: the letters of "Allah" (ل + ل + ه) must all be in the same word.
+            // Skipping whitespace here wrongly matched sequences like سَوَّلَ لَهُمۡ (لـ + لـه across a space).
+            if source[cursor].isWhitespace {
+                return nil
+            }
+            if !source[cursor].isArabicMark {
+                return cursor
+            }
+            cursor = source.index(after: cursor)
+        }
+        return nil
+    }
+
+    nonisolated private static func previousNonMarkIndex(before index: String.Index, in source: String) -> String.Index? {
+        var cursor = index
+        while cursor > source.startIndex {
+            cursor = source.index(before: cursor)
+            // Same word boundary the forward walk keeps: what sits behind a space is a different word.
+            if source[cursor].isWhitespace {
+                return nil
+            }
+            if !source[cursor].isArabicMark {
+                return cursor
+            }
+        }
+        return nil
+    }
+
+    nonisolated private static func rangeUpperBound(afterBaseAt index: String.Index, in source: String) -> String.Index {
+        guard var scalarCursor = index.samePosition(in: source.unicodeScalars) else {
+            return source.index(after: index)
+        }
+
+        var foundBase = false
+        while scalarCursor < source.unicodeScalars.endIndex {
+            let scalar = source.unicodeScalars[scalarCursor]
+            if !foundBase {
+                foundBase = scalar.value == 0x0647
+                scalarCursor = source.unicodeScalars.index(after: scalarCursor)
+                continue
+            }
+            guard scalar.isArabicAllahHighlightMarkScalar else { break }
+            scalarCursor = source.unicodeScalars.index(after: scalarCursor)
+        }
+
+        return scalarCursor.samePosition(in: source) ?? source.index(after: index)
+    }
+
+    /// Builds the folded source and its index map TOGETHER, in one pass, with the same whitespace collapsing
+    /// the query's fold applies.
+    ///
+    /// They used to be built by two different code paths: the folded string by folding the whole source at
+    /// once (which collapses whitespace runs and drops leading/trailing whitespace), and the map by folding
+    /// one character at a time (which counts every whitespace character). Any source with a doubled space, a
+    /// leading space, or beginner-mode letter spacing made the two lengths disagree - and the mapper treats a
+    /// length mismatch as corruption and refuses to map, so EVERY highlight on that row silently vanished.
+    /// That was the "Arabic highlighting just doesn't work sometimes" bug. Built together, the lengths agree
+    /// by construction.
+    nonisolated static func normalizedSourceAndMap(for source: String) -> (normalized: String, mapUTF16: [Int]) {
+        var normalized = ""
+        var map: [Int] = []
+        map.reserveCapacity(source.count)
+        var pendingSpace = false
+        var utf16Pos = 0
+
+        for idx in source.indices {
+            let next = source.index(after: idx)
+            let piece = Self.normalizeForSearchText(String(source[idx..<next]), trimWhitespace: false)
+            for ch in piece {
+                if ch.isWhitespace {
+                    // Collapse runs, and drop leading whitespace outright - exactly what the query's fold does.
+                    pendingSpace = !normalized.isEmpty
+                } else {
+                    if pendingSpace {
+                        normalized.append(" ")
+                        map.append(utf16Pos)
+                        pendingSpace = false
+                    }
+                    normalized.append(ch)
+                    map.append(utf16Pos)
+                }
+            }
+            utf16Pos += source.utf16.distance(from: idx, to: next)
+        }
+        // Trailing whitespace was never emitted, matching the query's trim.
+        return (normalized, map)
+    }
+
+    nonisolated private static func originalRange(
+        in source: String,
+        normalizedSource: String,
+        matchRange: Range<String.Index>,
+        indexMap: [String.Index]
+    ) -> Range<String.Index>? {
+        guard indexMap.count == normalizedSource.count else { return nil }
+
+        let lowerOffset = normalizedSource.distance(from: normalizedSource.startIndex, to: matchRange.lowerBound)
+        let upperOffset = normalizedSource.distance(from: normalizedSource.startIndex, to: matchRange.upperBound)
+
+        guard lowerOffset >= 0,
+              upperOffset > lowerOffset,
+              lowerOffset < indexMap.count,
+              upperOffset - 1 < indexMap.count else {
+            return nil
+        }
+
+        let start = indexMap[lowerOffset]
+        let lastMatched = indexMap[upperOffset - 1]
+        var end = source.index(after: lastMatched)
+
+        // A cluster that folds to nothing (a standalone tashkeel or Quranic sign written as its own grapheme)
+        // belongs to the word it follows. Left outside the range, the word tints in the accent while its final
+        // mark stays in the base color - the "highlight stops one mark short" artifact on Arabic. Absorb them.
+        while end < source.endIndex {
+            let next = source.index(after: end)
+            let cluster = source[end..<next]
+            guard cluster.first?.isWhitespace != true,
+                  Self.normalizeForSearchText(String(cluster), trimWhitespace: false).isEmpty else { break }
+            end = next
+        }
+
+        return start..<end
+    }
+
+}
+
+private extension Character {
+    var allahBase: Character? {
+        for scalar in unicodeScalars where !scalar.isArabicMarkScalar {
+            switch scalar.value {
+            // Every alif spelling, hamza-carrying ones included: the hadith books write the questioning
+            // `آلله` and `ألله`, which have to reach the alif branch or the alif-less rule below rejects them.
+            case 0x0622, 0x0623, 0x0625, 0x0627, 0x0671...0x0673, 0x0675:
+                return "ا"
+            case 0x0644:
+                return "ل"
+            case 0x0647:
+                return "ه"
+            default:
+                continue
+            }
+        }
+
+        return nil
+    }
+
+    var isAllahAlif: Bool {
+        self == "ا"
+    }
+
+    /// The Arabic letter this cluster is built on, marks ignored - nil when the cluster is not a letter
+    /// at all (a space, a digit, punctuation, an ayah medallion, a tatweel), which is what makes a word
+    /// end for the name scan.
+    var arabicWordLetter: Character? {
+        for scalar in unicodeScalars where !scalar.isArabicMarkScalar {
+            switch scalar.value {
+            case 0x0621...0x063F, 0x0641...0x064A, 0x066E, 0x066F, 0x0671...0x06D3,
+                 0x06EE, 0x06EF, 0x06FA...0x06FF, 0x0750...0x077F:
+                return Character(scalar)
+            default:
+                continue
+            }
+        }
+
+        return nil
+    }
+
+    var isArabicMark: Bool {
+        unicodeScalars.allSatisfy(\.isArabicMarkScalar)
+    }
+
+    var isArabicAllahHighlightMark: Bool {
+        unicodeScalars.allSatisfy(\.isArabicAllahHighlightMarkScalar)
+    }
+}
+
+private extension UnicodeScalar {
+    var isArabicMarkScalar: Bool {
+        switch value {
+        case 0x0610...0x061A,
+             0x064B...0x065F,
+             0x0670,
+             0x06D6...0x06ED:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var isArabicAllahHighlightMarkScalar: Bool {
+        switch value {
+        case 0x0610...0x061A,
+             0x064B...0x065F,
+             0x0670:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+extension Text {
+    /// Text on the Islam tab (a dua, a dhikr, a name's description, an article's quote) with the name
+    /// of Allah in red when the reader has Islam Settings' "Highlight Allah" on: the Arabic name by
+    /// `HighlightedSnippet`'s own scan, so a word counts as the name here exactly when it does in the
+    /// Quran and hadith readers, and the English word "Allah" the way those readers paint it. Every
+    /// other run keeps whatever color the call site gives the `Text`.
+    static func islamText(_ source: String, highlightAllah: Bool) -> Text {
+        guard highlightAllah else { return Text(source) }
+        // Cached per source (Phase 10.8): every verbatim article paragraph, dua line and name tile runs
+        // this on each body pass, with a diacritic-insensitive `range(of:)` scan over the whole string.
+        let key = source as NSString
+        if let hit = IslamTextCache.cache.object(forKey: key) {
+            if let attributed = hit.value { return Text(attributed) }
+            return Text(source)
+        }
+        let attributed = islamAttributed(source)
+        IslamTextCache.cache.setObject(IslamTextCache.Box(attributed), forKey: key)
+        if let attributed { return Text(attributed) }
+        return Text(source)
+    }
+
+    /// The highlighted form, or nil when the text names Allah nowhere.
+    private static func islamAttributed(_ source: String) -> AttributedString? {
+        var ranges = HighlightedSnippet.arabicAllahRanges(in: source)
+        var searchStart = source.startIndex
+        while searchStart < source.endIndex,
+              let match = source.range(of: "Allah", options: [.caseInsensitive, .diacriticInsensitive],
+                                       range: searchStart..<source.endIndex) {
+            ranges.append(match)
+            searchStart = match.upperBound
+        }
+        guard !ranges.isEmpty else { return nil }
+        var attributed = AttributedString(source)
+        for range in ranges {
+            if let start = AttributedString.Index(range.lowerBound, within: attributed),
+               let end = AttributedString.Index(range.upperBound, within: attributed) {
+                attributed[start..<end].foregroundColor = .red
+            }
+        }
+        return attributed
+    }
+
+    /// `islamText` under the name the Arabic-only call sites read best with.
+    static func islamArabic(_ source: String, highlightAllah: Bool) -> Text {
+        islamText(source, highlightAllah: highlightAllah)
+    }
+}
+
+extension String {
+    var containsArabicLetters: Bool {
+        unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x0600...0x06FF,
+                 0x0750...0x077F,
+                 0x08A0...0x08FF,
+                 0xFB50...0xFDFF,
+                 0xFE70...0xFEFF,
+                 0x1EE00...0x1EEFF:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+}
+
+extension AttributedString {
+    /// A cheap fingerprint of the characters and the foreground-colour runs, for memo keys that must
+    /// change when a pre-styled (tajweed) string is recoloured (Phase 5 step 11).
+    var renderDigest: Int {
+        var hasher = Hasher()
+        hasher.combine(String(characters))
+        for run in runs {
+            hasher.combine(characters.distance(from: run.range.lowerBound, to: run.range.upperBound))
+            if let color = run.foregroundColor { hasher.combine("\(color)") }
+            #if canImport(UIKit)
+            // The tajweed painters color through NSAttributedString, so their colors live in the UIKit
+            // scope and the SwiftUI read above is nil for every one of them: the digest saw run LENGTHS
+            // only. Hiding a rule moves the runs, which is why that was enough until a rule could be
+            // recolored in place (custom tajweed colors, 2026-09-20): same runs, new colors, same
+            // digest, and the memo served the old paint. Hashed by component, not by object: the riwayah
+            // palette builds a fresh dynamic UIColor per call, equal only to itself.
+            if let color = run.uiKit.foregroundColor { hasher.combine(ColorComponentMemo.hash(of: color)) }
+            #endif
+        }
+        return hasher.finalize()
+    }
+
+    #if canImport(UIKit)
+    /// The component hash of one colour, by object (Phase 10.8): the tajweed painters hand the same
+    /// `UIColor` objects out of their caches on every pass, and resolving each run's colour against
+    /// the light appearance plus `getRed` was the cost of every row body with a pre-styled source.
+    /// The colour object itself is kept beside its hash, so an identifier can never be reused by a
+    /// new colour while its entry is alive; a full table starts over.
+    enum ColorComponentMemo {
+        private static let lock = NSLock()
+        nonisolated(unsafe) private static var table: [ObjectIdentifier: (color: UIColor, hash: Int)] = [:]
+        static func hash(of color: UIColor) -> Int {
+            let id = ObjectIdentifier(color)
+            lock.lock()
+            if let entry = table[id], entry.color === color { lock.unlock(); return entry.hash }
+            lock.unlock()
+            var hasher = Hasher()
+            AttributedString.combineComponents(of: color, into: &hasher)
+            let value = hasher.finalize()
+            lock.lock()
+            if table.count >= 4096 { table.removeAll(keepingCapacity: true) }
+            table[id] = (color, value)
+            lock.unlock()
+            return value
+        }
+    }
+
+    fileprivate static func combineComponents(of color: UIColor, into hasher: inout Hasher) {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        #if os(watchOS)
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        #else
+        // Resolved against one fixed appearance so a dynamic color hashes the same every time; its
+        // light value is enough to tell the palette's colors apart.
+        color.resolvedColor(with: lightTraits).getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        #endif
+        hasher.combine(Int((red * 255).rounded()))
+        hasher.combine(Int((green * 255).rounded()))
+        hasher.combine(Int((blue * 255).rounded()))
+    }
+
+    #if !os(watchOS)
+    private static let lightTraits = UITraitCollection(userInterfaceStyle: .light)
+    #endif
+    #endif
+}
+
+/// `Text.islamText`'s per-source memo (Phase 10.8). A nil value remembers "nothing to highlight".
+enum IslamTextCache {
+    final class Box {
+        let value: AttributedString?
+        init(_ value: AttributedString?) { self.value = value }
+    }
+    static let cache: NSCache<NSString, Box> = {
+        let cache = NSCache<NSString, Box>()
+        cache.countLimit = 800
+        return cache
+    }()
+}
+
+/// `String(describing:)` of a `Font` or `Color` is reflection (a `Mirror` walk) and the snippet memo key
+/// needed three per body pass per snippet. The descriptions are stable for equal values, so they are
+/// looked up by the Hashable value instead (Phase 10.8); the key's bytes are unchanged.
+enum DescriptionMemo {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var fonts: [Font: String] = [:]
+    nonisolated(unsafe) private static var colors: [Color: String] = [:]
+
+    static func describe(_ font: Font) -> String {
+        lock.lock()
+        if let hit = fonts[font] { lock.unlock(); return hit }
+        lock.unlock()
+        let text = "\(font)"
+        lock.lock()
+        if fonts.count >= 256 { fonts.removeAll(keepingCapacity: true) }
+        fonts[font] = text
+        lock.unlock()
+        return text
+    }
+
+    static func describe(_ color: Color) -> String {
+        lock.lock()
+        if let hit = colors[color] { lock.unlock(); return hit }
+        lock.unlock()
+        let text = "\(color)"
+        lock.lock()
+        if colors.count >= 256 { colors.removeAll(keepingCapacity: true) }
+        colors[color] = text
+        lock.unlock()
+        return text
+    }
+}

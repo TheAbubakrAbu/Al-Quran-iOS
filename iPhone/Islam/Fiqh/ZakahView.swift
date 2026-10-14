@@ -1,0 +1,573 @@
+#if os(iOS)
+import SwiftUI
+
+/// The zakah calculator: enter what you own, subtract what is due now, and a fortieth of the rest is
+/// owed once it has sat at or above the nisab for a lunar year. It does no currency conversion and
+/// fetches no metal prices; every field is a plain amount in the user's own currency, and the nisab
+/// is worked out from a price per gram the user looks up.
+/// (`ZakahView` is taken - that's the Pillars & Beliefs page ABOUT zakah, in PillarViews.swift.)
+struct ZakahCalculatorView: View {
+    @ObservedObject private var settings = Settings.shared
+
+    /// Which metal sets the threshold. Silver is the default because it is nearly always the lower
+    /// of the two, and the lower one takes in more payers: the reading Ibn Baz and the Permanent
+    /// Committee gave for banknotes, which have no metal of their own.
+    private enum NisabBasis: String, CaseIterable {
+        case silver, gold, custom
+
+        var label: String {
+            switch self {
+            case .silver: return "Silver"
+            case .gold: return "Gold"
+            case .custom: return "Enter it"
+            }
+        }
+
+        /// Ibn Baz's figures: twenty mithqal of gold and a hundred and forty of silver.
+        var grams: Double {
+            switch self {
+            case .silver: return 595
+            case .gold: return 85
+            case .custom: return 0
+            }
+        }
+    }
+
+    /// A lunar year is the year zakah is measured in. Somebody who counts on the Gregorian calendar
+    /// pays over eleven extra days each year, so the rate is raised to keep the two equal: the
+    /// correction contemporary fatwa bodies settled on.
+    private enum YearBasis: String, CaseIterable {
+        case lunar, solar
+
+        var label: String { self == .lunar ? "Lunar year" : "Solar year" }
+        var rate: Double { self == .lunar ? 0.025 : 0.02577 }
+        var rateText: String { self == .lunar ? "2.5%" : "2.577%" }
+    }
+
+    // Persisted so a work-in-progress calculation survives leaving the screen. Stored as strings
+    // because they back TextFields directly; parsing happens in one place (`amount(_:)`).
+    @AppStorage("zakahCash") private var cash = ""
+    @AppStorage("zakahGold") private var gold = ""
+    @AppStorage("zakahSilver") private var silver = ""
+    @AppStorage("zakahTradeShares") private var tradeShares = ""
+    @AppStorage("zakahLongShares") private var longShares = ""
+    @AppStorage("zakahBusiness") private var business = ""
+    @AppStorage("zakahOwedToYou") private var owedToYou = ""
+    @AppStorage("zakahDebts") private var debts = ""
+
+    @AppStorage("zakahNisabBasis") private var nisabBasisRaw = NisabBasis.silver.rawValue
+    /// One price per metal. A single field (`zakahMetalPrice`) used to serve both: the gold price
+    /// typed for a gold nisab was multiplied by silver's 595 grams the moment the basis changed,
+    /// and a threshold seven times too high said "Nothing due". The old key is read once more, by
+    /// `migrateMetalPrice`.
+    @AppStorage("zakahGoldPrice") private var goldPrice = ""
+    @AppStorage("zakahSilverPrice") private var silverPrice = ""
+    @AppStorage("zakahMetalPrice") private var legacyMetalPrice = ""
+    @AppStorage("zakahNisab") private var customNisab = ""
+    @AppStorage("zakahYearBasis") private var yearBasisRaw = YearBasis.lunar.rawValue
+
+    @AppStorage("zakahFitrPeople") private var fitrPeople = 1
+    @AppStorage("zakahFitrCost") private var fitrCost = ""
+
+    @FocusState private var focusedField: Bool
+
+    /// The four less common asset rows. Starts open when any of them already has a figure, so a
+    /// calculation saved earlier is never hidden behind a closed disclosure.
+    @State private var showMoreAssets = false
+
+    private var nisabBasis: NisabBasis { NisabBasis(rawValue: nisabBasisRaw) ?? .silver }
+    private var yearBasis: YearBasis { YearBasis(rawValue: yearBasisRaw) ?? .lunar }
+
+    private static let currencyFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return formatter
+    }()
+
+    /// Any keyboard's digits and either separator convention (`TypedAmount`, A11).
+    private func amount(_ text: String) -> Double {
+        TypedAmount.parse(text)
+    }
+
+    private var totalAssets: Double {
+        [cash, gold, silver, tradeShares, longShares, business, owedToYou].map(amount).reduce(0, +)
+    }
+
+    private var debtsDue: Double { amount(debts) }
+    private var netWealth: Double { max(totalAssets - debtsDue, 0) }
+
+    /// The threshold in the user's own currency: grams of metal times the price they looked up, or
+    /// a figure they entered themselves.
+    private var nisabValue: Double {
+        switch nisabBasis {
+        case .custom: return amount(customNisab)
+        case .gold: return amount(goldPrice) * nisabBasis.grams
+        case .silver: return amount(silverPrice) * nisabBasis.grams
+        }
+    }
+
+    /// The single old price belonged to whichever metal was chosen when it was typed, so it goes to
+    /// that metal (never over a price already there) and the old key is emptied. Under a custom
+    /// threshold nothing says which metal it was, and it is dropped rather than guessed.
+    private func migrateMetalPrice() {
+        guard !legacyMetalPrice.isEmpty else { return }
+        switch nisabBasis {
+        case .gold: if goldPrice.isEmpty { goldPrice = legacyMetalPrice }
+        case .silver: if silverPrice.isEmpty { silverPrice = legacyMetalPrice }
+        case .custom: break
+        }
+        legacyMetalPrice = ""
+    }
+
+    /// Below-nisab only when the threshold is actually known; with the price field empty the
+    /// calculator doesn't pretend to know it and simply shows the fortieth.
+    private var knowsNisab: Bool { nisabValue > 0 }
+    private var isBelowNisab: Bool { knowsNisab && netWealth < nisabValue }
+
+    private var zakahDue: Double { netWealth * yearBasis.rate }
+    /// The same sum with nothing taken off for the debt, because whether a debt cancels zakah on
+    /// wealth already in hand is a real difference among the scholars.
+    private var zakahBeforeDebts: Double { totalAssets * yearBasis.rate }
+
+    private func formatted(_ value: Double) -> String {
+        Self.currencyFormatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
+    }
+
+    /// "-zakahSection <name>": render one section alone. Everything below the nisab picker sits
+    /// past the fold on a phone, and a simulator screenshot cannot scroll, so this is how the lower
+    /// half gets verified headlessly.
+    private func shows(_ name: String) -> Bool {
+        #if DEBUG
+        return Self.debugSection == nil || Self.debugSection == name
+        #else
+        return true
+        #endif
+    }
+
+    #if DEBUG
+    private static let debugSection: String? = {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "-zakahSection"),
+              index + 1 < arguments.count else { return nil }
+        return arguments[index + 1]
+    }()
+    #endif
+
+    #if os(iOS)
+    @State private var aboutDoor: SignsAboutDoor?
+    #endif
+
+    var body: some View {
+        List {
+            Group {
+                // The ANSWER first (Abu, 2026-09-19). The old order put seven empty amount rows and
+                // ~340 words of footer between the reader and the number they opened the screen for.
+                // The hero above it is short on purpose: the answer stays on the first screen.
+                #if os(iOS)
+                if shows("result") {
+                    ResourceHeroSection(ResourceHero(
+                        eyebrow: "THE THIRD PILLAR",
+                        systemImage: "percent",
+                        headline: "Take, [O, Muhammad], from their wealth a charity by which you purify them and cause them increase.",
+                        source: "Quran 9:103",
+                        message: "Enter what you own and what you owe. The calculator weighs it against the nisab and works out what is due, with zakat al-fitr beside it.",
+                        stats: [
+                            ResourceHeroStat("2.5%", "the rate"),
+                            ResourceHeroStat("1 year", "held (hawl)"),
+                            ResourceHeroStat("8", "recipient groups"),
+                        ]
+                    ))
+                }
+                #endif
+                if shows("result") { resultSection }
+                if shows("assets") { assetsSection }
+                if shows("liabilities") { liabilitiesSection }
+                if shows("nisab") { nisabSection }
+                if shows("year") { yearSection }
+                if shows("fitr") { fitrDoorSection }
+                if shows("other") { otherZakahSection }
+                if shows("notes") { notesSection }
+
+                // A calculator answers "how much". These answer "what is this, and why"
+                // (Abu, 2026-09-19: link the tools to what they are). The same card the libraries
+                // carry, pointed at the zakah articles that already exist.
+                #if os(iOS)
+                if shows("about") {
+                    AboutSignsSection(heading: "About Zakah",
+                                      systemImage: "percent",
+                                      doors: [.zakah, .howToZakah, .islam],
+                                      openDoor: $aboutDoor)
+                }
+                #endif
+            }
+            .themedListRowBackground()
+        }
+        #if os(iOS)
+        .aboutSignsDestination($aboutDoor)
+        #endif
+        .navigationTitle("Zakah Calculator")
+        .applyConditionalListStyle()
+        .onAppear { migrateMetalPrice() }
+        #if DEBUG
+        // "-focusAmount": focus the amount fields after appear (keyboard toolbar screenshot runs).
+        // "-zakahSeed": a worked example, for screenshot runs.
+        .onAppear {
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("-zakahSeed") {
+                cash = "12000"; gold = "4500"; silver = ""; tradeShares = "3000"
+                longShares = ""; business = "1500"; owedToYou = "800"; debts = "2000"
+                nisabBasisRaw = NisabBasis.silver.rawValue
+                silverPrice = "0.95"
+                fitrPeople = 4
+                fitrCost = "12"
+            }
+            if arguments.contains("-focusAmount") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { focusedField = true }
+            }
+        }
+        #endif
+        .toolbar {
+            // Content only while a field is focused: with no keyboard up, SwiftUI laid the accessory
+            // bar's item out with a negative width ("Invalid frame dimension" runtime issue; see
+            // InheritanceView, lldb-verified 2026-09-04).
+            ToolbarItemGroup(placement: .keyboard) {
+                if focusedField {
+                    Spacer(minLength: 0)
+                    Button("Done") { focusedField = false }
+                }
+            }
+        }
+    }
+
+    // MARK: What you own
+
+    private var assetsSection: some View {
+        Section(header: Text("WHAT YOU OWN")) {
+            // The three most people need are always here; the other four are behind a disclosure
+            // (Abu, 2026-09-19 - seven rows of "0" was most of the first screen). It opens by
+            // itself when any of them already holds a figure, so a saved calculation is never hidden.
+            amountRow("Cash & bank balances", systemImage: "banknote", text: $cash)
+            amountRow("Gold you own", systemImage: "circle.hexagongrid", text: $gold)
+            amountRow("Silver you own", systemImage: "circle.grid.cross", text: $silver)
+
+            DisclosureGroup(isExpanded: $showMoreAssets) {
+                amountRow("Shares held to trade", systemImage: "chart.line.uptrend.xyaxis", text: $tradeShares)
+                amountRow("Long-term shares", systemImage: "building.columns", text: $longShares)
+                amountRow("Business stock", systemImage: "shippingbox", text: $business)
+                amountRow("Money owed to you", systemImage: "person.crop.circle.badge.checkmark", text: $owedToYou)
+            } label: {
+                HStack {
+                    Text("Shares, business, money owed")
+                        .font(.subheadline)
+                    Spacer(minLength: 8)
+                    if otherAssetsTotal > 0 && !showMoreAssets {
+                        Text(formatted(otherAssetsTotal))
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundColor(settings.accentColor.accent2)
+                    }
+                }
+            }
+            .tint(settings.accentColor.color)
+
+            ExplainerButton(
+                title: "What counts, and what does not",
+                body_: "What you have held for a full lunar year, in your own currency. Your home, your car, your furniture and the tools you work with are not zakatable, and neither is a pension you cannot draw on yet.\n\nGold and silver count whatever they are for, jewellery included, even a woman's own jewellery kept for wearing. Abu Hanifa held it is due; Malik, ash-Shafi\u{2018}i and Ahmad exempted jewellery kept for lawful use. Ibn Baz, al-Albani and the Permanent Committee held it is due, on the hadith of the woman whose daughter wore two heavy gold bangles and who was asked \u{201C}Do you pay the zakah on this?\u{201D} (Abu Dawud 1563). This calculator follows that view; if you follow the other, leave the field empty.\n\nA debt somebody owes YOU and you expect back counts every year, as if it were in your hand. A debt on somebody who denies it or cannot pay is not counted until you actually receive it, and then for one year.\n\nShares bought to trade are counted at today's market value. Shares held for the long term are counted on the zakatable assets of the company behind them, not on the share price, so enter that part alone. Business stock is valued at what you would sell it for today, not what you paid.",
+                caption: "Held for a lunar year. Your home, car and tools are not counted."
+            )
+        }
+    }
+
+    private var otherAssetsTotal: Double {
+        [tradeShares, longShares, business, owedToYou].map(amount).reduce(0, +)
+    }
+
+    private var liabilitiesSection: some View {
+        Section(header: Text("WHAT YOU OWE")) {
+            amountRow("Debts due now", systemImage: "creditcard", text: $debts)
+
+            ExplainerButton(
+                title: "Which debts come off",
+                body_: "Only what is actually due now: this month's bills, this year's instalments, a debt somebody can demand today. A mortgage stretching over twenty years is not subtracted whole, or almost nobody would ever pay zakah again.",
+                caption: "Only what is due now, not a whole mortgage."
+            )
+        }
+    }
+
+    // MARK: The threshold
+
+    private var nisabSection: some View {
+        Section(header: Text("THE THRESHOLD (NISAB)")) {
+            Picker("Nisab basis", selection: $nisabBasisRaw) {
+                ForEach(NisabBasis.allCases, id: \.rawValue) { basis in
+                    Text(basis.label).tag(basis.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.vertical, 2)
+
+            if nisabBasis == .custom {
+                amountRow("Nisab threshold", systemImage: "scalemass", text: $customNisab)
+            } else {
+                amountRow(nisabBasis == .gold ? "Gold price per gram" : "Silver price per gram",
+                          systemImage: "tag", text: nisabBasis == .gold ? $goldPrice : $silverPrice)
+
+                HStack {
+                    Text("Nisab (\(Int(nisabBasis.grams))g)")
+                        .font(.subheadline)
+                    Spacer()
+                    Text(knowsNisab ? formatted(nisabValue) : "Enter a price")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundColor(knowsNisab ? .primary : .secondary)
+                }
+            }
+
+            ExplainerButton(title: "About the nisab", body_: nisabFooter,
+                            caption: nisabCaption)
+        }
+    }
+
+    /// The one line that stays on the screen; the rest is behind the explainer.
+    private var nisabCaption: String {
+        switch nisabBasis {
+        case .silver: return "595g of silver: nearly always the lower of the two, and the better one for the poor."
+        case .gold:   return "85g of gold, twenty mithqal."
+        case .custom: return "Enter the threshold directly, or leave it empty to skip the check."
+        }
+    }
+
+    private var nisabFooter: String {
+        switch nisabBasis {
+        case .silver:
+            return "The silver nisab is 595g, and it is nearly always the lower of the two. Banknotes are not gold or silver, so they are measured against whichever nisab is lower: that takes in more payers and is the better of the two for the poor, which is how Ibn Baz and the Permanent Committee read it. Look up today's silver price per gram and enter it."
+        case .gold:
+            return "The gold nisab is 85g, twenty mithqal. Look up today's gold price per gram and enter it. Gold you actually own is measured against this one; for cash, most scholars use the lower threshold instead."
+        case .custom:
+            return "Enter the threshold directly if you already know it in your currency. Leave it empty to skip the check and just see the fortieth."
+        }
+    }
+
+    private var yearSection: some View {
+        Section(header: Text("THE YEAR")) {
+            Picker("Year", selection: $yearBasisRaw) {
+                ForEach(YearBasis.allCases, id: \.rawValue) { basis in
+                    Text(basis.label).tag(basis.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.vertical, 2)
+
+            ExplainerButton(
+                title: "Why a lunar year",
+                body_: "Zakah falls due when wealth has been at or above the nisab for one full lunar year (hawl). Dipping below in the middle of the year does not restart it, on the view most scholars take; only the two ends matter. If you count your year on the Gregorian calendar instead, the rate is raised to 2.577% to make up the eleven extra days.",
+                caption: yearBasis == .lunar ? "A fortieth, once the wealth has sat a lunar year." : "2.577%, to make up the eleven days a solar year adds."
+            )
+        }
+    }
+
+    // MARK: The answer
+
+    private var resultSection: some View {
+        Section {
+            CalculatorResultCard(
+                title: isBelowNisab ? "Nothing due" : "Zakah due (\(yearBasis.rateText))",
+                value: isBelowNisab ? formatted(0) : formatted(zakahDue)
+            ) {
+                if isBelowNisab {
+                    Text("Your wealth is below the nisab, so no zakah is due on it. Give what you like as sadaqah instead.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if totalAssets == 0 {
+                    Text("Enter what you own below and this updates as you type.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        workingRow("Total assets", value: totalAssets)
+                        if debtsDue > 0 { workingRow("Less debts due", value: -debtsDue) }
+                        if knowsNisab { workingRow("Nisab", value: nisabValue) }
+                    }
+                }
+            }
+            .contextMenu {
+                Button {
+                    settings.hapticFeedback()
+                    UIPasteboard.general.string = formatted(zakahDue)
+                } label: {
+                    Label("Copy Amount", systemImage: "doc.on.doc")
+                }
+            }
+
+            if !isBelowNisab, debtsDue > 0 {
+                ExplainerButton(
+                    title: "Why two figures?",
+                    body_: "Whether a debt cancels the zakah on wealth already in your hand is a real difference among the scholars, so both are worth knowing. Without deducting the debt you would owe \(formatted(zakahBeforeDebts)). The safer of the two is the larger.",
+                    caption: "Without deducting the debt: \(formatted(zakahBeforeDebts))"
+                )
+            } else if isBelowNisab, debtsDue > 0, totalAssets >= nisabValue {
+                // Only the debt put the wealth under the threshold. On the view that a debt is not
+                // deducted the whole sum is still due, and "Nothing due" alone hid that figure in
+                // exactly the case where the two views differ most.
+                ExplainerButton(
+                    title: "Why might something still be due?",
+                    body_: "What you own reaches the nisab; it is only after your debts that it falls below it. Whether a debt cancels the zakah on wealth already in your hand is a real difference among the scholars. On the view that it does, nothing is due. On the view that it does not, you would owe \(formatted(zakahBeforeDebts)). The safer of the two is the larger.",
+                    caption: "Without deducting the debt: \(formatted(zakahBeforeDebts))"
+                )
+            }
+        }
+    }
+
+    private func workingRow(_ title: String, value: Double) -> some View {
+        HStack {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(formatted(value))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: Zakat al-Fitr
+
+    /// Its own screen, not a section here (Abu, 2026-09-19). Its own footer said it best: "a separate
+    /// obligation from the zakah above, and it is not worked out on wealth". A different calculation
+    /// on a different basis, sharing a screen with the wealth zakah, was a real part of the confusion.
+    private var fitrDoorSection: some View {
+        Section {
+            NavigationLink(destination: LazyDestination { ZakatAlFitrView() }) {
+                HStack(spacing: 12) {
+                    AccentIconChip(systemImage: "takeoutbag.and.cup.and.straw", size: 30)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Zakat al-Fitr")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(.primary)
+
+                        Text("The Eid obligation, given as food, worked out per person, not on wealth.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    // MARK: The kinds this screen does not compute
+
+    private var otherZakahSection: some View {
+        Section(header: Text("OTHER ZAKAH, NOT COUNTED ABOVE")) {
+            otherRow("Crops and fruit",
+                     detail: "A tenth of what rain or a spring watered, a twentieth of what you paid to irrigate (al-Bukhari 1483). Due on harvest day, with no year to wait out: وَءَاتُوا حَقَّهُۥ يَومَ حَصَادِهِۦ, \"and give its due on the day of its harvest\" (6:141). The threshold is five awsuq, about 612kg of the dried crop.")
+            otherRow("Grazing livestock",
+                     detail: "Camels, cattle and sheep left to graze for most of the year and kept for milk or breeding. The first thresholds are five camels, thirty cattle and forty sheep, and the tables above them are long, so take the herd to someone who knows them.")
+            otherRow("Buried treasure (rikaz)",
+                     detail: "A fifth, straight away: وَفِى ٱلرِّكَازِ ٱلخُمُسُ (al-Bukhari 1499). No threshold and no year to wait.")
+        }
+    }
+
+    private func otherRow(_ title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(detail)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// The notes as an article section rather than one caption-sized block (Abu, 2026-10-03: "make it
+    /// pretty like pillars and beliefs"): what zakah is as the lead card, the sides the calculator
+    /// takes as bullets, and the caution as a callout. The words are the old single string's, split at
+    /// its paragraph breaks.
+    private var notesSection: some View {
+        Section(header: Text("WHAT THIS ASSUMES")) {
+            ArticleLead(Self.notesLead)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(verbatim: Self.notesSides)
+                    .font(.body)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                ForEach(Self.notesPositions, id: \.self) { position in
+                    ArticleBullet(verbatim: position)
+                }
+            }
+            .padding(.vertical, 4)
+
+            ArticleCallout(paragraphs: [Self.notesCaution], title: "Not a Fatwa",
+                           systemImage: "exclamationmark.triangle.fill")
+        }
+    }
+
+    static let notesLead = "Zakah is a fortieth of the wealth that has sat with you at or above the nisab for a lunar year. وَأَقِيمُوا ٱلصَّلَوٰةَ وَءَاتُوا ٱلزَّكَوٰةَ \"And establish prayer and give zakah\" (2:110). It goes to the eight kinds of people named in 9:60, and not to your parents, your children or your wife, who are yours to support anyway."
+
+    static let notesSides = "Where scholars differ, this calculator takes a side, and you should know which:"
+
+    static let notesPositions = [
+        "Gold and silver jewellery is counted, even a woman's own jewellery kept for wearing. Abu Hanifa held it is due; Malik, ash-Shafi‘i and Ahmad exempted jewellery kept for lawful use. Ibn Baz, al-Albani and the Permanent Committee held it is due, on the hadith of the woman whose daughter wore two heavy gold bangles and who was asked \"Do you pay the zakah on this?\" (Abu Dawud 1563). If you follow the other view, leave the field empty.",
+        "Banknotes are measured against the lower of the two nisabs, which is silver.",
+        "A debt somebody owes YOU and you expect back counts every year, as if it were in your hand. A debt on somebody who denies it or cannot pay is not counted until you actually receive it, and then for one year.",
+        "Shares bought to trade are counted at today's market value. Shares held for the long term are counted on the zakatable assets of the company behind them, not on the share price, so enter that part alone.",
+        "Business stock is valued at what you would sell it for today, not what you paid.",
+    ]
+
+    static let notesCaution = "This is a quick guide for the ordinary case, and nothing more. It is not a fatwa. Property held to rent, a business with debtors and creditors on both sides, retirement accounts, crops, livestock, gold mixed with stones, a year you are unsure of: every one of those needs a knowledgeable scholar of Ahl as-Sunnah wa al-Jamaʿah who can hear your actual situation. Ask one before you rely on this number."
+
+    // MARK: Rows
+
+    private func amountRow(_ title: String, systemImage: String, text: Binding<String>) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .foregroundColor(settings.accentColor.color)
+                .frame(width: 24, alignment: .center)
+
+            Text(title)
+                .font(.subheadline)
+                // Wraps before it scales: at the large text sizes "Cash & bank balances" was
+                // "Cash & bank bala..." beside the amount field.
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .minimumScaleFactor(0.7)
+
+            Spacer(minLength: 8)
+
+            TextField("0", text: text)
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.trailing)
+                .font(.subheadline.monospacedDigit())
+                .frame(maxWidth: 120)
+                .focused($focusedField)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func resultRow(_ title: String, value: Double) -> some View {
+        HStack {
+            Text(title)
+                .font(.subheadline)
+
+            Spacer()
+
+            Text(formatted(value))
+                .font(.subheadline.monospacedDigit())
+                .foregroundColor(.primary)
+        }
+    }
+}
+
+#Preview {
+    AlIslamPreviewContainer {
+        ZakahCalculatorView()
+    }
+}
+#endif

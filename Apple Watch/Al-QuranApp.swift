@@ -1,42 +1,58 @@
 import SwiftUI
-import WidgetKit
 
 @main
 struct AlQuranApp: App {
-    @StateObject private var settings = Settings.shared
-    @StateObject private var quranData = QuranData.shared
-    @StateObject private var quranPlayer = QuranPlayer.shared
-    @StateObject private var namesData = NamesViewModel.shared
+    // Plain references, not `@StateObject` (the iPhone root's rule): observing the stores here re-ran
+    // this body (and the whole TabView under it) on every publish of any of them. What the root reads
+    // comes from `RootAppearance` through `.appearanceEnvironment()`.
+    private let settings = Settings.shared
+    private let quranData = QuranData.shared
+    private let quranPlayer = QuranPlayer.shared
+    private let namesData = NamesViewModel.shared
 
     @Environment(\.scenePhase) private var scenePhase
     @State private var isLaunching = true
 
     init() {
-        // Activate WatchConnectivity early so we can tell whether the iPhone app is installed
-        // (used to decide if the watch should schedule prayer notifications itself).
+        LaunchClock.mark("app init")
+        #if DEBUG
+        LaunchClock.installStallWatch()
+        #endif
+        // Nothing is revealed until the launch cover lifts (`isLaunching` flips in the finale): every
+        // task parked on `AppReveal` (the Quran parse below among them) waits for the reveal, the
+        // iPhone root's rule. Without this the mirror read its default (true) under the cover.
+        AppReveal.revealed = false
+        // Activate WatchConnectivity early so settings sync with the iPhone both ways.
         _ = WatchConnectivityManager.shared
+        LaunchClock.mark("app init: watch connectivity up")
     }
 
     private enum WatchTab: Hashable { case quran, islam, settings }
 
     @State private var selectedTab: WatchTab = .quran
     @State private var didWarm = false
+    /// The three tabs are placeholders until the launch cover's first frame has committed (see
+    /// `tabContent`); flipped by `mountTabsThenWarm`.
+    @State private var tabsMounted = false
 
     var body: some Scene {
         WindowGroup {
             // The tabs mount from the first frame UNDER the launch cover (the same trick as the iPhone's
             // MainTabView), so each tab's view tree can be built and retained while the launch animation
             // plays. Before this, tabs only mounted after the reveal, and the first swipe into a tab paid its
-            // whole build cost as a visible hitch - the "huge lag going from Quran to Al-Islam" on the watch.
+            // whole build cost as a visible hitch.
+            // ...but never in the cover's own first transaction (the iPhone's launch rule): each tab is a
+            // `Color.clear` until `LaunchWarmup` reports the cover up, then all three mount under it and
+            // the walk below realizes them one by one.
             ZStack {
                 TabView(selection: $selectedTab) {
-                    QuranView().tag(WatchTab.quran)
+                    tabContent { QuranView() }.tag(WatchTab.quran)
 
-                    IslamView().tag(WatchTab.islam)
+                    tabContent { IslamView() }.tag(WatchTab.islam)
 
-                    SettingsView().tag(WatchTab.settings)
+                    tabContent { SettingsView() }.tag(WatchTab.settings)
                 }
-                .task { await warmUnderCover() }
+                .task { await mountTabsThenWarm() }
 
                 if isLaunching {
                     LaunchScreen(isLaunching: $isLaunching)
@@ -48,53 +64,100 @@ struct AlQuranApp: App {
             .environmentObject(quranData)
             .environmentObject(quranPlayer)
             .environmentObject(namesData)
-            .accentColor(settings.accentColor.color)
-            .tint(settings.accentColor.color)
-            // The app-wide SF Rounded design, same as the iPhone root - covers every system-font Text on
+            // Accent, tint, color scheme and the shared chrome's `AppearanceEnvironment`, live. Without
+            // this every `\.appearance` reader (glass, row backgrounds, icon chips, section pills) sits on
+            // the key's one-time launch snapshot, so an accent change only showed after a restart.
+            .appearanceEnvironment()
+            // The app-wide SF Rounded design, same as the iPhone root: it covers every system-font Text on
             // the watch, styled or not (watchOS 9.1+; a visual no-op earlier).
             .appFontDesign()
-            .preferredColorScheme(settings.colorScheme)
+            // Every Toggle breathes, same as the iPhone root (see `PaddedSwitchToggleStyle`).
+            .toggleStyle(PaddedSwitchToggleStyle())
             .transition(.opacity)
             .animation(.easeInOut, value: isLaunching)
-        }
-        .onChange(of: settings.accentColor) { _ in
-            WidgetCenter.shared.reloadAllTimelines()
-        }
-        .onChange(of: scenePhase) { phase in
-            if phase == .active { } else {
-                // A page flip within the last second may still have its last-read write pending.
-                settings.flushPendingLastRead()
-                // A khatm mark made in the last 250ms is still on the debounce timer; persist it before
-                // the system can suspend or kill the process.
-                settings.flushPendingKhatmProgress()
-                // Flush any just-made setting change before suspension so it reliably reaches the iPhone.
-                WatchConnectivityManager.shared.flushPendingSync()
+            // The live mirror of `isLaunching` for the views that read it and for the tasks parked on
+            // `AppReveal`.
+            .environment(\.appRevealed, !isLaunching)
+            .onChange(of: isLaunching) { launching in
+                AppReveal.revealed = !launching
             }
+        }
+        // No `.onChange` refreshes for settings here (the iPhone root's rule): each setting's own didSet
+        // performs its side effects (`accentColor` repaints the widgets from Settings on every write
+        // path), so a refresh here paid a second timeline reload per flip. Phase transitions delegate to
+        // the one place that orchestrates them (AppLifecycle.swift's watch half: the pending last-read,
+        // khatm and watch-sync flushes).
+        .onChange(of: scenePhase) { phase in
+            AppLifecycle.scenePhaseChanged(to: phase)
         }
     }
 
-    /// Walk each tab under the launch cover so its view tree is built and retained before the reveal - Quran
-    /// first (heaviest, and the tab most likely opened next), then Islam, then Settings, settling on Adhan.
-    /// The launch screen's finale gates its hand-off on `LaunchWarmup.isWarm`, and the whole walk overlaps
-    /// the finale animation, so the warming costs no visible launch time.
+    /// A tab's content, or a clear placeholder while the launch cover's first frame is still pending.
+    @ViewBuilder
+    private func tabContent<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        if tabsMounted {
+            content()
+        } else {
+            Color.clear
+        }
+    }
+
+    /// Mount the three tabs once the cover's first frame has committed (at once when there is no cover),
+    /// give that mount its own run-loop pass, then walk them.
+    @MainActor
+    private func mountTabsThenWarm() async {
+        if isLaunching {
+            await LaunchWarmup.shared.waitUntilCoverUp(maxWaitNanos: 1_000_000_000)
+        }
+        tabsMounted = true
+        LaunchClock.mark("tabs mounted")
+        // One frame: the mount realizes the selected page (and its neighbour) in the next pass, and the
+        // walk's first selection change must not land in that same transaction.
+        try? await Task.sleep(nanoseconds: 16_000_000)
+        await warmUnderCover()
+    }
+
+    /// Walk each tab under the launch cover so its view tree is built and retained before the reveal -
+    /// Quran, then Islam, then Settings, settling on the landing tab. The whole walk overlaps the finale
+    /// animation's hold, so the warming costs no visible launch time.
     @MainActor
     private func warmUnderCover() async {
         guard !didWarm else { return }
         didWarm = true
+        // The watch defers the Quran parse past the launch cover (`QuranData.shared`), so this root
+        // kicks it at the REVEAL: its landing is ~100 ms of main thread, which under the finale's hold
+        // would stall the animation. `QuranView.onAppear` is only a backstop for a visit after the walk,
+        // and the Quran tab is this app's landing tab, already on screen, so without this kick it would
+        // show its loading state until it next appeared.
+        defer {
+            Task { @MainActor in
+                await AppReveal.waitUntilRevealed()
+                quranData.ensureLoading()
+            }
+        }
 
         guard isLaunching else { LaunchWarmup.shared.markWarm(); return }
 
-        // Build the real surah list, not the empty loading state.
-        await quranData.waitUntilCoreLoaded()
-        if Task.isCancelled { LaunchWarmup.shared.markWarm(); return }
-
-        selectedTab = .quran
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        selectedTab = .islam
-        try? await Task.sleep(nanoseconds: 150_000_000)
-        selectedTab = .settings
-        try? await Task.sleep(nanoseconds: 80_000_000)
+        // Jumps, not slides: the paging TabView animates a selection change. Nothing is visible under
+        // the cover, so the selection moves in a transaction with animations off, and each tab gets two
+        // frames to realize.
+        for tab in [WatchTab.quran, .islam, .settings, launchTab] {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { selectedTab = tab }
+            try? await Task.sleep(nanoseconds: 32_000_000)
+        }
 
         LaunchWarmup.shared.markWarm()
+    }
+
+    /// The tab the watch lands on after the under-cover warm. Always Quran for users; a DEBUG launch
+    /// argument lets automation land straight on a tab it wants to exercise.
+    private var launchTab: WatchTab {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-launchTabIslam") { return .islam }
+        if ProcessInfo.processInfo.arguments.contains("-launchTabSettings") { return .settings }
+        #endif
+        return .quran
     }
 }

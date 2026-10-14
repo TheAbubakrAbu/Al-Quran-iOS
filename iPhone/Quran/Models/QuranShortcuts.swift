@@ -1,0 +1,247 @@
+import AppIntents
+
+/// A surah as an App Intents entity so Siri can resolve a spoken/typed name or number both in-phrase
+/// ("play surah Al-Fatihah") and via the ask-back flow ("play surah" → "Which surah?").
+@available(iOS 16.0, watchOS 9.0, *)
+struct SurahEntity: AppEntity, Identifiable {
+    let id: Int
+    let name: String
+
+    static var typeDisplayRepresentation: TypeDisplayRepresentation { "Surah" }
+    var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(id). \(name)") }
+    static var defaultQuery = SurahEntityQuery()
+}
+
+@available(iOS 16.0, watchOS 9.0, *)
+struct SurahEntityQuery: EntityQuery, EntityStringQuery {
+    private func entity(_ surah: Surah) -> SurahEntity { SurahEntity(id: surah.id, name: surah.nameTransliteration) }
+
+    /// Siri can invoke these on a COLD launch, before the background Quran load has populated
+    /// `quran` - resolving against the empty array made the spoken surah "not found". Wait for the
+    /// core load (it has its own escape hatches, and Siri's own timeout bounds the worst case).
+    private func loadedSurahs() async -> [Surah] {
+        await QuranData.shared.waitUntilCoreLoaded()
+        return await MainActor.run { QuranData.shared.quran }
+    }
+
+    func entities(for identifiers: [Int]) async throws -> [SurahEntity] {
+        await loadedSurahs().filter { identifiers.contains($0.id) }.map(entity)
+    }
+
+    func suggestedEntities() async throws -> [SurahEntity] {
+        await loadedSurahs().map(entity)
+    }
+
+    /// Resolves a spoken/typed string (a name, alias, or number) to matching surahs.
+    func entities(matching string: String) async throws -> [SurahEntity] {
+        let normalized = string.normalizedSurahIntentQuery
+        let all = await loadedSurahs()
+        guard !normalized.isEmpty else { return all.map(entity) }
+
+        if let number = Int(normalized), (1...114).contains(number) {
+            return all.filter { $0.id == number }.map(entity)
+        }
+        let direct = all.filter { surah in
+            surah.normalizedSearchNames.contains { $0.contains(normalized) }
+        }
+        // Dictation spells a surah however it likes ("Yaseen", "Rehman"): fold when nothing matched.
+        return (direct.isEmpty ? SurahSpelling.matches(normalized, in: all) : direct).map(entity)
+    }
+}
+
+@available(iOS 16.0, watchOS 9.0, *)
+struct PlaySurahAppIntent: AppIntent {
+    static var title: LocalizedStringResource = "Play Surah"
+    static var description = IntentDescription("Play a specific surah by name or number.")
+    static var openAppWhenRun = true
+    static var parameterSummary: some ParameterSummary { Summary("Play \(\.$surah)") }
+
+    @Parameter(
+        title: "Surah",
+        requestValueDialog: IntentDialog("Which surah would you like to play? You can say a name or a number.")
+    )
+    var surah: SurahEntity
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let didStart = await QuranPlaybackRouter.play(surahID: surah.id, name: surah.name)
+        return .result(dialog: didStart
+            ? IntentDialog("Playing Surah \(surah.id): \(surah.name).")
+            : IntentDialog("Sorry, there was a problem starting playback."))
+    }
+}
+
+#if os(iOS)
+/// Opens a surah in the reader without playing it (Abu, 2026-10-11: "have Siri intents also have just
+/// open Surah and it opens it in page if it was in one"). It takes the same route a Sunnah reminder's tap
+/// and an ayah widget take (`AppNavigation.open`), so the reader the listener last used opens: the
+/// mushaf page when page mode is on, the list otherwise.
+@available(iOS 16.0, *)
+struct OpenSurahAppIntent: AppIntent {
+    static var title: LocalizedStringResource = "Open Surah"
+    static var description = IntentDescription("Open a specific surah by name or number, in page mode if you read in it.")
+    static var openAppWhenRun = true
+    static var parameterSummary: some ParameterSummary { Summary("Open \(\.$surah)") }
+
+    @Parameter(
+        title: "Surah",
+        requestValueDialog: IntentDialog("Which surah would you like to open? You can say a name or a number.")
+    )
+    var surah: SurahEntity
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        AppNavigation.shared.open(.surah(surah.id))
+        return .result()
+    }
+}
+#endif
+
+@available(iOS 16.0, watchOS 9.0, *)
+struct PlayRandomSurahAppIntent: AppIntent {
+    static var title: LocalizedStringResource = "Play Random Surah"
+    static var description = IntentDescription("Play a random surah.")
+    static var openAppWhenRun = true
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard let result = await QuranPlaybackRouter.playRandom() else {
+            return .result(dialog: "Sorry, I couldn’t choose a surah right now.")
+        }
+
+        return .result(dialog: result.ok
+            ? IntentDialog("Playing Surah \(result.id): \(result.name).")
+            : IntentDialog("Sorry, there was a problem starting playback."))
+    }
+}
+
+@available(iOS 16.0, watchOS 9.0, *)
+struct PlayLastListenedSurahAppIntent: AppIntent {
+    static var title: LocalizedStringResource = "Play Last Listened Surah"
+    static var description = IntentDescription("Play the last surah you listened to.")
+    static var openAppWhenRun = true
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard let result = await QuranPlaybackRouter.playLast() else {
+            return .result(dialog: "Sorry, I don’t have a last listened surah yet.")
+        }
+
+        return .result(dialog: result.ok
+            ? IntentDialog("Playing Surah \(result.id): \(result.name).")
+            : IntentDialog("Sorry, there was a problem starting playback."))
+    }
+}
+
+#if os(iOS)
+@available(iOS 17.0, *)
+extension ResumeListeningIntent {
+    /// Playing already: nothing to do. Paused: carry on from the exact spot (an ayah range included).
+    /// Otherwise the Last Listened surah from its saved position, once a background launch has the
+    /// Quran loaded.
+    @MainActor
+    func resumeListening() async {
+        let player = QuranPlayer.shared
+        if player.isPlaying { return }
+        if player.isPaused {
+            player.resume()
+            return
+        }
+        await QuranData.shared.waitUntilCoreLoaded()
+        _ = await QuranPlaybackRouter.playLast()
+    }
+}
+#endif
+
+enum QuranPlaybackRouter {
+    private static let data = QuranData.shared
+    private static let player = QuranPlayer.shared
+    private static let settings = Settings.shared
+
+    @MainActor
+    private static func confirmStart(
+        surahID: Int,
+        timeout: UInt64 = 4_000_000_000,
+        interval: UInt64 = 100_000_000
+    ) async -> Bool {
+        if player.isPlaying, player.currentSurahNumber == surahID {
+            return true
+        }
+
+        var waited: UInt64 = 0
+        while waited < timeout {
+            try? await Task.sleep(nanoseconds: interval)
+            waited += interval
+
+            if player.isPlaying, player.currentSurahNumber == surahID {
+                return true
+            }
+
+            if (player.player?.rate ?? 0) > 0, player.currentSurahNumber == surahID {
+                return true
+            }
+        }
+
+        // Timed out without a PRESENTED failure: a cold launch + network stream routinely outlasts
+        // this window, and Siri saying "there was a problem" while the surah starts moments later is
+        // a false failure. Only an actual surfaced playback error reports as one.
+        return !player.showInternetAlert
+    }
+
+    @MainActor
+    static func play(surahID: Int, name: String) async -> Bool {
+        player.playSurah(surahNumber: surahID, surahName: name)
+        return await confirmStart(surahID: surahID)
+    }
+
+    @MainActor
+    static func playLast() async -> (id: Int, name: String, ok: Bool)? {
+        guard
+            let last = settings.lastListenedSurah,
+            let surah = data.quran.first(where: { $0.id == last.surahNumber })
+        else {
+            return nil
+        }
+
+        player.playSurah(
+            surahNumber: surah.id,
+            surahName: surah.nameTransliteration,
+            certainReciter: true
+        )
+
+        let didStart = await confirmStart(surahID: surah.id)
+        return (surah.id, surah.nameTransliteration, didStart)
+    }
+
+    @MainActor
+    static func playRandom() async -> (id: Int, name: String, ok: Bool)? {
+        // One the selected reciter recorded (see `QuranPlayer.randomRecordedSurah`).
+        guard let surah = player.randomRecordedSurah() else {
+            return nil
+        }
+
+        player.playSurah(surahNumber: surah.id, surahName: surah.nameTransliteration)
+        let didStart = await confirmStart(surahID: surah.id)
+        return (surah.id, surah.nameTransliteration, didStart)
+    }
+
+    static func matchedSurah(for normalizedQuery: String) -> Surah? {
+        if let number = Int(normalizedQuery), (1...114).contains(number) {
+            return data.quran.first(where: { $0.id == number })
+        }
+
+        // A name that IS the query beats one that merely contains it. "al mumin" (Ghafir, 40) sits
+        // inside "al muminun" (23), and taking the first container opened the wrong surah.
+        if let exact = data.quran.first(where: { $0.normalizedSearchNames.contains(normalizedQuery) }) {
+            return exact
+        }
+        if let direct = data.quran.first(where: { surah in
+            surah.normalizedSearchNames.contains { $0.contains(normalizedQuery) }
+        }) {
+            return direct
+        }
+        let folded = SurahSpelling.matches(normalizedQuery, in: data.quran, exactOnly: true)
+        return folded.count == 1 ? folded.first : nil
+    }
+}
+

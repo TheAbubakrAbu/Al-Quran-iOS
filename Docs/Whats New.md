@@ -1,31 +1,39 @@
 # Version 2.6.5
 
-Everything of the day on one screen, a settings search on every page, and a mushaf that is already open when you come back to it.
+Test Mode and a Revision plan for memorizing, Word Study for every word, Simple Mode, and recitation that plays as far as you want.
 
-Today:
-- One screen gathers the Ayah, the Word, the Dua and the Name of the day, each opening where it lives.
-- Every daily card carries a small Today door, so liking one of them is how you find the rest.
-- The Reminder of the Day now shows the app's own pick of that kind, so the card and the screen never disagree.
-
-Settings:
-- Every settings page has its own search bar, and a result opens the exact screen the setting is on rather than the page's root.
-- The settings rows wear a colour per area, the way iOS Settings does.
-
-Wallpapers:
-- Two new wallpapers: OC Ummah's desert night, and a Free Palestine poster with the Dome of the Rock.
+Memorize:
+- Test Mode hides the text until you tap, so you can recite from memory and check each ayah.
+- The Quran Planner adds a Revision plan: a juz range or chosen surahs, revised every few days, with one reminder for both plans.
 
 Al-Quran:
-- Word of the Day joins Browse by Theme and History under your summary on the days it is not a tile.
-- Page mode builds the mushaf as you leave the tab, so returning to it no longer waits half a second.
-- Hold an ayah and its actions open while your finger is still down, the same as holding a mushaf page.
-- Choose Surah no longer leaves the reader unable to open Surah Info, Revelation Info or an ayah's actions afterwards.
-- Qiraat Explorer: a transmitter who parts from his imam is shown his own reading rather than his imam's.
-- Hide Arabic Dots now works on its own, so the text can keep its vowel marks while losing its dots, the way the earliest manuscripts were read.
+- Word Study: double tap any word for its meaning, grammar, root, themes, tajweed and qiraat.
+- Play From Ayah now plays to the end of the page, surah, juz, or the whole Quran.
+- Repeat Forever for an ayah, a surah or a custom range, downloaded once and replayed offline.
+- Two mushaf pages side by side in landscape, and both readers use the full width.
+- Tajweed colors the heavy and light laam in the name of Allah, and you can pick your own color for every rule.
+- A rebuilt Qiraat Explorer: see every riwayah at once, or compare two.
+- Summarize any ayah with Apple Intelligence.
+- The screen stays awake while you follow the highlighted ayah.
 
-iPad and Mac:
-- Leaving the app and coming back no longer re-seats the navigation: the article you had open, the section you were in, and your place in it are all still there.
+Widgets:
+- Chosen Ayah widget: pin any ayah or bookmark to your Home or Lock Screen.
+- The Last Listened widget gets a Play button.
 
-Bug fixes and optimizations throughout.
+Islamic Tools:
+- Today: the ayah, word, dua and Name of the day on one screen.
+- A Reading Test with 21 levels, from single letters to text without vowels.
+- Tajweed Foundations is now a 58-lesson course with quizzes and Quran examples.
+- New libraries: Proving Islam, Miracles of the Prophets, and Prophecies of the Prophet.
+- Ask AI cites its sources with numbered cards you can open.
+- Two new wallpapers: OC Ummah's desert night, and a Free Palestine poster with the Dome of the Rock.
+
+Settings:
+- Simple Mode keeps only the essentials on screen. Switch to Full any time.
+- A search bar on every settings page, and 150 Tips & Tricks.
+
+Bug fixes and optimizations:
+- Faster search, smoother playback, and dozens of crash fixes across iPhone, iPad, Mac and Apple Watch.
 
 # Version 2.6.4
 

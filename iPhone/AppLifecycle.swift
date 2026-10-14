@@ -18,6 +18,33 @@ enum ScreenAwake {
     }
 }
 
+/// Whether anything modal is up over the app's windows: a sheet, a share sheet, an alert, a
+/// confirmation dialog. The "leaving the app" behaviours (the Quran tab re-opening the mushaf on
+/// `didEnterBackground`) must not run while one is presented: a share sheet that hands off to
+/// Messages backgrounds the app, and the user is coming straight back to that sheet, not leaving.
+///
+/// Walks every window's controller tree rather than reading `rootViewController.presentedViewController`
+/// alone: a SwiftUI sheet is presented from the hosting controller that declares it, which may be a
+/// child (a tab's navigation stack), and only that controller's `presentedViewController` is set when
+/// the presentation defines its own context.
+@MainActor
+enum ModalPresence {
+    static var isPresenting: Bool {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .contains { window in
+                guard let root = window.rootViewController else { return false }
+                return presents(root)
+            }
+    }
+
+    private static func presents(_ controller: UIViewController) -> Bool {
+        if controller.presentedViewController != nil { return true }
+        return controller.children.contains { presents($0) }
+    }
+}
+
 /// The app's foreground/background orchestration, in one named place.
 ///
 /// This is deliberately NOT in `Settings`: a phase change touches several subsystems (playback
@@ -35,10 +62,84 @@ enum AppLifecycle {
     @MainActor
     static func scenePhaseChanged(to phase: ScenePhase) {
         installMemoryWarningPurge()
+        #if HAS_ADHAN
+        adhanScenePhaseChanged(to: phase)
+        #endif
+        #if HAS_QURAN
         quranScenePhaseChanged(to: phase)
+        #endif
+        #if HAS_HADITH
+        hadithScenePhaseChanged(to: phase)
+        #endif
         sharedScenePhaseChanged(to: phase)
     }
 
+    #if HAS_ADHAN
+    // MARK: - Al-Adhan (prayer times, adhan playback, fasting, location)
+
+    @MainActor
+    private static func adhanScenePhaseChanged(to phase: ScenePhase) {
+        let settings = Settings.shared
+
+        if phase == .active {
+            // An adhan whose moment passed in the last few minutes while the app was CLOSED: play it
+            // now, in full and through Silent Mode if that is on. Before `reschedule()`, which only
+            // ever looks forward - this is the one path that looks back (Abu, 2026-09-14).
+            ForegroundAdhanPlayer.shared.playMissedAdhan()
+            // Play the adhan in-app on time while open (the scheduled notification covers the closed
+            // case and can be delivered late by the system, especially on Mac/Catalyst).
+            ForegroundAdhanPlayer.shared.reschedule()
+            // A Live Activity can only be requested from the foreground, so this is the one place that
+            // can start the fasting countdown. It no-ops outside Ramadan, and outside the hour before
+            // Fajr (suhoor) or Maghrib (iftar).
+            FastingActivityController.refresh()
+            // Coming back to a stale fix (landed, drove, flew) gets one immediate refresh; the cadence
+            // then keeps it loosely current (every ~5 min) for as long as the app stays frontmost -
+            // significant-change monitoring can't do this without cell coverage, e.g. on a plane.
+            settings.refreshLocationIfStale()
+            settings.beginForegroundLocationCadence()
+        } else {
+            // A Mac window behind another app's sits at .inactive for as long as it stays open, and the
+            // in-app player is the adhan's only on-time path there (the system delivers late on a Mac,
+            // and `willPresent` silences a late delivery), so it stays armed until the window really
+            // leaves (2026-09-29). An iPhone or iPad disarms at .inactive as before.
+            if !(ProcessInfo.processInfo.isiOSAppOnMac && phase == .inactive) {
+                ForegroundAdhanPlayer.shared.stop()
+            }
+            // A high-accuracy burst pins the GPS. `AdhanView.onDisappear` ends it when you navigate away,
+            // but backgrounding the app doesn't disappear the view - without this the burst would run to
+            // its 25-second timeout with the screen off.
+            settings.endLocationRefinement()
+            settings.endForegroundLocationCadence()
+        }
+    }
+
+    /// The cold-launch half of the in-app adhan catch-up.
+    ///
+    /// `scenePhaseChanged` never runs for the FIRST active phase - `.onChange` has no previous value
+    /// to change from - and a cold launch is exactly the case this feature exists for: the adhan
+    /// notification sounded while the app was closed, and opening the app is what the user did next.
+    ///
+    /// Waits for today's prayer table to actually be in first. At launch `prayers` is whatever was
+    /// last persisted, which after midnight is YESTERDAY's day and holds no time inside the window,
+    /// so running this the instant the root appears would silently find nothing. Bounded, so a device
+    /// with no location never leaves the task hanging.
+    @MainActor
+    static func playMissedAdhanAtLaunch() async {
+        let settings = Settings.shared
+        let deadline = Date().addingTimeInterval(20)
+        while !Calendar.current.isDateInToday(settings.prayers?.day ?? .distantPast), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if Task.isCancelled { return }
+        }
+        #if DEBUG
+        ForegroundAdhanPlayer.debugCatchUpProbe()
+        #endif
+        ForegroundAdhanPlayer.shared.playMissedAdhan()
+    }
+    #endif
+
+    #if HAS_QURAN
     // MARK: - Al-Quran (playback persistence, Quran widgets, reading progress)
 
     @MainActor
@@ -58,9 +159,12 @@ enum AppLifecycle {
             DailyReminderStore.shared.refreshWidgets()
             ActivityLog.shared.refreshSummaryIfDayChanged()
             ExtraRemindersStore.shared.rearmIfNeeded()
+            // The Chosen Ayah widgets: which ayahs their placed copies ask for (a choice made while
+            // the app was closed), so each gets a card in the reader's styling. A no-op when nothing
+            // changed since the last answer.
+            settings.refreshChosenAyahWidgets()
         }
         if phase != .active {
-            settings.refreshQuranWidgets()
             ActivityLog.shared.flush()
             // A page flip within the last second may still have its last-read write pending.
             settings.flushPendingLastRead()
@@ -68,7 +172,31 @@ enum AppLifecycle {
             // the system can suspend or kill the process.
             settings.flushPendingKhatmProgress()
         }
+        // The widget write waits for a REAL backgrounding (after the flushes, so it reads the last
+        // page): `.inactive` is also Notification Center, Control Center and the app switcher, and
+        // ran the whole rebuild (and a second one on the `.background` that follows) each time.
+        if phase == .background {
+            settings.refreshQuranWidgets(.backgrounding)
+        }
     }
+    #endif
+
+    #if HAS_HADITH
+    // MARK: - Al-Hadith (daily hadith)
+
+    @MainActor
+    private static func hadithScenePhaseChanged(to phase: ScenePhase) {
+        guard phase == .active else {
+            // A hadith opened in the last second still has its log write on the debounce timer.
+            HadithStore.shared.viewedLog.flush()
+            return
+        }
+        // Re-resolve Hadith of the Day: `.task` fires only when the view tree is rebuilt, so an
+        // app foregrounded across midnight (never cold-launched) kept showing yesterday's card.
+        // No-ops within the same day.
+        HadithStore.shared.prepareDailyHadith()
+    }
+    #endif
 
     // MARK: - Memory pressure (Phase 5 step 13)
 
@@ -87,16 +215,58 @@ enum AppLifecycle {
         ) { _ in
             Task { @MainActor in purgeQuranSessionCaches() }
         }
+        installFootprintPurge()
+    }
+
+    /// The Mac's own purge trigger. On iOS the caches above are shed by a memory warning; on a Mac
+    /// (an iOS app on Apple Silicon, 32 GB of RAM and swap) that warning effectively NEVER arrives,
+    /// so every one of them grew for the whole session and nothing ever dropped it - the alignment
+    /// and diff tables are plain dictionaries documented as living "for the app's lifetime", keyed
+    /// per surah PER RIWAYAH, so a reading session that compares qiraat accumulates up to 114 x 19
+    /// of them. Measured on Abu's Mac (2026-10-05, 4.6.5 b236): 405 MB resident / 308 MB dirty in
+    /// `Malloc Small` with a 553 MB peak footprint, against 226 MB a moment after launch, while
+    /// system memory sat at 65% free and no warning had fired in two hours.
+    ///
+    /// So the footprint is watched directly instead of waited for: while the app is frontmost, one
+    /// check a minute, and the same purge runs when it crosses the ceiling. Cheap (`task_info`, no
+    /// allocation) and self-limiting - the purge drops the caches, the footprint falls back under
+    /// the ceiling, and the next check does nothing. Every target rebuilds on demand.
+    ///
+    /// The timer runs ONLY on Mac: on a real iPhone or iPad the memory warning is the right signal
+    /// (it arrives while there is still time to act, and it accounts for the rest of the system),
+    /// and a repeating timer there would be a wake-up the device does not need.
+    private static var footprintTimer: Timer?
+    /// Purge above this. Well over a heavy reading session's working set (the mushaf's own fallback
+    /// renders are bounded at 12 pages), so a reader never pays for a purge it did not need; far
+    /// enough under the footprint where an iOS process on a Mac starts being squeezed.
+    private static let footprintCeilingMB: Double = 420
+
+    @MainActor
+    private static func installFootprintPurge() {
+        guard ProcessInfo.processInfo.isiOSAppOnMac, footprintTimer == nil else { return }
+        let timer = Timer(timeInterval: 60, repeats: true) { _ in
+            Task { @MainActor in
+                guard AppFootprint.megabytes > footprintCeilingMB else { return }
+                purgeQuranSessionCaches()
+            }
+        }
+        // `.common` so the check still happens while a menu or a scroll is tracking; tolerance lets
+        // the system coalesce it with other timers rather than waking for this alone.
+        timer.tolerance = 15
+        RunLoop.main.add(timer, forMode: .common)
+        footprintTimer = timer
     }
 
     @MainActor
     private static func purgeQuranSessionCaches() {
+        #if HAS_QURAN
         QiraahComparison.purgeCaches()
         MushafPageRenderCache.purgeFallbackRenders()
         MushafPrintLines.purge()
         AyahHighlightColor.purgeSwatchCache()
         MushafPDFLibrary.purgeMeasuredCrops()
         SolidPack.purgeInflatedBodies()
+        #endif
         MemoryTrim.trimAll()
     }
 
@@ -104,6 +274,24 @@ enum AppLifecycle {
 
     @MainActor
     private static func sharedScenePhaseChanged(to phase: ScenePhase) {
+        #if HAS_ICLOUD_BACKUP
+        // The iCloud backup's automatic pass (Al-Islam only): silent, throttled, and a no-op when
+        // nothing changed (see CloudBackupManager.automaticSaveIfDue). Leaving the foreground is the
+        // main trigger, AFTER the flushes above have landed the pending writes it will read; not on
+        // `.inactive` (a pull of Notification Center is not leaving).
+        if phase == .active {
+            CloudBackupManager.shared.automaticSaveIfDue(reason: .foreground)
+        } else if phase == .background {
+            CloudBackupManager.shared.automaticSaveIfDue(reason: .background)
+        }
+        #endif
+        // iOS clears `isIdleTimerDisabled` across a background trip, so a reader that was holding the
+        // screen up for a moving recitation highlight gets its hold back on return. A no-op when nothing
+        // is holding it. See `ScreenWakeLock`.
+        if phase == .active {
+            ScreenWakeLock.shared.reassert()
+        }
+
         guard phase != .active else { return }
         // Send any just-made setting change before the app is suspended, so it can't be lost (and
         // can't be reverted by a stale synced value on the next launch).
@@ -111,17 +299,57 @@ enum AppLifecycle {
     }
 }
 
+/// The process's own physical footprint, in MB - the number Activity Monitor and `vmmap` call
+/// "physical footprint", and the one an iOS process is judged by. `MemoryFootprint` reads the same
+/// field but is DEBUG-only (a `-renderCounter` companion); this one ships, because the Mac's
+/// footprint purge in `AppLifecycle` needs it in Release, where the memory warning never comes.
+enum AppFootprint {
+    static var megabytes: Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return 0 }
+        return Double(info.phys_footprint) / 1_048_576
+    }
+}
+
 /// The one owner of the memory-warning trim for the stores the Tilawa port added (Tilawa Guide,
 /// Phase 8 step 5): every large store registers here rather than growing an observer of its own.
-/// Each call is safe when nothing is loaded.
+/// The hadith store keeps its own (it predates the port). Each call is safe when nothing is loaded.
 enum MemoryTrim {
     @MainActor
     static func trimAll() {
+        #if HAS_HADITH
+        // The Hadith Encyclopedia's header, parsed blocks and search folds: rebuilt on the next open.
+        HadeethEncStore.shared.unload()
+        #endif
         // The Miracles library and its decoded illustrations (a 40-frame animation is ~27 MB).
         MiraclesStore.shared.unload()
         MiracleImageLoader.purgeDecodedImages()
+        #if HAS_HADITH
+        // The long-narration chunk memo (rebuilt per row on demand).
+        HadithArabicChunks.purgeCache()
+        #endif
+        #if HAS_QURAN
         // The explorer's computed place tables and counts.
         QiraatPlacesStore.shared.purgeComputed()
+        // The mushaf fit's fonts (bounded, but a page fit's probes fill it; rebuilt on the next fit).
+        QuranFontCache.purge()
+        // The word card's grammar table (re-parsed on the next card).
+        WordGrammarStore.shared.unload()
+        // The rest of the study packs (Phase 10.7): roots and lemmas with every occurrence, the
+        // topic and passage-theme tables, the qiraat variants table, the riwayah tajweed paints. Each
+        // reloads on its next use; none is read by a body that cannot wait a frame.
+        MorphologyStore.shared.unload()
+        QuranTopicsStore.shared.unload()
+        AyahThemesStore.shared.unload()
+        QiraatVariantsStore.shared.unload()
+        QiraahTajweedStore.shared.purgePaintCache()
+        #endif
         #if DEBUG
         MemoryFootprint.logLater("memory warning trim", delay: 2)
         #endif
@@ -143,14 +371,25 @@ enum AppLifecycle {
         let settings = Settings.shared
 
         if phase == .active {
-            // No location work here: prayer times (and the location sensing they need) are
-            // Al-Islam/Al-Adhan features; this app's watch wake needs nothing refreshed.
+            #if HAS_ADHAN
+            // The watch senses its own location (location is never synced from the phone), but its
+            // continuous updates stop the moment the app suspends - so after a flight, raising the
+            // wrist showed the departure city indefinitely. One immediate one-shot fix on wake, then
+            // the same low-frequency cadence the iPhone uses while frontmost.
+            settings.refreshLocationIfStale()
+            settings.beginForegroundLocationCadence()
+            #endif
         } else {
+            #if HAS_ADHAN
+            settings.endForegroundLocationCadence()
+            #endif
+            #if HAS_QURAN
             // A page flip within the last second may still have its last-read write pending.
             settings.flushPendingLastRead()
             // A khatm mark made in the last 250ms is still on the debounce timer; persist it before
             // the system can suspend or kill the process.
             settings.flushPendingKhatmProgress()
+            #endif
             // Flush any just-made setting change before suspension so it reliably reaches the iPhone.
             WatchConnectivityManager.shared.flushPendingSync()
         }

@@ -1,1 +1,1 @@
-Now with on-device AI search, tafsir in Arabic and English, a Quran planner with streaks, and a faster mushaf. Free, ad free, and fully private.
+New: Test Mode and a Revision plan for memorizing, Word Study for every word, Simple Mode, and recitation that plays to the end of the juz or the Quran.

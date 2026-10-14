@@ -4,11 +4,108 @@ import WidgetKit
 @main
 struct Widgets: WidgetBundle {
     var body: some Widget {
+        #if HAS_ADHAN
+        // Al-Adhan: home screen, in gallery order - every layout on the current prayer's sky
+        // gradient first, then the same layouts again - every one - on the standard background.
+        // Both blocks share an order so a sky widget and its no-sky twin are easy to match up in
+        // the gallery.
+        // (Each app compiles the domains it ships: HAS_ADHAN here, HAS_QURAN for the Quran block below.)
+        PrayerGradientWidget()          // the sky twin of Prayer Glance
+        SolarArcSkyWidget()
+        MoonSkyWidget()
+        SolarMoonSkyWidget()
+        NextPrayerBoardSkyWidget()
+        PrayerDaySkyWidget()
+        CountdownSkyWidget()
+        SimpleSkyWidget()
+        PrayerListSmallSkyWidget()
+        PrayersSkyWidget()
+        Prayers2SkyWidget()
+        FastingCountdownSkyWidget()
+
+        PrayerGlanceWidget()
+        SolarArcWidget()
+        MoonWidget()
+        SolarMoonWidget()
+        NextPrayerBoardWidget()
+        PrayerDayWidget()
+        CountdownWidget()
+        SimpleWidget()
+        PrayerListSmallWidget()
+        PrayersWidget()
+        Prayers2Widget()
+        FastingCountdownWidget()
+        #endif
+
+        #if os(iOS)
+        #if HAS_ADHAN
+        // Lock screen: the two circulars, then the rectangulars from richest to plainest.
+        if #available(iOS 16.1, *) {
+            PrayerProgressRingWidget()
+            PrayerCountdownCircularWidget()
+            LockScreen1Widget()
+            PrayerWaveWidget()
+            LockScreen2Widget()
+            NextPrayerProgressWidget()
+            PrayerRowLockWidget()
+            LockScreen3Widget()
+            LockScreen4Widget()
+            // The date widgets (DateLockWidgets.swift): the next prayer with the date and city, then
+            // both calendars, then the Hijri date alone, in English and in Arabic.
+            NextPrayerDateLockWidget()
+            DualCalendarLockWidget()
+            HijriDateLockWidget()
+            HijriDateArabicLockWidget()
+        }
+        // Gated at 16.2 rather than 16.1, where Live Activities first appeared: `ActivityContent` - which the
+        // app uses to start and update this one - only exists from 16.2. Suhoor and iftar countdowns; only
+        // ever on screen during Ramadan.
+        if #available(iOS 16.2, *) {
+            FastingLiveActivity()
+        }
+        #endif
+        // Control Center (iOS 18+), which is also the Lock Screen's bottom corners and the Action
+        // button. See `ControlWidgets.swift` for why these three and no more.
+        if #available(iOS 18.0, *) {
+            #if HAS_QURAN
+            ResumeRecitationControl()
+            #endif
+            #if HAS_ADHAN
+            PrayerTimesControl()
+            QiblaControl()
+            #endif
+        }
+        #endif
+        
+        #if HAS_QURAN
+        // Al-Quran: the reading/listening widgets.
         LastListenedSurahWidget()
         LastListenedAyahWidget()
         LastReadSurahWidget()
         AyahOfTheDayWidget()
         DailyReminderWidget()
         NameOfAllahWidget()
+        #if os(iOS)
+        // The configurable one: an ayah picked from the bookmarks or typed in (App Intents
+        // configuration, so iOS 17). Home screen small/medium, lock screen rectangular and inline.
+        if #available(iOS 17.0, *) {
+            ChosenAyahWidget()
+        }
+        #endif
+        #endif
+    }
+}
+
+extension WidgetConfiguration {
+    /// Keeps a reading widget (an ayah's Arabic, a paragraph of text) off the CarPlay dashboard's offer.
+    /// From iOS 26 CarPlay can show any small widget, and asks for glanceable, large, legible ones; reading
+    /// is not a glance at the wheel. A driver can still add it from the further widgets: disfavored only
+    /// stops it being offered first. The prayer widgets and Last Listened Surah are left offered.
+    func disfavoredInCarPlay() -> some WidgetConfiguration {
+        if #available(iOSApplicationExtension 26.0, *) {
+            return disfavoredLocations([.carPlay], for: [.systemSmall])
+        } else {
+            return self
+        }
     }
 }

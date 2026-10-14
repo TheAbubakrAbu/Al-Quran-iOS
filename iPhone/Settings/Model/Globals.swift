@@ -1,0 +1,2289 @@
+import SwiftUI
+import Combine
+#if canImport(UIKit)
+import UIKit
+#endif
+#if os(watchOS)
+import WatchKit
+#endif
+
+#if os(watchOS)
+/// The 40 mm face (162 pt wide) truncates what every other watch fits: "Shurooq" in a prayer tile,
+/// a surah's Arabic name beside its transliteration, "Remembrances" beside its icon (2026-09-06 watch
+/// pass). Rows and tiles that stack or slim down for it key off this one number; the 41 mm (176 pt)
+/// and up keep the wide layouts.
+enum WatchScreen {
+    static let isNarrow: Bool = WKInterfaceDevice.current().screenBounds.width < 170
+}
+#endif
+
+// MARK: - User data that no longer decodes
+
+/// The rule for a store of the reader's own data (a journal, a transcript, bookmarks) whose saved
+/// form no longer decodes: never let the next save overwrite it. A decode failure used to leave the
+/// store empty, and the first edit then wrote the empty store over the reader's file. Now the bytes
+/// are kept aside ("<name>.corrupt-<time>" beside a file, "<key>.corrupt" for a defaults blob) and
+/// the failure is logged, so the store can start fresh without destroying anything.
+enum UserDataRescue {
+    private static func stamp() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: Date())
+    }
+
+    /// Moves a file that failed to decode aside. Returns false only when the move itself failed, in
+    /// which case the caller must not save over `url` this session.
+    @discardableResult
+    static func quarantine(file url: URL, error: Error?) -> Bool {
+        let target = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".corrupt-" + stamp())
+        do {
+            try FileManager.default.moveItem(at: url, to: target)
+            NSLog("USER DATA %@ did not decode (%@); kept as %@", url.lastPathComponent, String(describing: error), target.lastPathComponent)
+            return true
+        } catch let moveError {
+            NSLog("USER DATA %@ did not decode (%@) and could not be moved aside (%@)", url.lastPathComponent, String(describing: error), String(describing: moveError))
+            return false
+        }
+    }
+
+    /// What a rescued defaults blob's key ends in. Device-only (never backed up, spared by a
+    /// keep-content reset like the content it rescues): `Settings.isResetSpared`, `CloudManifest`.
+    static let rescueSuffix = ".corrupt"
+
+    /// Copies a defaults blob that failed to decode to "<key>.corrupt" (once: an earlier rescue is
+    /// never overwritten by a later one), so the store can be rewritten without losing it.
+    /// The write waits for the next main-queue turn: the stores decode inside getters that view
+    /// bodies read, and a body must never write defaults. That turn still comes long before any edit
+    /// could save over the original key.
+    static func quarantine(defaultsKey key: String, data: Data, in defaults: UserDefaults = .standard, error: Error?) {
+        let rescueKey = key + rescueSuffix
+        NSLog("USER DATA defaults %@ did not decode (%@); %d bytes kept under %@", key, String(describing: error), data.count, rescueKey)
+        DispatchQueue.main.async {
+            if defaults.data(forKey: rescueKey) == nil { defaults.set(data, forKey: rescueKey) }
+        }
+    }
+
+    /// One element of a stored list that decodes to nil instead of failing the whole list.
+    struct Lossy<Value: Decodable>: Decodable {
+        let value: Value?
+        init(from decoder: Decoder) throws { value = try? Value(from: decoder) }
+    }
+
+    /// A defaults blob decoded, or nil. Empty data (the unset default) is nil without complaint; a
+    /// blob that fails is kept under "<key>.corrupt" before nil comes back.
+    static func decode<T: Decodable>(_ type: T.Type, from data: Data, key: String,
+                                     decoder: JSONDecoder = JSONDecoder(), defaults: UserDefaults = .standard) -> T? {
+        guard !data.isEmpty else { return nil }
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            quarantine(defaultsKey: key, data: data, in: defaults, error: error)
+            return nil
+        }
+    }
+
+    /// A defaults list decoded entry by entry: an entry this build cannot read is dropped (the blob
+    /// kept under "<key>.corrupt" first) instead of failing, and emptying, the whole list.
+    static func decodeList<T: Decodable>(_ type: T.Type, from data: Data, key: String,
+                                         decoder: JSONDecoder = JSONDecoder(), defaults: UserDefaults = .standard) -> [T]? {
+        guard !data.isEmpty else { return nil }
+        do {
+            let items = try decoder.decode([Lossy<T>].self, from: data)
+            let values = items.compactMap(\.value)
+            if values.count < items.count {
+                quarantine(defaultsKey: key, data: data, in: defaults, error: nil)
+                NSLog("USER DATA defaults %@: %d of %d entries unreadable", key, items.count - values.count, items.count)
+            }
+            return values
+        } catch {
+            quarantine(defaultsKey: key, data: data, in: defaults, error: error)
+            return nil
+        }
+    }
+
+    /// A file of the reader's own entries decoded entry by entry; nil when there is no file. A file
+    /// that does not decode at all is moved aside; one that loses entries is copied aside first.
+    static func loadList<T: Decodable>(_ type: T.Type, file url: URL, decoder: JSONDecoder = JSONDecoder()) -> [T]? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        do {
+            let items = try decoder.decode([Lossy<T>].self, from: data)
+            let values = items.compactMap(\.value)
+            if values.count < items.count {
+                let copy = url.deletingLastPathComponent().appendingPathComponent(url.lastPathComponent + ".corrupt-" + stamp())
+                try? data.write(to: copy, options: .atomic)
+                NSLog("USER DATA %@: %d of %d entries unreadable; the file was copied to %@",
+                      url.lastPathComponent, items.count - values.count, items.count, copy.lastPathComponent)
+            }
+            return values
+        } catch {
+            quarantine(file: url, error: error)
+            return nil
+        }
+    }
+}
+
+// MARK: - Typed amounts
+
+/// A money or quantity amount as a person types it, on any keyboard: Western, Arabic-Indic or
+/// Persian digits, the Arabic decimal and thousands marks (U+066B, U+066C), and either convention
+/// for the two separators. The calculators kept "any numeric character" and then handed Arabic-Indic
+/// digits to `Double(_:)`, which read them as nothing (every field 0), and a pasted "1.234,56" came
+/// out as 1.23456, a zakah a thousand times too low (Quality Guide A11).
+enum TypedAmount {
+    private static let localeFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = .autoupdatingCurrent
+        return formatter
+    }()
+    private static let lock = NSLock()
+
+    static func parse(_ text: String) -> Double {
+        var plain = text.normalizingArabicIndicDigitsToWestern
+        plain = plain.replacingOccurrences(of: "\u{066B}", with: ".")      // Arabic decimal separator
+        plain = plain.replacingOccurrences(of: "\u{066C}", with: ",")      // Arabic thousands separator
+        plain = plain.replacingOccurrences(of: "\u{060C}", with: ",")      // Arabic comma
+        let cleaned = String(plain.unicodeScalars.filter {
+            ("0"..."9").contains($0) || $0 == "." || $0 == ","
+        }.map(Character.init))
+        guard cleaned.contains(where: \.isNumber) else { return 0 }
+
+        // The device's own convention first (a German "1.234,56", an American "1,234.56").
+        lock.lock()
+        let localized = localeFormatter.number(from: cleaned)?.doubleValue
+        lock.unlock()
+        if let localized, localized.isFinite { return localized }
+
+        // Otherwise the LAST separator is the decimal one when both appear; a lone comma is decimal
+        // only before one or two digits ("1,5"), a lone repeated separator is grouping ("1.000.000").
+        let dots = cleaned.filter { $0 == "." }.count
+        let commas = cleaned.filter { $0 == "," }.count
+        var normalized = cleaned
+        if dots > 0, commas > 0 {
+            let decimal: Character = cleaned.lastIndex(of: ".")! > cleaned.lastIndex(of: ",")! ? "." : ","
+            let grouping: Character = decimal == "." ? "," : "."
+            normalized = cleaned.replacingOccurrences(of: String(grouping), with: "")
+                .replacingOccurrences(of: String(decimal), with: ".")
+        } else if commas > 0 {
+            let tail = cleaned.split(separator: ",", omittingEmptySubsequences: false).last ?? ""
+            normalized = commas == 1 && tail.count <= 2
+                ? cleaned.replacingOccurrences(of: ",", with: ".")
+                : cleaned.replacingOccurrences(of: ",", with: "")
+        } else if dots > 1 {
+            normalized = cleaned.replacingOccurrences(of: ".", with: "")
+        }
+        guard let value = Double(normalized), value.isFinite else { return 0 }
+        return value
+    }
+}
+
+// MARK: - The dotless rasm
+
+/// The ONE table behind Hide Arabic Dots: the string transform (`String.removingArabicDots`) and the
+/// tajweed projection (`TajweedStore.dotlessArabicScalar`) both map through it, so they can never
+/// drift apart. Every entry is one BMP scalar to one BMP scalar: length-preserving by construction.
+///
+/// Noon maps to U+06BA (not U+066E like ba/ta/tha): in the early rasm a FINAL noon keeps its deep
+/// bowl while ba/ta/tha finals stay flat, and U+06BA is exactly that skeleton, a bowl in isolated
+/// and final position and a tooth elsewhere. The seated hamzas keep their seat and lose the hamza
+/// (the early rasm wrote no hamza): ؤ becomes و and ئ a dotless ى. They mapped to a detached ء
+/// until 2026-10-05, which dropped the seat's letter from the skeleton 1,613 times in the Hafs text.
+/// The alef forms (hamza above or below, madda, wasla) become a bare alef, ta marbuta becomes ha.
+enum ArabicRasm {
+    static func dotless(_ scalar: Unicode.Scalar) -> Unicode.Scalar {
+        switch scalar.value {
+        case 0x0623, 0x0625, 0x0622, 0x0671: return "\u{0627}"
+        case 0x0624: return "\u{0648}"
+        case 0x0626: return "\u{0649}"
+        case 0x0628, 0x062A, 0x062B: return "\u{066E}"
+        case 0x0646: return "\u{06BA}"
+        case 0x064A: return "\u{0649}"
+        case 0x062C, 0x062E: return "\u{062D}"
+        case 0x0630: return "\u{062F}"
+        case 0x0632: return "\u{0631}"
+        case 0x0634: return "\u{0633}"
+        case 0x0636: return "\u{0635}"
+        case 0x0638: return "\u{0637}"
+        case 0x063A: return "\u{0639}"
+        case 0x0641: return "\u{06A1}"
+        case 0x0642: return "\u{066F}"
+        case 0x0629: return "\u{0647}"
+        default: return scalar
+        }
+    }
+}
+
+// MARK: - App identifiers
+/// Central place for reverse-DNS strings and the App Group name.
+/// When you change these, update `Resources/Entitlements-Main.entitlements`,
+/// `Resources/Entitlements-Widget.entitlements`, and `Resources/Info-Main.plist` to match.
+enum AppIdentifiers {
+    static let appFullName = "Al-Quran | Beginner Quran"
+    static let appName = "Al-Quran"
+    
+    static let mainColor = AccentColor.green
+    static let mainColorString = "green"
+    
+    /// Shared App Group for `UserDefaults` / data (matches entitlements).
+    static let appGroupSuiteName = "group.com.BeginnerQuran.AppGroup"
+
+    /// Main iOS bundle ID and OSLog subsystem prefix (matches `PRODUCT_BUNDLE_IDENTIFIER` for the app target).
+    static let bundleIdentifier = "com.Quran.Elmallah.Beginner-Quran"
+
+    static let backgroundFetchPrayerTimesTaskIdentifier = "\(bundleIdentifier).fetchPrayerTimes"
+    /// The overnight BGProcessingTask twin of the refresh above. Processing tasks get the system's
+    /// nightly maintenance windows (typically while charging) - the slot that actually lines up with
+    /// refreshing before Fajr.
+    static let backgroundProcessingRefreshTaskIdentifier = "\(bundleIdentifier).processingRefresh"
+    static let reciterDownloadsBackgroundSessionIdentifier = "\(bundleIdentifier).reciter-downloads"
+    static let networkMonitorQueueLabel = "\(bundleIdentifier).NetworkMonitor"
+    static let reciterDownloadDedupeQueueLabel = "\(bundleIdentifier).reciter-dedupe"
+}
+
+enum AppPerformance {
+    /// 3 GB-class and below - see `PerformanceProfile.isLowEndDevice` for the threshold's reasoning.
+    static var isLowMemoryDevice: Bool {
+        PerformanceProfile.isLowEndDevice
+    }
+
+    /// Live, not cached: the user can flip Low Power Mode at any moment, and every gate below should follow.
+    /// LPM throttles background QoS hard, so optional work (prewarm sweeps, decorative animation) that is
+    /// merely cheap in normal conditions becomes contention against the user's actual taps.
+    static var isLowPowerMode: Bool {
+        ProcessInfo.processInfo.isLowPowerModeEnabled
+    }
+
+    static var shouldAvoidBroadPrewarm: Bool {
+        #if os(watchOS)
+        true
+        #else
+        isLowMemoryDevice || isLowPowerMode
+        #endif
+    }
+
+    /// The OS accessibility setting. Live like `isLowPowerMode` - the user can flip it any time.
+    static var isReduceMotionEnabled: Bool {
+        #if os(iOS)
+        UIAccessibility.isReduceMotionEnabled
+        #elseif os(watchOS)
+        WKAccessibilityIsReduceMotionEnabled()
+        #else
+        false
+        #endif
+    }
+
+    /// The one gate for DECORATIVE animation (starfield twinkle, forever pulses, spinners, launch
+    /// springs): off under Low Power Mode (contention) and under Reduce Motion (accessibility).
+    /// Functional state transitions (a row appearing, a toggle) stay animated - Reduce Motion asks for
+    /// less MOTION, not a frozen UI.
+    static var shouldReduceAnimations: Bool {
+        isLowPowerMode || isReduceMotionEnabled
+    }
+
+    static var ayahRowCacheLimit: Int {
+        #if os(watchOS)
+        900
+        #else
+        isLowMemoryDevice ? 1800 : 5000
+        #endif
+    }
+
+    static var preparedSurahCacheLimit: Int {
+        #if os(watchOS)
+        24
+        #else
+        isLowMemoryDevice ? 60 : 160
+        #endif
+    }
+
+    static var tajweedAttributedCacheLimit: Int {
+        #if os(watchOS)
+        180
+        #else
+        isLowMemoryDevice ? 700 : 1800
+        #endif
+    }
+
+    static var cleanArabicCacheLimit: Int {
+        #if os(watchOS)
+        400
+        #else
+        isLowMemoryDevice ? 1500 : 4000
+        #endif
+    }
+
+    /// Capped everywhere now (Phase 5 step 9): nil on 3 GB+ devices pushed all 6,236 ayahs through
+    /// a 5,000-entry cache that evicted itself mid-sweep, so the tail of the sweep undid its head.
+    static var prewarmArabicAyahLimit: Int? {
+        #if os(watchOS)
+        20
+        #else
+        isLowMemoryDevice ? 32 : 40
+        #endif
+    }
+}
+
+// MARK: - Performance profile (live, observable)
+
+/// The live performance tier, as an object views can react to.
+///
+/// `AppPerformance`'s static gates are correct but inert: a body reads them once and keeps whatever it
+/// decided, so a view already on screen when the user flips Low Power Mode never notices. This object
+/// re-reads the inputs on their notifications (power state, thermal state, Reduce Motion, Reduce
+/// Transparency) and publishes only when the resolved flags actually change. The app root folds it into
+/// `AppearanceEnvironment`, so one publish here re-evaluates every mounted view exactly once, together,
+/// instead of each site subscribing on its own.
+///
+/// Main-thread only (every notification is delivered on the main queue; `shared` is first touched from
+/// the app root).
+final class PerformanceProfile: ObservableObject {
+    static let shared = PerformanceProfile()
+
+    enum Tier: Equatable {
+        /// Materials, shadows, decorative animation, broad prewarms.
+        case full
+        /// Low Power Mode, a serious/critical thermal state, or a 3 GB-class device: flat fills instead of
+        /// material blurs, no drop shadows, decorative animation off, prewarms narrowed to what is on screen.
+        case reduced
+    }
+
+    @Published private(set) var tier: Tier = .full
+    @Published private(set) var isLowPowerMode = false
+    @Published private(set) var isThermallyThrottled = false
+    @Published private(set) var isReduceMotionEnabled = false
+    @Published private(set) var isReduceTransparencyEnabled = false
+
+    /// 3 GB-class and below (iPhone 8, X, XR, the SE line). Memory is the one stable proxy for the GPU
+    /// generation that struggles with stacked material blurs; core count is no use (every iPhone since the
+    /// A11 reports six). 3.5 GB rather than 3: a "3 GB" device reports a little under 3_000_000_000 and
+    /// a "4 GB" one a little under 4_000_000_000, so the old `< 3 GB` test let the XR and X through as fast.
+    static let isLowEndDevice: Bool = ProcessInfo.processInfo.physicalMemory < 3_500_000_000
+
+    /// Decorative animation off: starfield twinkle, forever pulses, launch springs. Functional
+    /// transitions stay animated (Reduce Motion asks for less motion, not a frozen UI).
+    var shouldReduceAnimations: Bool { isLowPowerMode || isReduceMotionEnabled }
+
+    /// Flat fills instead of material blurs, on the pre-Liquid-Glass fallback. Each material is a
+    /// backdrop pass; the Adhan tab alone stacks ~35 of them, which is the single biggest GPU cost on
+    /// A11-A13 hardware. Reduce Transparency is the same request made through accessibility.
+    var shouldFlattenMaterials: Bool { tier == .reduced || isReduceTransparencyEnabled }
+
+    /// Drop shadows are offscreen render passes; skipped entirely on the reduced tier (`.softShadow`).
+    var shouldDropShadows: Bool { tier == .reduced }
+
+    private var observers: [NSObjectProtocol] = []
+
+    private init() {
+        refresh()
+        ObjectPublishCounter.attach(self, label: "PerformanceProfile")
+
+        var names: [Notification.Name] = [
+            .NSProcessInfoPowerStateDidChange,
+            ProcessInfo.thermalStateDidChangeNotification
+        ]
+        #if os(iOS)
+        names.append(UIAccessibility.reduceMotionStatusDidChangeNotification)
+        names.append(UIAccessibility.reduceTransparencyStatusDidChangeNotification)
+        #elseif os(watchOS)
+        names.append(NSNotification.Name.WKAccessibilityReduceMotionStatusDidChange)
+        #endif
+        // `.main` queue: the power-state notification arrives on an arbitrary thread, and the
+        // `@Published` writes below must happen where SwiftUI reads them.
+        observers = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.refresh()
+            }
+        }
+    }
+
+    deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    private func refresh() {
+        #if DEBUG
+        // "-lowPowerMode": pretend Low Power Mode is on (the simulator has no switch for it): the
+        // reduced tier plus everything keyed on the flag itself, such as the Classic Look's automatic rule.
+        let lpm = ProcessInfo.processInfo.isLowPowerModeEnabled
+            || ProcessInfo.processInfo.arguments.contains("-lowPowerMode")
+        #else
+        let lpm = ProcessInfo.processInfo.isLowPowerModeEnabled
+        #endif
+        let thermal = ProcessInfo.processInfo.thermalState
+        let throttled = thermal == .serious || thermal == .critical
+        let reduceMotion = AppPerformance.isReduceMotionEnabled
+        #if os(iOS)
+        let reduceTransparency = UIAccessibility.isReduceTransparencyEnabled
+        #else
+        let reduceTransparency = false
+        #endif
+        var tier: Tier = (lpm || throttled || Self.isLowEndDevice) ? .reduced : .full
+        #if DEBUG
+        // "-perfTierReduced": force the reduced tier on the simulator, where Low Power Mode cannot be
+        // switched on and the host Mac's memory reads as a fast device - the only way to screenshot
+        // the flat-material / no-shadow path headlessly.
+        if ProcessInfo.processInfo.arguments.contains("-perfTierReduced") { tier = .reduced }
+        #endif
+
+        // Assign only what changed: each `@Published` write is a publish, and the root re-renders per publish.
+        if isLowPowerMode != lpm { isLowPowerMode = lpm }
+        if isThermallyThrottled != throttled { isThermallyThrottled = throttled }
+        if isReduceMotionEnabled != reduceMotion { isReduceMotionEnabled = reduceMotion }
+        if isReduceTransparencyEnabled != reduceTransparency { isReduceTransparencyEnabled = reduceTransparency }
+        if self.tier != tier { self.tier = tier }
+    }
+}
+
+/// One color per accent. `accent1` and `accent2` both resolve to it, so a screen can keep saying "this section
+/// is the second accent" while the two currently look the same - the split stays wired up without a two-color
+/// accent existing to drive it.
+enum AccentColor: String, CaseIterable, Identifiable {
+    var id: String { self.rawValue }
+
+    case red, orange, yellow, green, blue, indigo, cyan, teal, mint, purple, pink, brown, custom
+
+    var displayName: String {
+        rawValue.capitalized
+    }
+
+    /// The accent as the app paints it: text, icons, controls and tints alike, ~1,000 call sites.
+    ///
+    /// On iOS it reads at 4.5:1 or better wherever it lands (2026-09-26). The system colors are tuned for
+    /// fills, not text: in light mode only indigo reached the 4.5:1 that text under 18 pt needs (green
+    /// 2.2:1, yellow 1.5:1, blue 4.0:1 on white). So each appearance takes the system color moved only as
+    /// far as it has to go (`AccentContrast.legibleColor`): light starts from the system's own Increase
+    /// Contrast shade, dark keeps the system color (only indigo moves). The watch keeps the plain colors.
+    var color: Color {
+        #if os(iOS)
+        if self == .custom { return Self.cachedCustomColor(hex: Self.customHexForThisProcess) }
+        return Self.legiblePresets[self] ?? systemColor
+        #else
+        return systemColor
+        #endif
+    }
+
+    /// The color FAMILY, for a swatch that names the choice: the plain system color, or the picked hex.
+    /// `color` is what the app paints with, and in light mode that is a deeper shade; drawn as swatches
+    /// those shades read Yellow as brown and Cyan and Teal as one color (2026-09-26 screenshot).
+    var swatchColor: Color {
+        if self == .custom { return Color(hex: Self.customHexForThisProcess) ?? .green }
+        return systemColor
+    }
+
+    /// The plain system color, as every accent was painted before 2026-09-26.
+    private var systemColor: Color {
+        switch self {
+        case .red: return .red
+        case .orange: return .orange
+        case .yellow: return .yellow
+        case .green: return .green
+        case .blue: return .blue
+        case .indigo: return .indigo
+        case .cyan: return .cyan
+        case .teal: return .teal
+        case .mint: return .mint
+        case .purple: return .purple
+        case .pink: return .pink
+        case .brown: return .brown
+        // Resolved from the user's stored hex. Views observe `settings`, so changing the hex re-renders them.
+        // Cached per hex: `.color`/`.accent1`/`.accent2` are read by nearly every row of every list, and
+        // re-parsing the hex string on each read made the custom theme measurably slower than the built-ins.
+        case .custom: return Self.cachedCustomColor(hex: Self.customHexForThisProcess)
+        }
+    }
+
+    #if os(iOS)
+    /// The UIKit system color behind each preset (the same colors SwiftUI's `.green` and friends are).
+    private var systemUIColor: UIColor? {
+        switch self {
+        case .red: return .systemRed
+        case .orange: return .systemOrange
+        case .yellow: return .systemYellow
+        case .green: return .systemGreen
+        case .blue: return .systemBlue
+        case .indigo: return .systemIndigo
+        case .cyan: return .systemCyan
+        case .teal: return .systemTeal
+        case .mint: return .systemMint
+        case .purple: return .systemPurple
+        case .pink: return .systemPink
+        case .brown: return .systemBrown
+        case .custom: return nil
+        }
+    }
+
+    /// Built once: `color` is read by nearly every row, and a fresh `Color` per read would also defeat
+    /// every Equatable row that compares its accent (a dynamic color is equal only to itself).
+    private static let legiblePresets: [AccentColor: Color] = Dictionary(
+        uniqueKeysWithValues: allCases.compactMap { accent in
+            accent.systemUIColor.map { (accent, AccentContrast.legibleColor($0)) }
+        }
+    )
+    #endif
+
+    /// The custom-accent hex as THIS process can see it. The app reads the live property; a widget or
+    /// complication reads the App Group mirror the app writes on every change, so painting `.custom`
+    /// no longer costs the extension the whole `Settings.init` (three location decodes, ~240 stored
+    /// properties) for one string. Read once per extension process - it is a short-lived one.
+    /// Read from the App Group on every use, not once per process: WidgetKit reuses an extension
+    /// process across reloads, and a cached hex kept painting the previous custom accent (P11).
+    /// (The defaults read is served from memory; `cachedCustomColor` still memoizes the parse.)
+    private static let appGroupStore = UserDefaults(suiteName: AppIdentifiers.appGroupSuiteName)
+    private static var extensionCustomHex: String {
+        appGroupStore?.string(forKey: "customAccentColorHex") ?? "34C759"
+    }
+    private static var customHexForThisProcess: String {
+        Settings.isAppProcess ? Settings.shared.customAccentColorHex : extensionCustomHex
+    }
+
+    private static let customColorLock = NSLock()
+    nonisolated(unsafe) private static var customColorCache: (hex: String, color: Color)?
+
+    private static func cachedCustomColor(hex: String) -> Color {
+        customColorLock.lock()
+        defer { customColorLock.unlock() }
+        if let cached = customColorCache, cached.hex == hex { return cached.color }
+        let parsed = Color(hex: hex) ?? .green
+        // A picked color gets the same legibility as the presets (see `color`). The PICKER reads the
+        // stored hex itself, never this, so the swatch shows exactly what was picked and never drifts.
+        #if os(iOS)
+        let painted = AccentContrast.legibleColor(UIColor(parsed))
+        #else
+        let painted = parsed
+        #endif
+        customColorCache = (hex, painted)
+        return painted
+    }
+
+    /// Kept so the (many) gradient/second-accent call sites still compile - it is simply the accent itself, so
+    /// every "gradient" collapses to a solid fill that renders exactly like the flat color.
+    var secondaryColor: Color { color }
+
+    /// No accent has two stops any more, so views keep their plain rendering.
+    var isGradient: Bool { false }
+
+    var gradientColors: [Color] { [color, secondaryColor] }
+
+    func gradient(from start: UnitPoint = .topLeading, to end: UnitPoint = .bottomTrailing) -> LinearGradient {
+        LinearGradient(colors: gradientColors, startPoint: start, endPoint: end)
+    }
+
+    /// For rings and arcs.
+    var angularGradient: AngularGradient {
+        AngularGradient(colors: [color, secondaryColor, color], center: .center)
+    }
+
+    // MARK: - The two accents, by name
+    //
+    // Sections declare which of the two they belong to (leading toolbar / location on the first, trailing
+    // toolbar / prayer times on the second). Both resolve to the selected color today - picking a color takes
+    // both - but the wiring stays, so a two-color accent can be reintroduced by changing only `secondaryColor`.
+
+    /// The primary accent. Leading toolbar, location, and every "first" section.
+    var accent1: Color { color }
+    /// The secondary accent. Trailing toolbar, prayer times, and every "second" section.
+    var accent2: Color { secondaryColor }
+}
+
+/// Preset swatches shown in Appearance. `.custom` is excluded - it's driven by the color picker instead.
+let accentColors: [AccentColor] = AccentColor.allCases.filter { $0 != .custom }
+
+#if os(iOS)
+/// WCAG 2 contrast arithmetic for the accent, in sRGB (the way Accessibility Inspector measures it).
+enum AccentContrast {
+    struct RGB: Equatable {
+        var r: Double, g: Double, b: Double
+    }
+
+    /// The light ground accent text is held to: the grouped background (242, 242, 247), the darkest of
+    /// the light grounds it sits on (rows are white), so 4.5:1 here is 4.5:1 or better on all of them.
+    static let lightGround = RGB(r: 242 / 255, g: 242 / 255, b: 247 / 255)
+    /// The dark ground: an inset-grouped row (28, 28, 30), where most accent text sits.
+    static let darkGround = RGB(r: 28 / 255, g: 28 / 255, b: 30 / 255)
+
+    /// Text under 18 pt (WCAG AA, the table Apple's accessibility page uses); Increase Contrast gets AAA.
+    static let textRatio = 4.5
+    static let increasedRatio = 7.0
+
+    static func rgb(_ color: UIColor) -> RGB {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        func clamp(_ v: CGFloat) -> Double { Double(max(0, min(1, v))) }
+        return RGB(r: clamp(r), g: clamp(g), b: clamp(b))
+    }
+
+    static func luminance(_ c: RGB) -> Double {
+        func channel(_ v: Double) -> Double { v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+        return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+    }
+
+    static func ratio(_ a: RGB, _ b: RGB) -> Double {
+        let (la, lb) = (luminance(a), luminance(b))
+        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+    }
+
+    /// `top` laid over `bottom` at `opacity`.
+    static func blend(_ top: RGB, over bottom: RGB, opacity: Double) -> RGB {
+        RGB(r: bottom.r + (top.r - bottom.r) * opacity,
+            g: bottom.g + (top.g - bottom.g) * opacity,
+            b: bottom.b + (top.b - bottom.b) * opacity)
+    }
+
+    /// `color` moved just far enough to read at `target` against `ground`, keeping its hue: scaled toward
+    /// black on a light ground, mixed toward white on a dark one. Unchanged when it already reads.
+    static func legible(_ color: RGB, against ground: RGB, target: Double) -> RGB {
+        guard ratio(color, ground) < target else { return color }
+        // 0.18 is where black and white text tie, i.e. which way "more contrast" lies.
+        let towardBlack = luminance(ground) > 0.18
+        func moved(_ t: Double) -> RGB {
+            towardBlack
+                ? RGB(r: color.r * (1 - t), g: color.g * (1 - t), b: color.b * (1 - t))
+                : blend(RGB(r: 1, g: 1, b: 1), over: color, opacity: t)
+        }
+        var low = 0.0, high = 1.0
+        for _ in 0..<20 {
+            let mid = (low + high) / 2
+            if ratio(moved(mid), ground) >= target { high = mid } else { low = mid }
+        }
+        return moved(high)
+    }
+
+    static func uiColor(_ c: RGB) -> UIColor {
+        UIColor(red: CGFloat(c.r), green: CGFloat(c.g), blue: CGFloat(c.b), alpha: 1)
+    }
+
+    /// `color` as it resolves in one appearance.
+    static func resolved(_ color: UIColor, dark: Bool, increased: Bool = false) -> RGB {
+        let style: UIUserInterfaceStyle = dark ? .dark : .light
+        let contrast: UIAccessibilityContrast = increased ? .high : .normal
+        let traits: UITraitCollection
+        if #available(iOS 17.0, *) {
+            traits = UITraitCollection { mutable in
+                mutable.userInterfaceStyle = style
+                mutable.accessibilityContrast = contrast
+            }
+        } else {
+            traits = UITraitCollection(traitsFrom: [
+                UITraitCollection(userInterfaceStyle: style),
+                UITraitCollection(accessibilityContrast: contrast)
+            ])
+        }
+        return rgb(color.resolvedColor(with: traits))
+    }
+
+    /// An accent that reads as text in every appearance, as ONE dynamic color with its four shades
+    /// worked out once. Light: the system color if it already reads, otherwise the system's own
+    /// Increase Contrast shade (a tuned darker hue, not a muddy one), then `legible` for whatever is
+    /// still missing. Dark: the system color, lifted only if it falls short (of the presets, indigo).
+    /// Increase Contrast holds both to 7:1.
+    static func legibleColor(_ base: UIColor) -> Color {
+        let lightPlain = resolved(base, dark: false)
+        let lightHigh = resolved(base, dark: false, increased: true)
+        let lightStart = ratio(lightPlain, lightGround) >= textRatio ? lightPlain : lightHigh
+        let light = uiColor(legible(lightStart, against: lightGround, target: textRatio))
+        let lightIncreased = uiColor(legible(lightHigh, against: lightGround, target: increasedRatio))
+        let dark = uiColor(legible(resolved(base, dark: true), against: darkGround, target: textRatio))
+        let darkIncreased = uiColor(legible(resolved(base, dark: true, increased: true),
+                                            against: darkGround, target: increasedRatio))
+        return Color(UIColor { traits in
+            let increased = traits.accessibilityContrast == .high
+            if traits.userInterfaceStyle == .dark { return increased ? darkIncreased : dark }
+            return increased ? lightIncreased : light
+        })
+    }
+}
+#endif
+
+// MARK: - Rounded design, app-wide
+//
+// Every system font in the app renders in SF Rounded. That is set once, as `.fontDesign(.rounded)` on the root
+// view: `fontDesign` propagates down the environment, so it covers all ~2,200 `.font(.headline)`-style call sites
+// without any of them being touched.
+//
+// The catch is that `fontDesign` overrides the design of *every* font in its subtree, `.custom(...)` faces
+// included, which would silently replace the Quranic Arabic faces (Uthmani / Qiraat / IndoPak) with a system one.
+// So each view that renders Arabic must declare which face it is actually using via `arabicFontDesign(custom:)`.
+
+extension View {
+    /// Applies the app-wide rounded design. Called once, on the root view.
+    ///
+    /// `fontDesign` needs iOS 16.1, and the app deploys to 15.0, so on older systems this is a no-op and the app
+    /// keeps the default system face. That is a purely visual fallback: nothing below depends on the design.
+    @ViewBuilder
+    func appFontDesign() -> some View {
+        if #available(iOS 16.1, macOS 13.0, watchOS 9.1, *) {
+            self.fontDesign(.rounded)
+        } else {
+            self
+        }
+    }
+
+    #if os(iOS)
+    /// iPad and Mac: the same 17 pt body text that fills an iPhone reads small on an 834-1366 pt
+    /// canvas, so the pad idiom runs one Dynamic Type step above the user's setting whenever that
+    /// setting is at the default `.large` or below (a user who already chose a larger size keeps it).
+    /// Only SwiftUI text follows this: the reader's stored point sizes have their own iPad defaults
+    /// (`Settings.readerDefaultScale`), and UIKit bars keep the system size. 2026-09-06 iPad/Mac pass.
+    func regularIdiomTypeBoost() -> some View {
+        modifier(RegularIdiomTypeBoost())
+    }
+    #endif
+
+    /// Declares how Arabic text in this subtree should interact with the app-wide rounded design.
+    ///
+    /// Pass `true` when a real bundled Arabic face (Uthmani / Qiraat / IndoPak) is in play, which opts the subtree
+    /// out of the rounded design so the face renders as authored. Pass `false` when the reader picked "Basic" and
+    /// the Arabic is really the system face, which keeps it rounded like the rest of the UI.
+    ///
+    /// A view that opts out is responsible for naming `design: .rounded` on any *system* font it still draws - the
+    /// environment no longer supplies one. That case is real: an ayah keeps its Uthmani number marker even when the
+    /// body text is "Basic", so the row must opt out yet still round its body.
+    @ViewBuilder
+    func arabicFontDesign(custom: Bool) -> some View {
+        if #available(iOS 16.1, macOS 13.0, watchOS 9.1, *) {
+            self.fontDesign(custom ? nil : .rounded)
+        } else {
+            self
+        }
+    }
+
+}
+
+#if os(iOS)
+/// See `regularIdiomTypeBoost()`. Idiom-based, not size-class based: an iPad window in Slide Over
+/// shows the iPhone layouts, but its text is still read from an iPad's distance.
+private struct RegularIdiomTypeBoost: ViewModifier {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    private static let boosts: Bool = UIDevice.current.userInterfaceIdiom != .phone
+
+    func body(content: Content) -> some View {
+        content
+            // The size as the reader set it, for `splitSidebarColumn()` to restore.
+            .environment(\.unboostedDynamicTypeSize, dynamicTypeSize)
+            .dynamicTypeSize(Self.boosts ? max(dynamicTypeSize, .xLarge) : dynamicTypeSize)
+    }
+}
+#endif
+
+/// The reader's own Dynamic Type size, before `regularIdiomTypeBoost()` stepped the pad idiom up: what
+/// `splitSidebarColumn()` restores inside a sidebar. Nil where no boost is in force.
+private struct UnboostedDynamicTypeSizeKey: EnvironmentKey {
+    static let defaultValue: DynamicTypeSize? = nil
+}
+
+/// True inside a `NavigationSplitView` sidebar (`splitSidebarColumn()`): the one column in the app
+/// narrower than an iPhone, where a settings row drops its trailing read-out and a summary tile's
+/// title may take a third line.
+private struct IsSidebarColumnKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var unboostedDynamicTypeSize: DynamicTypeSize? {
+        get { self[UnboostedDynamicTypeSizeKey.self] }
+        set { self[UnboostedDynamicTypeSizeKey.self] = newValue }
+    }
+
+    var isSidebarColumn: Bool {
+        get { self[IsSidebarColumnKey.self] }
+        set { self[IsSidebarColumnKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// A split view's sidebar column (iPad and Mac). The pad idiom's one-step type boost
+    /// (`regularIdiomTypeBoost`) is for the wide detail column: a 320 pt sidebar is narrower than any
+    /// iPhone, and boosted there it cut the Quran summary tiles to "Last Listen...", the sort menu to
+    /// "Broken L..." and the help doors' captions (13-inch iPad, 2026-10-12). The sidebar keeps the
+    /// reader's own size, as the iPad's system sidebars do, and tells its rows where they are
+    /// (`isSidebarColumn`). Apply it to the sidebar closure's root view, once per split view.
+    func splitSidebarColumn() -> some View {
+        modifier(SplitSidebarColumn())
+    }
+}
+
+private struct SplitSidebarColumn: ViewModifier {
+    @Environment(\.unboostedDynamicTypeSize) private var unboosted
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.isSidebarColumn, true)
+            .dynamicTypeSize(unboosted ?? dynamicTypeSize)
+    }
+}
+
+/// The indent + accent rail behind `settingsDependent()`. Reads the accent straight off Settings:
+/// every view that uses the rail already observes Settings, so the rail follows accent changes
+/// without observing anything itself (and the watch, which has no appearance environment, compiles).
+extension String {
+    /// آ (U+0622) written as its canonical parts: ا + the combining maddah (U+0653).
+    ///
+    /// The KFGQPC Hafs face - the one the Quran is set in, and the only one whose tajweed colouring
+    /// stays crisp - ships no precomposed آ, because the Madinah mushaf itself writes the maddah as a
+    /// separate mark. Ordinary Arabic prose (hadith, adhkar, duas, the 99 Names) uses the precomposed
+    /// character constantly, so rendering it in that face left thousands of characters to the system
+    /// fallback mid-word. The face DOES carry both pieces and positions marks (`mark`/`mkmk` GPOS), so
+    /// swapping in the decomposition renders identically without touching the font itself - which the
+    /// KFGQPC licence forbids ("no modifying, altering").
+    ///
+    /// Canonical equivalence, so search, copy and share are unaffected; the other faces (IndoPak,
+    /// system) draw the decomposed form the same way they draw the composed one.
+    ///
+    /// Same output as the Foundation form this replaced (`contains` + `replacingOccurrences`, both
+    /// non-literal), which is pinned by `AlefMaddaEquivalenceTests` over every hadith display string in
+    /// the 17 packs and the Fortress of the Muslim. Those two Foundation calls compared composed
+    /// character sequences with NFC normalization on every string, and they were 88% of the hadith
+    /// text-block inflate in the profiler (the Reminder of the Day's pack parse alone spent 2 s of CPU
+    /// in them; Phase 10.11). Their rule, kept here: a bare آ is swapped; an آ that is followed by a
+    /// combining mark (a fatha, a shadda, a superscript alef) is one composed sequence with it and the
+    /// needle never matched it, so it stays as written.
+    var decomposingAlefMadda: String {
+        // U+0622 is the two UTF-8 bytes D8 A2; a lead byte is never a continuation byte, so the pair
+        // cannot occur inside any other scalar. Most strings leave here without an allocation.
+        //
+        // The search and the copying are libc's (memmem, then whole runs appended at once), not a
+        // byte-at-a-time Swift loop (10.16): walking `unicodeScalars` and appending to a
+        // `UnicodeScalarView` was still 58% of a hadith block's inflate once the Foundation search was
+        // gone, and a byte loop of the app's own costs the same in a Debug build. Only the scalar AFTER
+        // an آ is decoded, to ask whether it extends it.
+        var text = self
+        return text.withUTF8 { bytes -> String in
+            guard let base = bytes.baseAddress, bytes.count >= 2,
+                  memmem(base, bytes.count, Self.alefMaddaBytes, 2) != nil else { return self }
+            var out: [UInt8] = []
+            out.reserveCapacity(bytes.count + 8)
+            var copied = 0                         // bytes[..<copied] are in `out` already
+            var changed = false
+            while copied + 2 <= bytes.count,
+                  let hit = memmem(base + copied, bytes.count - copied, Self.alefMaddaBytes, 2) {
+                let index = UnsafeRawPointer(hit) - UnsafeRawPointer(base)
+                out.append(contentsOf: UnsafeBufferPointer(rebasing: bytes[copied..<index]))
+                if Self.extendsComposedSequence(Self.scalar(in: bytes, at: index + 2)) {
+                    out.append(0xD8); out.append(0xA2)
+                } else {
+                    out.append(0xD8); out.append(0xA7)   // ا
+                    out.append(0xD9); out.append(0x93)   // U+0653
+                    changed = true
+                }
+                copied = index + 2
+            }
+            guard changed else { return self }
+            out.append(contentsOf: UnsafeBufferPointer(rebasing: bytes[copied...]))
+            return String(decoding: out, as: UTF8.self)
+        }
+    }
+
+    private static let alefMaddaBytes: [UInt8] = [0xD8, 0xA2]
+
+    /// The scalar whose UTF-8 sequence starts at `index`, or nil at the end. The bytes come from a
+    /// Swift string, so they are well formed; a malformed lead byte still answers nil rather than trap.
+    private static func scalar(in bytes: UnsafeBufferPointer<UInt8>, at index: Int) -> Unicode.Scalar? {
+        guard index < bytes.count else { return nil }
+        let lead = bytes[index]
+        var value: UInt32
+        var continuationCount: Int
+        switch lead {
+        case 0x00...0x7F: return Unicode.Scalar(lead)
+        case 0xC0...0xDF: value = UInt32(lead & 0x1F); continuationCount = 1
+        case 0xE0...0xEF: value = UInt32(lead & 0x0F); continuationCount = 2
+        case 0xF0...0xF7: value = UInt32(lead & 0x07); continuationCount = 3
+        default: return nil
+        }
+        guard index + continuationCount < bytes.count else { return nil }
+        for offset in 1...continuationCount {
+            let continuation = bytes[index + offset]
+            guard continuation & 0xC0 == 0x80 else { return nil }
+            value = value << 6 | UInt32(continuation & 0x3F)
+        }
+        return Unicode.Scalar(value)
+    }
+
+    /// Whether `scalar` continues the composed character sequence of the base before it, the way
+    /// Foundation's non-literal search groups them: the Grapheme_Extend scalars (every combining
+    /// mark, the zero-width non-joiner, the variation selectors), the zero-width joiner and the emoji
+    /// skin-tone modifiers. Nil (end of string) extends nothing.
+    private static func extendsComposedSequence(_ scalar: Unicode.Scalar?) -> Bool {
+        guard let scalar else { return false }
+        if scalar.properties.isGraphemeExtend { return true }
+        switch scalar.value {
+        case 0x200D, 0x1F3FB...0x1F3FF: return true
+        default: return false
+        }
+    }
+}
+
+extension Font {
+    /// The app's Arabic font resolver. A real bundled face (Uthmani / Qiraat / IndoPak) renders as
+    /// authored; the "Basic" sentinel resolves to the ROUNDED system face explicitly. A bare
+    /// `.custom(sentinel, ...)` fell back to the DEFAULT design - the `fontDesign` environment never
+    /// reaches `.custom` fonts - so Basic Arabic was the one text in the app that wasn't rounded.
+    static func arabic(_ name: String, size: CGFloat) -> Font {
+        name == Settings.systemArabicFontName
+            ? .system(size: size, design: .rounded)
+            : .custom(name, size: size)
+    }
+
+    /// `relativeTo` variant. The Basic branch keeps the fixed size (`.system(size:design:)` has no
+    /// text-style anchor) - the trade for guaranteed rounding.
+    static func arabic(_ name: String, size: CGFloat, relativeTo style: Font.TextStyle) -> Font {
+        name == Settings.systemArabicFontName
+            ? .system(size: size, design: .rounded)
+            : .custom(name, size: size, relativeTo: style)
+    }
+}
+
+#if canImport(UIKit)
+extension UIFont {
+    /// The rounded system face. The `fontDesign` environment only reaches SwiftUI text, so the UIKit-drawn surfaces
+    /// (the mushaf page, the share-image renderer) have to ask for the design themselves to match the rest of the app.
+    static func roundedSystemFont(ofSize size: CGFloat, weight: UIFont.Weight = .regular) -> UIFont {
+        let base = UIFont.systemFont(ofSize: size, weight: weight)
+        guard let descriptor = base.fontDescriptor.withDesign(.rounded) else { return base }
+        return UIFont(descriptor: descriptor, size: size)
+    }
+}
+#endif
+
+extension Color {
+    /// Creates a color from a 6-digit RGB hex string ("RRGGBB", leading "#" optional). Returns nil if invalid.
+    init?(hex: String) {
+        var s = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let rgb = UInt64(s, radix: 16) else { return nil }
+        self = Color(
+            red: Double((rgb >> 16) & 0xFF) / 255,
+            green: Double((rgb >> 8) & 0xFF) / 255,
+            blue: Double(rgb & 0xFF) / 255
+        )
+    }
+
+    /// 6-digit RGB hex string for this color.
+    var hexString: String {
+        #if canImport(UIKit)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        UIColor(self).getRed(&r, green: &g, blue: &b, alpha: &a)
+        let clamp = { (v: CGFloat) in Int(round(max(0, min(1, v)) * 255)) }
+        return String(format: "%02X%02X%02X", clamp(r), clamp(g), clamp(b))
+        #else
+        return "000000"
+        #endif
+    }
+}
+
+struct CustomColorSchemeKey: EnvironmentKey {
+    static let defaultValue: ColorScheme? = nil
+}
+
+extension EnvironmentValues {
+    var customColorScheme: ColorScheme? {
+        get { self[CustomColorSchemeKey.self] }
+        set { self[CustomColorSchemeKey.self] = newValue }
+    }
+}
+
+/// The twelve months of the Hijri year, in order.
+///
+/// One table, because three screens need it: the Hijri Calendar in the Adhan tab, the Hijri Date Converter, and
+/// the Hijri reference page in Pillars. Each had its own hardcoded list, and only one of them carried the Arabic.
+struct HijriMonth: Identifiable {
+    var id: Int { number }
+
+    /// 1...12, matching `Calendar(identifier: .islamicUmmAlQura)`'s month component.
+    let number: Int
+    let english: String
+    let arabic: String
+    /// The four sacred months (al-ashhur al-hurum), in which fighting is forbidden: Quran 9:36.
+    let isSacred: Bool
+    let note: String
+}
+
+let hijriMonths: [HijriMonth] = [
+    HijriMonth(number: 1,  english: "Muharram",       arabic: "مُحَرَّم",        isSacred: true,  note: "A sacred month. The Day of Ashura falls on the 10th."),
+    HijriMonth(number: 2,  english: "Safar",          arabic: "صَفَر",           isSacred: false, note: "No worship is tied to this month, and there is no bad omen in it."),
+    HijriMonth(number: 3,  english: "Rabi al-Awwal",  arabic: "رَبِيع الأَوَّل",  isSacred: false, note: "The month the Prophet ﷺ migrated to Madinah."),
+    HijriMonth(number: 4,  english: "Rabi al-Thani",  arabic: "رَبِيع الثَّانِي", isSacred: false, note: "The second of the two Rabi months."),
+    HijriMonth(number: 5,  english: "Jumada al-Ula",  arabic: "جُمَادَى الأُولَى", isSacred: false, note: "The first of the two Jumada months."),
+    HijriMonth(number: 6,  english: "Jumada al-Thani", arabic: "جُمَادَى الآخِرَة", isSacred: false, note: "The second of the two Jumada months."),
+    HijriMonth(number: 7,  english: "Rajab",          arabic: "رَجَب",           isSacred: true,  note: "A sacred month, standing alone between the others."),
+    HijriMonth(number: 8,  english: "Sha'ban",        arabic: "شَعبَان",         isSacred: false, note: "The Prophet ﷺ fasted more in Sha'ban than in any month but Ramadan."),
+    HijriMonth(number: 9,  english: "Ramadan",        arabic: "رَمَضَان",        isSacred: false, note: "The month of the obligatory fast, and the month the Quran was sent down."),
+    HijriMonth(number: 10, english: "Shawwal",        arabic: "شَوَّال",         isSacred: false, note: "Eid al-Fitr is on the 1st, followed by the six recommended fasts."),
+    HijriMonth(number: 11, english: "Dhul Qi'dah",    arabic: "ذُو القَعدَة",     isSacred: true,  note: "A sacred month, and one of the months of Hajj."),
+    HijriMonth(number: 12, english: "Dhul Hijjah",    arabic: "ذُو الحِجَّة",     isSacred: true,  note: "A sacred month. Hajj is performed, and Eid al-Adha is on the 10th."),
+]
+
+func arabicNumberString(from number: Int) -> String {
+    let arabicNumbers = ["٠", "١", "٢", "٣", "٤", "٥", "٦", "٧", "٨", "٩"]
+    return String(number).map { ch -> String in
+        guard let digit = ch.wholeNumberValue, digit >= 0, digit <= 9 else { return String(ch) }
+        return arabicNumbers[digit]
+    }.joined()
+}
+
+private let quranStripScalars: Set<UnicodeScalar> = {
+    var s = Set<UnicodeScalar>()
+
+    // Tashkeel  U+064B…U+065F
+    for v in 0x064B...0x065F { if let u = UnicodeScalar(v) { s.insert(u) } }
+
+    // Quranic annotation signs  U+06D6…U+06ED
+    for v in 0x06D6...0x06ED { if let u = UnicodeScalar(v) { s.insert(u) } }
+
+    // Extras: short alif, madda, open taa marbuutah, dagger alif
+    [0x0670, 0x0657, 0x0674, 0x0656].forEach { v in
+        if let u = UnicodeScalar(v) { s.insert(u) }
+    }
+
+    return s
+}()
+
+extension String {
+    /// Whether the text carries any Arabic-script characters - drives script-aware search across the app
+    /// (an Arabic query is only ever found in an Arabic field, a Latin one only in the English). Lives here
+    /// with the other Arabic string utilities so every screen that searches (Quran, Hadith, Letters, 99
+    /// Names, Duas, Adhkar) shares one definition.
+    var containsArabicScript: Bool {
+        unicodeScalars.contains { (0x0600...0x06FF).contains($0.value) || (0x0750...0x077F).contains($0.value) || (0x08A0...0x08FF).contains($0.value) }
+    }
+
+    /// Latin letters with accents folded to their plain letters, and the transliteration marks for 'ayn
+    /// and hamza dropped: "Sunan Abī Dāwūd" reads "Sunan Abi Dawud", "Ṣaḥīḥ" reads "Sahih", "Jāmiʿ"
+    /// reads "Jami". References and names are often written, or pasted, in academic transliteration,
+    /// while every book name, alias and translation the searches match against is spelled plainly
+    /// (Abu, 2026-09-29: "allow me to search this up with diacritics, so strip it"). Arabic script, and
+    /// everything else outside the Latin blocks, passes through untouched: the Arabic folds decide what
+    /// their own marks mean, and some of them (hamza) have to keep them. See `LatinFold`.
+    var foldingLatinDiacritics: String {
+        // Most text has nothing to fold; say so without building a copy.
+        guard unicodeScalars.contains(where: LatinFold.affects) else { return self }
+        var out = String.UnicodeScalarView()
+        out.reserveCapacity(unicodeScalars.count)
+        for scalar in unicodeScalars where !LatinFold.isDropped(scalar) {
+            out.append(LatinFold.base(scalar) ?? scalar)
+        }
+        return String(out)
+    }
+
+    var normalizingArabicIndicDigitsToWestern: String {
+        let arabicIndicZero: UInt32 = 0x0660
+        let easternArabicIndicZero: UInt32 = 0x06F0
+        let asciiZero: UInt32 = 0x0030
+
+        var out = String.UnicodeScalarView()
+        out.reserveCapacity(unicodeScalars.count)
+
+        for scalar in unicodeScalars {
+            switch scalar.value {
+            case 0x0660...0x0669:
+                let value = scalar.value - arabicIndicZero
+                if let mapped = UnicodeScalar(asciiZero + value) {
+                    out.append(mapped)
+                } else {
+                    out.append(scalar)
+                }
+            case 0x06F0...0x06F9:
+                let value = scalar.value - easternArabicIndicZero
+                if let mapped = UnicodeScalar(asciiZero + value) {
+                    out.append(mapped)
+                } else {
+                    out.append(scalar)
+                }
+            default:
+                out.append(scalar)
+            }
+        }
+
+        return String(out)
+    }
+
+    var removingArabicDiacriticsAndSigns: String {
+        var out = String.UnicodeScalarView()
+        out.reserveCapacity(unicodeScalars.count)
+
+        for scalar in unicodeScalars {
+            switch scalar.value {
+            case 0x0671: // ٱ  hamzatul-wasl
+                out.append(UnicodeScalar(0x0627)!)
+            default:
+                if !quranStripScalars.contains(scalar) { out.append(scalar) }
+            }
+        }
+        return String(out)
+    }
+
+    var removingArabicSukoon: String {
+        String(unicodeScalars.filter { $0.value != 0x0652 })
+    }
+
+    /// Replaces the ayah-search operator characters (`# ^ % $ & | !`) with spaces. The search parser
+    /// consumes these as operators, so they must be removed before the residual text is matched against
+    /// (or highlighted within) ayah content - otherwise a query like `#الله` keeps the `#`, never matches
+    /// the source, and nothing highlights. Operators become spaces (not deleted) to preserve word breaks.
+    var removingAyahSearchOperators: String {
+        // The operators are all ASCII, so one byte scan decides whether anything changes; the source
+        // texts this folds (ayah and hadith tokens, gloss words) almost never carry one, and the old
+        // form allocated a Set and rebuilt every string regardless (13% of the lexicon build).
+        guard utf8.contains(where: Self.isAyahSearchOperatorByte) else { return self }
+        var out = String.UnicodeScalarView()
+        out.reserveCapacity(unicodeScalars.count)
+        for scalar in unicodeScalars {
+            out.append(scalar.isASCII && Self.isAyahSearchOperatorByte(UInt8(scalar.value)) ? " " : scalar)
+        }
+        return String(out)
+    }
+
+    /// `# ^ % $ & | ! =`, the ayah search operators.
+    private static func isAyahSearchOperatorByte(_ byte: UInt8) -> Bool {
+        switch byte {
+        case 0x23, 0x5E, 0x25, 0x24, 0x26, 0x7C, 0x21, 0x3D: return true
+        default: return false
+        }
+    }
+
+    var removingSilentArabicLettersForSearch: String {
+        // The same grapheme walk and the same per-cluster decisions as before (2026-10-03, Phase 10.1):
+        // only the bookkeeping changed. Each cluster used to become a `String` and an `Array` of its
+        // scalars and then take six `contains` passes; the index build ran this four times per ayah,
+        // and it was the single largest slice of that build in the profiler. The cluster's scalars are
+        // read in place, once, and appended as scalars (the same string: `String.append(Character)`
+        // and appending the character's scalars produce identical contents).
+        var out = String.UnicodeScalarView()
+        out.reserveCapacity(unicodeScalars.count)
+
+        for cluster in self {
+            let scalars = cluster.unicodeScalars
+            var base: UInt32 = 0
+            var hasStandardSukoon = false
+            var hasDaggerAlif = false
+            var hasShadda = false
+            var hasUthmaniSukoon = false
+            var hasArabicVowel = false
+            for scalar in scalars {
+                let v = scalar.value
+                if base == 0, (0x0621...0x064A).contains(v) || v == 0x0671 { base = v }
+                switch v {
+                case 0x0652: hasStandardSukoon = true
+                case 0x0670: hasDaggerAlif = true
+                case 0x0651: hasShadda = true
+                case 0x06E1: hasUthmaniSukoon = true
+                case 0x064E, 0x064F, 0x0650, 0x064B, 0x064C, 0x064D, 0x0656, 0x0657, 0x065A: hasArabicVowel = true
+                default: break
+                }
+            }
+            guard base != 0 else {
+                out.append(contentsOf: scalars)
+                continue
+            }
+
+            // ٱ (hamzatul-wasl) is KEPT - `cleanSearch` folds it to a plain ا downstream. Dropping the
+            // whole cluster here made the silent-lane blob start "لذين" instead of "الذين", so every
+            // silent-letter query beginning with ال missed for a reason users could never see.
+
+            switch base {
+            case 0x0627, 0x0648, 0x064A, 0x0649:
+                if hasStandardSukoon && !hasUthmaniSukoon {
+                    continue
+                }
+            case 0x0644:
+                if hasStandardSukoon {
+                    continue
+                }
+            default:
+                break
+            }
+
+            if base == 0x0648, hasDaggerAlif, !hasArabicVowel, !hasShadda, !hasStandardSukoon, !hasUthmaniSukoon {
+                continue
+            }
+
+            out.append(contentsOf: scalars)
+        }
+
+        return String(out)
+    }
+
+    /// Search twin of the mushaf's alif al-wiqaya: every whitespace-delimited token ending in "وا"
+    /// loses that final silent alif (ءامنوا → ءامنو, وعملوا → وعملو). Applied to the ALREADY FOLDED
+    /// corpus lane AND the folded query alike, so spellings with the alif, without it, or mixing
+    /// both converge to identical bytes - the mushaf-sukoon fold above can't do that for queries,
+    /// which carry no sukoon marks. Runs only on folded search text; NEVER fold this into the
+    /// highlighter's per-cluster normalization, where a context-sensitive rule desyncs its index map.
+    var removingAlifWiqayaForSearch: String {
+        guard contains("وا") else { return self }
+        var out = ""
+        out.reserveCapacity(count)
+        var token = ""
+
+        func flushToken() {
+            if token.hasSuffix("وا") {
+                token.removeLast()
+            }
+            out += token
+            token = ""
+        }
+
+        for character in self {
+            if character == " " {
+                flushToken()
+                out.append(" ")
+            } else {
+                token.append(character)
+            }
+        }
+        flushToken()
+
+        return out
+    }
+
+    /// Search-lane twin of the dagger alif: the mushaf writes some long-a sounds as a superscript alef
+    /// (يَٰنِسَآءَ, إِبۡرَٰهِـۧمَ). `cleanSearch` folds that dagger into a full ا - matching a typed
+    /// "يانساء" / "ابراهيم" - and THIS fold removes it instead, matching the equally common typed
+    /// spellings that omit the alif ("ينساء" / "ابرهيم"). Run it on the RAW text BEFORE `cleanSearch`
+    /// (afterwards the dagger is already a full ا) and index both lanes so either spelling finds the ayah.
+    var removingDaggerAlifForSearch: String {
+        guard unicodeScalars.contains(where: { $0.value == 0x0670 }) else { return self }
+        return String(unicodeScalars.filter { $0.value != 0x0670 })
+    }
+
+    /// Query-side twin of the mushaf's attached vocative: the Uthmani script writes "يا + noun" as ONE
+    /// word (يَٰنِسَآءَ, يَٰٓأَيُّهَا), so a typed "يا نساء" can never substring-match the folded corpus,
+    /// where the يا is glued to the word it calls. Joining a standalone folded "يا" token onto the token
+    /// after it converges the typed form with the mushaf's. Whole tokens only - a word merely ENDING in
+    /// "يا" (الدنيا) is untouched. Applied to FOLDED QUERIES as an additional lane, never to corpus blobs
+    /// (which carry no standalone يا) and never inside the highlighter's per-cluster fold, where any
+    /// context-sensitive rule desyncs its index map.
+    var joiningVocativeYaForSearch: String {
+        guard contains("يا ") else { return self }
+        let tokens = split(separator: " ", omittingEmptySubsequences: true)
+        var out: [String] = []
+        out.reserveCapacity(tokens.count)
+        var index = 0
+        while index < tokens.count {
+            if tokens[index] == "يا", index + 1 < tokens.count {
+                out.append("يا" + tokens[index + 1])
+                index += 2
+            } else {
+                out.append(String(tokens[index]))
+                index += 1
+            }
+        }
+        return out.joined(separator: " ")
+    }
+
+    /// Whether the text carries a BARE hamza (ء) - the one the reader has to go out of their way to
+    /// type, and therefore the one that should mean something. Seated hamzas (أ إ آ ؤ ئ) don't count:
+    /// they come along for free with ordinary spellings.
+    var containsBareHamza: Bool {
+        unicodeScalars.contains { $0.value == 0x0621 }
+    }
+
+    /// The dagger-alif variants a corpus text has to be checked against, deduplicated. The mushaf writes
+    /// some long-a sounds as a superscript alef; the main fold turns it into a full ا and this pairs that
+    /// with the spelling that omits it, which is the same two-lane treatment the search index uses.
+    var arabicDaggerVariantsForSearch: [String] {
+        let dropped = removingDaggerAlifForSearch
+        return dropped == self ? [self] : [self, dropped]
+    }
+
+    /// The text with every dotted letter swapped for its dotless skeleton (`ArabicRasm.dotless`),
+    /// scalar by scalar: the harakat stay where they are and the UTF-16 length never changes.
+    ///
+    /// It used to map whole Characters, which only matched a letter with no mark on it: with the
+    /// tashkeel shown, 110,383 of the Hafs text's 124,850 dotted letters kept their dots, and every
+    /// alef + maddah (U+0627 U+0653, canonically equal to the key "آ") collapsed to a bare alef,
+    /// deleting the maddah 2,872 times and shortening the string, which is what crashed page mode
+    /// (Quality Guide C1, A1).
+    var removingArabicDots: String {
+        var scalars = String.UnicodeScalarView()
+        scalars.reserveCapacity(unicodeScalars.count)
+        for scalar in unicodeScalars { scalars.append(ArabicRasm.dotless(scalar)) }
+        return String(scalars)
+    }
+    
+    func removeDiacriticsFromLastLetter() -> String {
+        guard !isEmpty else { return self }
+
+        let shaddah = UnicodeScalar(0x0651)!
+        let scalars = Array(unicodeScalars)
+        var idx = scalars.count
+        var trailingShaddahCount = 0
+        var removedNonShaddah = false
+
+        // Remove trailing Arabic marks from final letter cluster, but keep shaddah.
+        while idx > 0, quranStripScalars.contains(scalars[idx - 1]) {
+            if scalars[idx - 1] == shaddah {
+                trailingShaddahCount += 1
+            } else {
+                removedNonShaddah = true
+            }
+            idx -= 1
+        }
+
+        guard removedNonShaddah else { return self }
+
+        var out = String.UnicodeScalarView()
+        out.reserveCapacity(idx + trailingShaddahCount)
+        for scalar in scalars[0..<idx] { out.append(scalar) }
+        for _ in 0..<trailingShaddahCount { out.append(shaddah) }
+        return String(out)
+    }
+
+    subscript(_ r: Range<Int>) -> Substring {
+        let lower = Swift.max(0, Swift.min(r.lowerBound, count))
+        let upper = Swift.max(lower, Swift.min(r.upperBound, count))
+        let start = index(startIndex, offsetBy: lower, limitedBy: endIndex) ?? endIndex
+        let end = index(startIndex, offsetBy: upper, limitedBy: endIndex) ?? endIndex
+        return self[start..<end]
+    }
+}
+
+// MARK: - Spelling fold (romanized Arabic names)
+
+/// One forgiving comparison for every list of ROMANIZED ARABIC NAMES the app searches: the 114
+/// surahs, the Names of Allah, the reciters (Abu, 2026-09-20: "Rahman versus Rahmaan ... Ayoub,
+/// Ayyoub, Ayub"). There is no standard romanization, so the same name arrives as Yasin, Yaseen,
+/// Ya-Sin and Yacine, and a plain substring test only knows the one spelling the data happens to
+/// carry. Enumerating spellings by hand cannot keep up with that; folding BOTH sides to one key can.
+///
+/// Two keys, tried in order, and ONLY when the ordinary search found nothing, so a query that works
+/// today returns exactly what it returned before:
+///
+///  1. `key`: every vowel run becomes one "a", so length and quality stop mattering (Rahman,
+///     Rahmaan, Rehman; Yusuf, Yousef, Yoosuf), while the consonants and their ORDER still do.
+///  2. `skeleton`: the vowels go entirely, which also forgives an elided one (Baqra for Baqarah).
+///
+/// Both keys fold the consonants people swap: q/k/c, dh/z, th/s, kh/h, gh/g/j, v/w, ph/f, doubled
+/// letters, and a trailing h (Baqarah, Baqara). `y` and `w` count as vowels except at the start of
+/// a word, which is what makes Layl/Lail, Quraysh/Quraish, Kawthar/Kausar/Kevser and Maryam/Mariam
+/// meet. Different NAMES for one thing (Bara'ah for at-Tawbah) are not spelling and cannot be
+/// folded: those live in the curated tables next to each list.
+///
+/// A match must be a whole word, or the START of one (so it still works while typing): never an
+/// arbitrary substring, because a key this lossy is short, and "ab" sits inside half the list.
+enum SpellingFold {
+    private static let articles: Set<String> = [
+        "al", "el", "ul", "il", "ar", "as", "ash", "at", "ath", "ad", "adh", "an", "az", "ats", "adz"
+    ]
+    private static let vowels: Set<Character> = ["a", "e", "i", "o", "u"]
+    /// Longest first: a digraph has to be read before either of its letters is.
+    private static let consonantFolds: [(String, String)] = [
+        ("ph", "f"), ("ck", "k"), ("dh", "z"), ("th", "s"), ("kh", "h"), ("gh", "j"), ("sh", "$"),
+        ("q", "k"), ("c", "k"), ("g", "j"), ("v", "w")
+    ]
+
+    /// The words of `text`: lowercased, accents stripped, apostrophes dropped (they are a letter in
+    /// some romanizations and nothing in others), split on anything that is not a letter or digit.
+    private static func words(_ text: String) -> [String] {
+        var plain = text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).lowercased()
+        plain = plain.replacingOccurrences(of: "\u{131}", with: "i")   // Turkish dotless i is not an accent
+        var out: [String] = []
+        var current = ""
+        for character in plain {
+            if character == "'" || character == "\u{2019}" || character == "\u{2018}" || character == "`"
+                || character == "\u{2BF}" || character == "\u{2BE}" { continue }
+            if character.isLetter || character.isNumber {
+                current.append(character)
+            } else if !current.isEmpty {
+                out.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { out.append(current) }
+        return out
+    }
+
+    private static func foldWord(_ word: String, keepVowels: Bool) -> String {
+        var folded = word
+        for (from, to) in consonantFolds {
+            folded = folded.replacingOccurrences(of: from, with: to)
+        }
+        var out = ""
+        var previous: Character?
+        let characters = Array(folded)
+        for (index, character) in characters.enumerated() {
+            // y and w lead a syllable only at the very start of a word; anywhere else they are the
+            // tail of a diphthong or a glide, and romanizations disagree about writing them at all.
+            let isVowel = vowels.contains(character) || ((character == "y" || character == "w") && index > 0)
+            let symbol: Character = isVowel ? "a" : character
+            if symbol == previous { continue }   // doubled letters and vowel runs collapse alike
+            previous = symbol
+            if isVowel, !keepVowels, !out.isEmpty { continue }   // the skeleton keeps only a leading vowel
+            out.append(symbol)
+        }
+        // Baqarah / Baqara, Nuh / Nu: a closing h after a vowel is written by some and not others.
+        if out.hasSuffix(keepVowels ? "ah" : "h"), out.count > 2 { out.removeLast() }
+        return out
+    }
+
+    /// The words of a NAME, articles dropped: they are assimilated, glued or omitted at will.
+    private static func nameWords(_ name: String) -> [String] {
+        let all = words(name)
+        return all.count > 1 ? all.filter { !articles.contains($0) } : all
+    }
+
+    /// `foldWord(_:keepVowels: true)` with each vowel run kept as its CLASS instead of "a", for the
+    /// as-you-type tier: a is A; i and y are I; o, u and w are U; e is E, which is either a or i
+    /// (Rehman, Ebrahim). A run is classed by its first letter ("ou" is U, "ai" is A). One symbol
+    /// per symbol of the key, so a prefix of one is a prefix of the other.
+    fileprivate static func classedWord(_ word: String) -> String {
+        var folded = word
+        for (from, to) in consonantFolds {
+            folded = folded.replacingOccurrences(of: from, with: to)
+        }
+        var out = ""
+        var previous: Character?
+        var inRun = false
+        for (index, character) in folded.enumerated() {
+            let isVowel = vowels.contains(character) || ((character == "y" || character == "w") && index > 0)
+            if isVowel {
+                if inRun { continue }
+                inRun = true
+                let symbol: Character
+                switch character {
+                case "a": symbol = "A"
+                case "e": symbol = "E"
+                case "i", "y": symbol = "I"
+                default: symbol = "U"
+                }
+                out.append(symbol)
+                previous = symbol
+            } else {
+                inRun = false
+                if character == previous { continue }
+                previous = character
+                out.append(character)
+            }
+        }
+        // The key's closing-h rule: a final h after a vowel is written by some and not others.
+        if out.count > 2, out.hasSuffix("h"), let vowel = out.dropLast().last, "AEIU".contains(vowel) {
+            out.removeLast()
+        }
+        return out
+    }
+
+    /// Whether `typed` is the start of `name`, both classed: consonants must be equal and vowels of
+    /// one class, except that E meets A or I.
+    fileprivate static func startsClassed(_ name: String, with typed: String) -> Bool {
+        guard typed.count <= name.count else { return false }
+        for (a, b) in zip(typed, name) where a != b {
+            guard (a == "E" && (b == "A" || b == "I")) || (b == "E" && (a == "A" || a == "I")) else { return false }
+        }
+        return true
+    }
+
+    /// Everything a query could be the start of, precomputed per name: each word, and the run of
+    /// words from each word onward glued together (so "abdelbaset" meets "Abdul Basit").
+    struct Entry: Equatable {
+        fileprivate let keyed: [String]
+        fileprivate let skeletons: [String]
+        /// The keyed forms with their vowels classed (`classedWord`), for the prefix tier only.
+        fileprivate let classed: [String]
+
+        init(names: [String]) {
+            var keyed = Set<String>()
+            var skeletons = Set<String>()
+            var classed = Set<String>()
+            func forms(of name: String, _ fold: (String) -> String) -> [String] {
+                let raw = SpellingFold.nameWords(name)
+                let parts = raw.map(fold)
+                var out = parts.indices.flatMap { [parts[$0], parts[$0...].joined()] }
+                // An article glued onto the word ("Alafasy"): also reachable without it ("Afasy").
+                for (index, word) in raw.enumerated() where word.count >= 6 && (word.hasPrefix("al") || word.hasPrefix("el")) {
+                    let bare = fold(String(word.dropFirst(2)))
+                    out.append(bare)
+                    out.append(([bare] + parts[(index + 1)...]).joined())
+                }
+                return out.filter { $0.count >= 2 }
+            }
+            for name in names {
+                keyed.formUnion(forms(of: name) { SpellingFold.foldWord($0, keepVowels: true) })
+                skeletons.formUnion(forms(of: name) { SpellingFold.foldWord($0, keepVowels: false) })
+                classed.formUnion(forms(of: name, SpellingFold.classedWord))
+            }
+            // Sorted: a Set's order is not stable, and rows that hold an entry compare with `==`.
+            self.keyed = keyed.sorted()
+            self.skeletons = skeletons.sorted()
+            self.classed = classed.sorted()
+        }
+    }
+
+    /// A query folded once, then asked about many entries.
+    struct Query {
+        fileprivate let keyed: [String]
+        fileprivate let skeletons: [String]
+        fileprivate let classed: [String]
+        /// Letters typed, all words together: a long query whose skeleton is two letters says little.
+        fileprivate let letters: Int
+
+        /// `nil` when the text has nothing foldable to say (digits only, Arabic script, too short).
+        init?(_ text: String) {
+            let parts = SpellingFold.words(text)
+            guard !parts.isEmpty, parts.contains(where: { $0.contains(where: \.isLetter) }),
+                  parts.joined().allSatisfy({ $0.isASCII }) else { return nil }
+            var forms = [parts]
+            if parts.count > 1, let first = parts.first, SpellingFold.articles.contains(first) {
+                forms.append(Array(parts.dropFirst()))
+            }
+            // A glued, unassimilated article ("alrahman" for ar-Rahman): try the rest of the word too.
+            if parts.count == 1, let only = parts.first, only.count >= 5,
+               only.hasPrefix("al") || only.hasPrefix("el") {
+                forms.append([String(only.dropFirst(2))])
+            }
+            // `c` has no one reading: k in "Mecca", j in the Turkish "Cuma" and "Casiye", s in the
+            // French "Yacine"; "ch" is sh in "Rachid" and kh in the older Indonesian "Ichlas". Picking
+            // one sent "cebbar" to al-Kabeer instead of al-Jabbar, so a query with a c is asked every
+            // way and the match tiers decide. Names themselves keep the plain reading (c as k).
+            forms = forms.flatMap { form -> [[String]] in
+                guard form.contains(where: { $0.contains("c") }) else { return [form] }
+                var readings: [[String]] = []
+                for digraph in ["sh", "kh"] {
+                    for single in ["k", "j", "s"] {
+                        let reading = form.map {
+                            $0.replacingOccurrences(of: "ch", with: digraph).replacingOccurrences(of: "c", with: single)
+                        }
+                        if !readings.contains(reading) { readings.append(reading) }
+                    }
+                }
+                return readings
+            }
+            func fold(_ word: (String) -> String) -> [String] {
+                var seen = Set<String>()
+                return forms.map { $0.map(word).joined() }
+                    .filter { $0.count >= 2 && seen.insert($0).inserted }
+            }
+            keyed = fold { SpellingFold.foldWord($0, keepVowels: true) }
+            skeletons = fold { SpellingFold.foldWord($0, keepVowels: false) }
+            classed = fold(SpellingFold.classedWord)
+            letters = parts.joined().count
+            guard !keyed.isEmpty || !skeletons.isEmpty else { return nil }
+        }
+    }
+
+    enum Strength: Int, Comparable {
+        case skeletonPrefix, skeletonExact, keyPrefix, keyExact
+        static func < (lhs: Strength, rhs: Strength) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+
+    static func strength(of query: Query, in entry: Entry) -> Strength? {
+        if query.keyed.contains(where: entry.keyed.contains) { return .keyExact }
+        // The as-you-type tier compares vowels by class. With every vowel read as "a", "musa" was
+        // the start of al-Masad, al-Mathani and al-Masabih, so a prophet's name listed five surahs
+        // it has nothing to do with. The exact tiers stay vowel-blind: Rahmaan IS Rahman.
+        // A prefix this short would be the start of everything.
+        if query.classed.contains(where: { typed in
+            typed.count >= 3 && entry.classed.contains { SpellingFold.startsClassed($0, with: typed) }
+        }) {
+            return .keyPrefix
+        }
+        var best: Strength?
+        for needle in query.skeletons {
+            // Two consonants are all "ayyub" and "abu" have in common once the vowels go: a
+            // skeleton that short only counts for a query about as short.
+            if entry.skeletons.contains(needle), needle.count >= 3 || query.letters <= 3 { return .skeletonExact }
+            if needle.count >= 3, entry.skeletons.contains(where: { $0.hasPrefix(needle) }) { best = .skeletonPrefix }
+        }
+        return best
+    }
+
+    /// The items the fold finds, best tier only: when some name IS the query once folded, a merely
+    /// similar start is noise ("ayub" is Ayyub, not also Abu and Abdul). Order within the tier is
+    /// the caller's own.
+    static func matches<Item>(_ text: String, in items: [Item], entry: (Item) -> Entry) -> [Item] {
+        guard let query = Query(text) else { return [] }
+        var best: Strength?
+        var scored: [(Item, Strength)] = []
+        for item in items {
+            guard let strength = strength(of: query, in: entry(item)) else { continue }
+            scored.append((item, strength))
+            if best.map({ strength > $0 }) ?? true { best = strength }
+        }
+        return scored.filter { $0.1 == best }.map(\.0)
+    }
+}
+
+/// Defers building a `NavigationLink` destination until navigation actually presents it. Constructing a view
+/// struct is usually cheap, but it is not free (stored-property and `@State` default expressions run), and a
+/// list of eager links pays that cost for every destination on every body pass.
+/// A pushed screen whose content turned out to be missing: it shows nothing and immediately closes
+/// itself, instead of leaving a blank page on the navigation stack.
+///
+/// A door whose target is missing when its push builds closes itself, instead of leaving a blank page
+/// on the navigation stack. Since 2026-10-11 the doors carry their target in the one state that opens
+/// them (`pushDestination(item:)`), so this should never show; it stays as the floor under a teardown
+/// that clears a target mid-push, and DEBUG logs when it fires, because a push that lands here is a bug.
+struct EmptyDoor: View {
+    let close: () -> Void
+
+    var body: some View {
+        Color.clear
+            .onAppear {
+                #if DEBUG
+                NSLog("[doors] EmptyDoor closed a push with no target (a door opened before its target was readable)")
+                #endif
+                close()
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+struct LazyDestination<Content: View>: View {
+    let build: () -> Content
+
+    /// A view builder, so a destination that branches (`if let chapter { ... } else { ... }`) can be
+    /// deferred exactly as written: the `_ConditionalContent` it builds is the type the link's own
+    /// destination closure built, so the pushed screen is the same view either way.
+    init(@ViewBuilder build: @escaping () -> Content) {
+        self.build = build
+    }
+
+    var body: Content { build() }
+}
+
+/// Pushes `destination` onto the enclosing navigation stack when `isPresented` turns true, through
+/// `navigationDestination(isPresented:)`, never through a hidden `NavigationLink(isActive:)` row: inside a
+/// `NavigationStack(path:)` such a row crashed (EXC_BAD_ACCESS in SwiftUI's NavigationLinkViewRule.dismiss,
+/// 3 of 6 launches on iOS 26.5) when its push raced the page-mode mushaf auto-open, and a zero-height link
+/// is still a List row that draws a band. Attach it to the List itself (a lazy row's destination never
+/// fires). No-op before iOS 16 / watchOS 9.
+///
+/// Its users: the Settings root's doors, the Quran and Hadith summary doors, the Islam screens'
+/// programmatic doors, the DEBUG "open this screen on launch" hooks (`debugPushDestination`), and the
+/// article search, whose results open an article's index first and then push the article on top of it
+/// (`ArticleAutoOpen`).
+///
+/// The destination goes in as a `LazyDestination`. `navigationDestination(isPresented:)` calls its
+/// closure on the spot and keeps the VIEW it returns, so handing it `destination` built every door's
+/// screen on every pass of the page that carries the modifier, pushed or not, and AttributeGraph laid
+/// out every case of a door switch (the Hadith summary door's eight screens, the Settings grid door's
+/// pages) at launch. Wrapped, it keeps a closure and builds the screen when the push shows it
+/// (Performance Guide, Phase 11, item 1).
+struct PushDestination<Destination: View>: ViewModifier {
+    @Binding var isPresented: Bool
+    @ViewBuilder let destination: () -> Destination
+
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, watchOS 9.0, *) {
+            content.navigationDestination(isPresented: $isPresented) { LazyDestination(build: destination) }
+        } else {
+            content
+        }
+    }
+}
+
+/// `PushDestination` for a door that carries WHAT it opens: one optional state is both the flag and
+/// the target, presented while it is non-nil and cleared by the pop, and the destination is built from
+/// the value it was presented with.
+///
+/// Never pair a Bool flag with a separately stored target instead. SwiftUI builds the destination the
+/// moment the flag's attribute turns true, and that build read the target's attribute STALE: nil the
+/// first time (so the `EmptyDoor` fallback closed the push before it showed), the previous door after
+/// that (so the last page opened, then swapped). The Settings tiles did exactly this on 2026-10-11
+/// (Abu: "Look and feel opened a couple times as a blank tab then after a couple loaded properly";
+/// the simulator log showed `openDoor` raising the door and `EmptyDoor` closing it in the same
+/// hundredth of a second, four taps out of five). With ONE attribute the flag and the content cannot
+/// disagree: a stale read shows the door closed, and the fresh pass opens it with its value. The
+/// Quran and Hadith summaries' doors always worked this way, by hand; this is that shape, named.
+struct PushItemDestination<Item, Destination: View>: ViewModifier {
+    @Binding var item: Item?
+    @ViewBuilder let destination: (Item) -> Destination
+
+    func body(content: Content) -> some View {
+        content.pushDestination(isPresented: Binding(get: { item != nil }, set: { if !$0 { item = nil } })) {
+            if let item {
+                destination(item)
+            } else {
+                EmptyDoor { self.item = nil }
+            }
+        }
+    }
+}
+
+extension View {
+    func pushDestination<Destination: View>(
+        isPresented: Binding<Bool>,
+        @ViewBuilder destination: @escaping () -> Destination
+    ) -> some View {
+        modifier(PushDestination(isPresented: isPresented, destination: destination))
+    }
+
+    /// Pushes `destination(item)` while `item` is non-nil; see `PushItemDestination` for why a door's
+    /// target and its flag must be one piece of state.
+    func pushDestination<Item, Destination: View>(
+        item: Binding<Item?>,
+        @ViewBuilder destination: @escaping (Item) -> Destination
+    ) -> some View {
+        modifier(PushItemDestination(item: item, destination: destination))
+    }
+
+    #if DEBUG
+    /// The DEBUG launch hooks' spelling of `pushDestination`, kept so their call sites read as what they are.
+    func debugPushDestination<Destination: View>(
+        isPresented: Binding<Bool>,
+        @ViewBuilder destination: @escaping () -> Destination
+    ) -> some View {
+        pushDestination(isPresented: isPresented, destination: destination)
+    }
+    #endif
+}
+
+/// What the mushaf page reader draws as a page's body text. `arabic` is the mushaf itself; the English
+/// cases swap the page's text wholesale for a Latin-script rendering (same canonical page boundaries,
+/// same fit-to-page). Raw values are persisted in `Settings.mushafPageLanguage`.
+enum MushafPageLanguage: String, CaseIterable, Identifiable {
+    case arabic
+    /// The bundled printed-mushaf facsimile for the selected riwayah (see `MushafPDFLibrary`). Page mode
+    /// only - a printed page has no list equivalent - and only offered when that riwayah's PDF is bundled.
+    case pdf
+    case transliteration
+    case clearQuran
+    case saheeh
+
+    var id: String { rawValue }
+    /// The PDF is Arabic, but it is NOT composed text: it renders as a page image, so everything gated on
+    /// "is this page English" (tajweed, qiraat comparison, the text composer) must treat it as neither.
+    var isEnglish: Bool { self != .arabic && self != .pdf }
+    var isPDF: Bool { self == .pdf }
+
+    var displayName: String {
+        switch self {
+        case .arabic:          return "Arabic"
+        case .pdf:             return "Printed Mushaf (PDF)"
+        case .transliteration: return "Transliteration (English)"
+        case .clearQuran:      return "The Clear Quran (English)"
+        case .saheeh:          return "Saheeh International (English)"
+        }
+    }
+}
+
+/// How the printed-mushaf facsimile is lit. `auto` (the default) follows the app's light/dark
+/// appearance; `light` always shows the printed page as printed; `night` always applies the
+/// hue-preserving invert. Raw values are persisted in `Settings.mushafPDFAppearance`.
+enum MushafPDFAppearance: String, CaseIterable, Identifiable {
+    case auto
+    case light
+    case night
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .auto:  return "Automatic"
+        case .light: return "Light"
+        case .night: return "Night"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .auto:  return "circle.lefthalf.filled"
+        case .light: return "sun.max"
+        case .night: return "moon"
+        }
+    }
+
+    /// Whether the invert applies, given whether the surrounding appearance is dark.
+    func isNight(inDarkScheme dark: Bool) -> Bool {
+        self == .night || (self == .auto && dark)
+    }
+}
+
+/// True once the launch/splash cover has been lifted and the tabs are actually on screen. Views that fire
+/// user-facing side effects on appear (e.g. AdhanView's prayer-calculation confirmation dialogs) read this so
+/// they don't present while they're only being built behind the launch screen. Defaults to `true`, so anywhere
+/// it isn't explicitly set (the Watch app, previews) behaves normally. Defined here because this file is shared
+/// by both the iPhone and Watch targets; it's only *set* by the iPhone app root.
+struct AppRevealedKey: EnvironmentKey { static let defaultValue = true }
+extension EnvironmentValues {
+    var appRevealed: Bool {
+        get { self[AppRevealedKey.self] }
+        set { self[AppRevealedKey.self] = newValue }
+    }
+}
+
+/// The DEBUG launch stopwatch (`-launchTiming`): "LAUNCH TIMING <label> +<ms>" lines, measured from the
+/// app struct's init (pre-main time is constant across builds and not something these phases touch). The
+/// marks sit at the hand-offs the launch is built from - stores ready, Quran tab settled, warm, finale,
+/// reveal - so a session can read where a cold launch spends its time instead of guessing from sleeps.
+enum LaunchClock {
+    nonisolated(unsafe) private(set) static var start = Date()
+    static func elapsedMS() -> Int { Int(Date().timeIntervalSince(start) * 1000) }
+    #if DEBUG
+    static let enabled = ProcessInfo.processInfo.arguments.contains("-launchTiming")
+    static func mark(_ label: String) {
+        guard enabled else { return }
+        NSLog("LAUNCH TIMING %@ +%d ms", label, elapsedMS())
+    }
+    /// Called from `didFinishLaunching`, which iOS never prewarms: when the app struct was initialized
+    /// long before it (iOS prewarming ran the process ahead of the tap; one run read "stores ready
+    /// +67,517 ms"), the clock restarts here and says so, so every later mark is from the real launch
+    /// (Quality Guide T9). A normal launch reaches this about 150 ms after init and keeps its start.
+    static func rebaseIfPrewarmed() {
+        guard enabled else { return }
+        let early = elapsedMS()
+        guard early > 1_000 else { return }
+        start = Date()
+        NSLog("LAUNCH TIMING rebased at did finish launching: the app was prewarmed %d ms earlier +0 ms", early)
+    }
+    private static var marked: Set<String> = []
+    private static var stallObserver: CFRunLoopObserver?
+    /// "-stallWatch": the same watch for the whole run, not only the launch, so a screen's taps can be
+    /// timed (the Qiraat Explorer's steps, 2026-10-09). A stall "after beforeWaiting" is the run loop
+    /// asleep with nothing to do; any other activity is the main thread busy.
+    static let watchesWholeRun = ProcessInfo.processInfo.arguments.contains("-stallWatch")
+    /// Logs every main run-loop iteration over 40 ms in the first 10 s: "stall <from>-<to> ms".
+    /// With the marks, says what held the main thread between two of them.
+    static func installStallWatch() {
+        guard enabled || watchesWholeRun, stallObserver == nil else { return }
+        var last = 0
+        var lastActivity = ""
+        stallObserver = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.allActivities.rawValue, true, 0) { _, activity in
+            let now = elapsedMS()
+            guard now < 10_000 || watchesWholeRun else { return }
+            if last > 0, now - last > 40 {
+                NSLog("LAUNCH TIMING stall %d-%d ms (%d) after %@", last, now, now - last, lastActivity)
+            }
+            last = now
+            switch activity {
+            case .entry: lastActivity = "entry"
+            case .beforeTimers: lastActivity = "beforeTimers"
+            case .beforeSources: lastActivity = "beforeSources"
+            case .beforeWaiting: lastActivity = "beforeWaiting"
+            case .afterWaiting: lastActivity = "afterWaiting"
+            case .exit: lastActivity = "exit"
+            default: lastActivity = "other"
+            }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), stallObserver, .commonModes)
+    }
+    /// `mark` the first time only (for a body, which runs again).
+    static func markOnce(_ label: String) {
+        guard enabled, marked.insert(label).inserted else { return }
+        mark(label)
+    }
+    #else
+    @inline(__always) static func mark(_ label: String) {}
+    @inline(__always) static func rebaseIfPrewarmed() {}
+    #endif
+}
+
+/// `-renderCounter` (DEBUG): counts the SwiftUI body evaluations of the views that call `hit` and logs
+/// "RENDER COUNT <label> n, ..." once per second, only for seconds that had any. The way to prove
+/// "zero body evaluations per second while idle" headlessly, where the SwiftUI instrument cannot run.
+/// Bodies run on the main thread, so the dictionary needs no lock.
+enum RenderCounter {
+    #if DEBUG
+    static let enabled = ProcessInfo.processInfo.arguments.contains("-renderCounter")
+    private static var counts: [String: Int] = [:]
+    private static var flushScheduled = false
+
+    static func hit(_ label: String) {
+        guard enabled else { return }
+        counts[label, default: 0] += 1
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            flushScheduled = false
+            let line = counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+            counts.removeAll(keepingCapacity: true)
+            NSLog("RENDER COUNT %@", line)
+        }
+    }
+    #else
+    @inline(__always) static func hit(_ label: String) {}
+    #endif
+}
+
+#if DEBUG
+/// `-printChanges` (DEBUG): calls `_printChanges()` from the bodies that also call `RenderCounter.hit`, so
+/// a burst of body evaluations can be read as "which dependency woke this body" (SwiftUI names the
+/// changed @State / @ObservedObject / environment). The lines go to stdout, not the unified log: capture
+/// them with `simctl launch --stdout=<file>`.
+enum ChangePrinter {
+    static let enabled = ProcessInfo.processInfo.arguments.contains("-printChanges")
+    static func hit<V: View>(_ type: V.Type) {
+        guard enabled else { return }
+        V._printChanges()
+    }
+}
+#else
+enum ChangePrinter {
+    @inline(__always) static func hit<V: View>(_ type: V.Type) {}
+}
+#endif
+
+#if DEBUG
+/// `-tsanSelfTest` (DEBUG): a deliberate data race (two threads bump one global with no lock), so a
+/// Thread Sanitizer build of the app can be PROVEN to report before its silence on the real screens is
+/// believed. A TSan run that logs "TSAN SELF TEST" and no "WARNING: ThreadSanitizer" is not instrumented.
+enum SanitizerSelfTest {
+    nonisolated(unsafe) private static var counter = 0
+
+    static func race() {
+        for _ in 0..<2 {
+            Thread.detachNewThread {
+                for _ in 0..<200_000 { counter &+= 1 }
+            }
+        }
+        NSLog("TSAN SELF TEST: race started")
+    }
+}
+#endif
+
+#if DEBUG
+/// `-renderCounter` companion: the process's physical footprint, for before/after checks of image
+/// decodes (the Wallpapers screen, the app-icon tiles). `MemoryFootprint.log("label")` writes one
+/// "FOOTPRINT label 123.4 MB" line; silent without the argument.
+enum MemoryFootprint {
+    static var megabytes: Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return 0 }
+        return Double(info.phys_footprint) / 1_048_576
+    }
+
+    static func log(_ label: String) {
+        guard RenderCounter.enabled else { return }
+        NSLog("FOOTPRINT %@ %.1f MB", label, megabytes)
+    }
+
+    /// Log now and again after `delay`, so a lazy decode that lands a frame later is counted too.
+    static func logLater(_ label: String, delay: Double = 3) {
+        guard RenderCounter.enabled else { return }
+        log(label)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { log(label + " +\(Int(delay))s") }
+    }
+}
+#endif
+
+#if canImport(UIKit)
+/// `UIFont(name:size:)` resolves the face through the font registry every call; the mushaf composer
+/// asked for it ~450 times per page fit and the word-by-word layout once per cell (Phase 5 step 11).
+/// Keyed by name and exact size (a rounded key would hand the word-by-word layout a font a hair off the
+/// size SwiftUI draws the same word at), thread-safe.
+///
+/// Bounded: each page fit's bisection adds about a hundred sizes that are never asked for again, and
+/// nothing evicted them (Quality Guide F7). A full cache starts over, and a memory warning purges it
+/// (`MemoryTrim`).
+enum QuranFontCache {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var fonts: [String: UIFont] = [:]
+    private static let capacity = 600
+
+    static func font(name: String, size: CGFloat) -> UIFont? {
+        let key = "\(name)|\(size)"
+        lock.lock()
+        if let hit = fonts[key] { lock.unlock(); return hit }
+        lock.unlock()
+        guard let font = UIFont(name: name, size: size) else { return nil }
+        lock.lock()
+        if fonts.count >= capacity { fonts.removeAll(keepingCapacity: true) }
+        fonts[key] = font
+        lock.unlock()
+        return font
+    }
+
+    static func purge() {
+        lock.lock(); fonts.removeAll(); lock.unlock()
+    }
+}
+
+#if os(iOS)
+/// The readers' title pill (the surah and hadith-chapter `Menu` labels in the navigation bar) is
+/// navigation-bar chrome: like the system's inline title it stops following Dynamic Type at the
+/// extra-large step, or it outgrows the 44 pt bar and draws over the back and gear buttons (seen at the
+/// largest non-accessibility size with "Sahih al-Bukhari" plus its Arabic). `typeSizeCeiling` clamps the
+/// pill's SwiftUI text styles; `pointSize` applies the same ceiling to the UIKit metric the pills size
+/// their Arabic from, which the SwiftUI clamp never reaches.
+enum NavigationTitlePill {
+    static let typeSizeCeiling: DynamicTypeSize = .xLarge
+
+    static func pointSize(_ style: UIFont.TextStyle, at size: DynamicTypeSize) -> CGFloat {
+        let traits = UITraitCollection(preferredContentSizeCategory: contentSizeCategory(min(size, typeSizeCeiling)))
+        return UIFont.preferredFont(forTextStyle: style, compatibleWith: traits).pointSize
+    }
+
+    private static func contentSizeCategory(_ size: DynamicTypeSize) -> UIContentSizeCategory {
+        switch size {
+        case .xSmall: return .extraSmall
+        case .small: return .small
+        case .medium: return .medium
+        case .large: return .large
+        case .xLarge: return .extraLarge
+        case .xxLarge: return .extraExtraLarge
+        case .xxxLarge: return .extraExtraExtraLarge
+        case .accessibility1: return .accessibilityMedium
+        case .accessibility2: return .accessibilityLarge
+        case .accessibility3: return .accessibilityExtraLarge
+        case .accessibility4: return .accessibilityExtraExtraLarge
+        case .accessibility5: return .accessibilityExtraExtraExtraLarge
+        @unknown default: return .large
+        }
+    }
+}
+#endif
+#endif
+
+/// `-renderCounter` companion for the OTHER observable objects (DEBUG): counts every `objectWillChange`
+/// of an attached object per second and logs "OBJECT PUBLISH <label> n, ...". `Settings` has its own
+/// counter (`-publishCounter`); this one answers "which store woke the readers up?".
+enum ObjectPublishCounter {
+    #if DEBUG
+    private static var counts: [String: Int] = [:]
+    private static var flushScheduled = false
+    private static var subscriptions: [AnyCancellable] = []
+
+    static func attach<Object: ObservableObject>(_ object: Object, label: String) {
+        guard RenderCounter.enabled else { return }
+        subscriptions.append(object.objectWillChange.sink { _ in note(label) })
+    }
+
+    private static func note(_ label: String) {
+        counts[label, default: 0] += 1
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            flushScheduled = false
+            let line = counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+            counts.removeAll(keepingCapacity: true)
+            NSLog("OBJECT PUBLISH %@", line)
+        }
+    }
+    #else
+    @inline(__always) static func attach<Object: ObservableObject>(_ object: Object, label: String) {}
+    #endif
+}
+
+/// `-renderCounter` companion for the bundled-pack parses of the Tilawa stores (DEBUG): every parse
+/// logs "PACK PARSE <name> <inflated KB> <ms> MAIN|bg", so a main-thread parse at launch is a grep
+/// the way `HADITH BLOCK ... MAIN` is for the hadith packs (Tilawa Guide, Phase 8 step 4). `parse`
+/// returns the result with the inflated byte count it parsed (0 when it never got that far).
+enum PackTrace {
+    #if DEBUG
+    static func measure<T>(_ name: String, _ parse: () -> (result: T, bytes: Int)) -> T {
+        guard RenderCounter.enabled else { return parse().result }
+        let start = DispatchTime.now().uptimeNanoseconds
+        let outcome = parse()
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+        NSLog("PACK PARSE %@ %d KB %.1f ms %@", name, outcome.bytes / 1024, ms, Thread.isMainThread ? "MAIN" : "bg")
+        return outcome.result
+    }
+    #else
+    @inline(__always) static func measure<T>(_ name: String, _ parse: () -> (result: T, bytes: Int)) -> T { parse().result }
+    #endif
+}
+
+/// Live mirror of the reveal state for code that checks it from ESCAPING tasks. A value-type modifier's
+/// captured `@Environment(\.appRevealed)` snapshot freezes at capture time - the review prompt's retry
+/// loop, whose capture chain starts before the launch cover lifts, read a stale `false` forever and
+/// silently suppressed the prompt for the whole session. Defaults to `true` for the same reason as the
+/// environment key (Watch app, previews); only the iPhone app root writes it.
+@MainActor enum AppReveal {
+    static var revealed = true {
+        didSet {
+            guard revealed else { return }
+            let parked = waiters
+            waiters.removeAll()
+            parked.forEach { $0.resume() }
+        }
+    }
+
+    private static var waiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Parks a task until the launch/splash cover has lifted. Deferred launch work (the 17-book
+    /// hadith sweep, the broad surah sweep, the NLEmbedding probe) waits on this so the under-cover
+    /// warm - the window the launch screen's reveal is actually gated on - keeps the main actor and
+    /// the disk to itself. A continuation, not a poll: a dozen tasks park here at launch, and their
+    /// 100 ms wakeups were timers Low Power Mode throttles and the launch window paid for. A parked
+    /// task resumes on the reveal (always within seconds) and checks its own cancellation after.
+    static func waitUntilRevealed() async {
+        if revealed || Task.isCancelled { return }
+        await withCheckedContinuation { continuation in
+            if revealed {
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+            }
+        }
+    }
+}
+
+/// The Latin half of search folding: accented letters to their plain letters, and the marks
+/// transliteration uses for 'ayn and hamza dropped. Scalar by scalar, so a byte-level fold (the
+/// Encyclopedia's `foldEnglish`) and the String one (`String.foldingLatinDiacritics`) agree exactly.
+/// Only Latin-1 Supplement, Latin Extended-A/B, Latin Extended Additional, the four modifier marks and
+/// the combining accents are touched; Arabic script never is. The hadith packs carry the same table,
+/// built into their search text by `HadithFold.english` (a copy from Hadith-JSON-Engine, so it cannot
+/// call this); UnitTests/SearchFoldTests.swift holds the two to one answer per scalar.
+enum LatinFold {
+    /// ʻ ʼ ʾ ʿ, the 'ayn and hamza marks of academic transliteration ("Jāmiʿ", "Nasāʾī"), and the
+    /// combining accents U+0300-036F, which is how a pasted "ā" arrives when it was typed decomposed.
+    static func isDropped(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x02BB, 0x02BC, 0x02BE, 0x02BF, 0x0300...0x036F: return true
+        default: return false
+        }
+    }
+
+    /// The plain letter for an accented Latin letter ("ā" -> "a", "Ḥ" -> "H"), or nil.
+    static func base(_ scalar: Unicode.Scalar) -> Unicode.Scalar? {
+        switch scalar.value {
+        case 0x00C0...0x024F, 0x1E00...0x1EFF: return table[scalar.value]
+        default: return nil
+        }
+    }
+
+    /// Whether folding changes this scalar at all: the fast path's test.
+    static func affects(_ scalar: Unicode.Scalar) -> Bool {
+        isDropped(scalar) || base(scalar) != nil
+    }
+
+    /// Every scalar the fold changes and what it becomes (nil: dropped), for a fold that runs from a
+    /// scalar table of its own (`Settings.cleanSearch`).
+    static var scalarMap: [Unicode.Scalar: Unicode.Scalar?] {
+        var map: [Unicode.Scalar: Unicode.Scalar?] = [:]
+        for (value, plain) in table {
+            if let scalar = Unicode.Scalar(value) { map.updateValue(plain, forKey: scalar) }
+        }
+        for value in [UInt32(0x02BB), 0x02BC, 0x02BE, 0x02BF] + Array(UInt32(0x0300)...0x036F) {
+            if let scalar = Unicode.Scalar(value) { map.updateValue(nil, forKey: scalar) }
+        }
+        return map
+    }
+
+    /// Each accented letter's base letter, from its canonical decomposition (kept only when that
+    /// base is plain ASCII), plus the few letters romanizations use that have none. Built once.
+    private static let table: [UInt32: Unicode.Scalar] = {
+        var table: [UInt32: Unicode.Scalar] = [:]
+        for value in Array(UInt32(0x00C0)...0x024F) + Array(UInt32(0x1E00)...0x1EFF) {
+            guard let scalar = Unicode.Scalar(value),
+                  let first = String(scalar).decomposedStringWithCanonicalMapping.unicodeScalars.first,
+                  first.value < 0x80, first != scalar, first.properties.isAlphabetic else { continue }
+            table[value] = first
+        }
+        let undecomposed: [(UInt32, Unicode.Scalar)] = [
+            (0x0131, "i"), (0x0141, "L"), (0x0142, "l"), (0x00D8, "O"), (0x00F8, "o"),
+            (0x0110, "D"), (0x0111, "d"), (0x0126, "H"), (0x0127, "h"),
+        ]
+        for (value, plain) in undecomposed { table[value] = plain }
+        return table
+    }()
+}
+
+// MARK: - Best match first
+
+/// Orders what a list search ALREADY matched, so the best answer leads.
+///
+/// Nearly every list search in the app is a filter: it keeps the rows that carry the typed words and
+/// shows them in the order they were written down. That is right for which rows appear and wrong for
+/// which comes first: "ya" listed nine surahs before Ya-Sin, and a dua named for the query sat under
+/// every dua that merely mentions it. This never changes WHAT a search finds. It reorders the rows a
+/// search found by how well each row's NAME answers the query:
+///
+///   the name itself  >  the name starts with it  >  a word of the name starts with it
+///   >  each typed word starts a word of the name  >  the name contains it  >  the name contains each word
+///
+/// Rows of one tier keep the order they came in (mushaf order, book order, the order of a catalogue),
+/// and so does a row matched only by its body, after the rows whose names answered. An article is
+/// not part of a name: "fatihah" IS "Al-Fatihah". One fold serves both sides (`Settings.cleanSearch`:
+/// accents, case, Arabic letter forms and marks), so an Arabic name ranks like a Latin one.
+enum SearchRank {
+    /// A query folded once, for scoring many names.
+    struct Query {
+        let folded: String
+        let terms: [String]
+
+        init?(_ text: String) {
+            let folded = SearchRank.fold(text)
+            guard !folded.isEmpty else { return nil }
+            self.folded = folded
+            terms = folded.split(separator: " ").map(String.init)
+        }
+    }
+
+    /// The search fold, with the joiners of a name read as word breaks: "Al-Fatihah" is two words.
+    static func fold(_ text: String) -> String {
+        var spaced = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x2D, 0x2F, 0x5F, 0x2010...0x2015: spaced.append(" ")     // - / _ and the dashes
+            default: spaced.append(scalar)
+            }
+        }
+        return Settings.shared.cleanSearch(String(spaced), whitespace: true)
+    }
+
+    /// How well `name` answers the query: 0 when the query is not in it, 1000 when it IS the name.
+    static func score(_ query: Query, name: String) -> Int {
+        let folded = fold(name)
+        guard !folded.isEmpty else { return 0 }
+        var best = score(query, folded: folded)
+        // "Al-Fatihah" answers "fatihah" as a name, not as a word inside one.
+        if best < 1000, let bare = withoutArticle(folded) {
+            best = max(best, score(query, folded: bare))
+        }
+        return best
+    }
+
+    private static func score(_ query: Query, folded name: String) -> Int {
+        let typed = query.folded
+        if name == typed { return 1000 }
+        if name.hasPrefix(typed) { return 800 }
+        if (" " + name).contains(" " + typed) { return 600 }
+        if query.terms.count > 1 {
+            let words = name.split(separator: " ")
+            if query.terms.allSatisfy({ term in words.contains { $0.hasPrefix(term) } }) { return 500 }
+        }
+        if name.contains(typed) { return 400 }
+        if query.terms.count > 1, query.terms.allSatisfy({ name.contains($0) }) { return 300 }
+        return 0
+    }
+
+    private static let latinArticles: Set<Substring> = [
+        "al", "ar", "as", "ash", "an", "at", "ad", "az", "adh", "ath", "el", "ul", "the", "a",
+    ]
+
+    /// The name without the article it opens on, or nil when it opens on none.
+    private static func withoutArticle(_ name: String) -> String? {
+        if name.hasPrefix("ال"), name.count > 3 { return String(name.dropFirst(2)) }
+        guard let space = name.firstIndex(of: " "), latinArticles.contains(name[..<space]) else { return nil }
+        let rest = name[name.index(after: space)...]
+        return rest.isEmpty ? nil : String(rest)
+    }
+
+    /// The best score over an item's names. The first is its title; the others (a subtitle, an
+    /// Arabic or English twin, an alias) count for a little less, so a title match leads its tier.
+    static func score<Names: Sequence>(_ query: Query, names: Names) -> Int where Names.Element == String {
+        var best = 0
+        for (index, name) in names.enumerated() where !name.isEmpty {
+            let worth = score(query, name: name) - (index == 0 ? 0 : 50)
+            if worth > best { best = worth }
+        }
+        return best
+    }
+
+    /// `items` with the ones whose names answer `text` first, best first. Everything else, and every
+    /// tie, keeps the order it came in. The same items come back, always.
+    static func sorted<Item>(_ items: [Item], by text: String, names: (Item) -> [String]) -> [Item] {
+        guard items.count > 1, let query = Query(text) else { return items }
+        var scores: [Int] = []
+        scores.reserveCapacity(items.count)
+        var any = false
+        for item in items {
+            let worth = score(query, names: names(item))
+            if worth > 0 { any = true }
+            scores.append(worth)
+        }
+        guard any else { return items }
+        return items.indices
+            .sorted { scores[$0] != scores[$1] ? scores[$0] > scores[$1] : $0 < $1 }
+            .map { items[$0] }
+    }
+}

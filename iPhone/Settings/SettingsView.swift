@@ -15,29 +15,107 @@ struct SettingsSearchEntry: Identifiable {
     let path: String
     let keywords: String
     let destination: Destination
+    /// A control its screen shows only with Advanced Settings on. The result row says so, and
+    /// opening it turns the switch on (`revealsAdvancedSettings`), so a search never lands on a
+    /// screen that hides the very thing that was searched for.
+    var advanced: Bool = false
 
     var id: String { path + title }
 
+    /// Each app's own areas: Al-Adhan and Al-Quran share this file.
     enum Destination {
+        #if HAS_ADHAN
+        case notifications
+        case notificationReminders
+        case prayerSettings
+        /// The Prayer Tracker screen itself (Al-Adhan tab), which owns its own settings since
+        /// 2026-09-18 - not a Settings page at all, but the search must still reach the toggle.
+        case prayerTracker
+        case travelingMode
+        case prayerCalculation
+        case skyColors
+        #endif
+        #if HAS_QURAN
         case quranSettings
         case reciters
+        #endif
+        #if HAS_HADITH
+        case hadithSettings
+        #endif
+        /// Islam Settings: the fourth area, for everything outside the Quran, the prayer times and
+        /// the hadith books (the Arabic face, the alphabet controls, the Al-Islam tab itself).
+        case islamSettings
         case appearance
+        /// About You: who the reader says they are, and the Start Here guide it switches on.
+        case aboutYou
+        /// Simple Mode's switch on a page of its own (`SimpleModeSettingsView`): where its search
+        /// entry, its tip and the Islam tab's "Too Much on Screen?" door land.
+        case simpleMode
+        #if HAS_ICLOUD_BACKUP
+        /// iCloud Backup: this device's profile, the others in the account, restore. Al-Islam's
+        /// alone: the companion apps define no `HAS_ICLOUD_BACKUP` (sync-manifests, FLAG_SKIP).
+        case cloudBackup
+        #endif
+        /// Tips & Tricks: one area's list, or all six behind one door when nil.
+        case tips(TipArea?)
         case credits
         /// One credited source on the Credits page (`CreditItem.id`): the page opens scrolled to it.
         case credit(String)
-        /// The Quran page's own sub-screen, pushed directly (`SettingsQuranPage`, in
-        /// SettingsSearch.swift). This app has no notification, prayer or hadith settings pages.
+        /// A page's own sub-screen, pushed directly (the page enums live in SettingsSearch.swift).
+        #if HAS_ADHAN
+        case notificationsPage(SettingsNotificationsPage)
+        case prayerPage(SettingsAdhanPage)
+        #endif
+        #if HAS_QURAN
         case quranPage(SettingsQuranPage)
+        #endif
+        #if HAS_HADITH
+        case hadithPage(SettingsHadithPage)
+        #endif
+        case islamPage(SettingsIslamPage)
+        case appearancePage(SettingsAppearancePage)
 
         /// The chip icon a search result renders with - derived here so entries never repeat it.
         var icon: String {
             switch self {
+            #if HAS_ADHAN
+            case .notifications: return "bell.badge.fill"
+            case .notificationReminders: return "bell.and.waves.left.and.right.fill"
+            case .prayerSettings: return "safari.fill"
+            case .prayerTracker: return "checklist"
+            case .travelingMode: return "airplane"
+            case .prayerCalculation: return "globe.europe.africa.fill"
+            case .skyColors: return "sunset.fill"
+            #endif
+            #if HAS_QURAN
             case .quranSettings: return "character.book.closed.ar"
             case .reciters: return "headphones"
+            #endif
+            #if HAS_HADITH
+            case .hadithSettings: return "text.book.closed.fill"
+            #endif
+            case .islamSettings: return "moon.stars.fill"
             case .appearance: return "paintpalette.fill"
+            case .aboutYou: return "person.crop.circle.fill"
+            case .simpleMode: return "rectangle.compress.vertical"
+            #if HAS_ICLOUD_BACKUP
+            case .cloudBackup: return "icloud.fill"
+            #endif
+            case .tips: return "lightbulb.fill"
             case .credits: return "scroll.fill"
             case .credit: return "link"
+            #if HAS_ADHAN
+            case .notificationsPage(let page): return page.systemImage
+            case .prayerPage(let page): return page.systemImage
+            #endif
+            #if HAS_QURAN
             case .quranPage(let page): return page.systemImage
+            #endif
+            #if HAS_HADITH
+            case .hadithPage(let page): return page.systemImage
+            #endif
+            case .islamPage(let page): return page.systemImage
+            case .appearancePage(let page): return page.systemImage
             }
         }
     }
@@ -46,7 +124,9 @@ struct SettingsSearchEntry: Identifiable {
 
 struct SettingsView: View {
     @ObservedObject var settings = Settings.shared
-    @ObservedObject var quranData = QuranData.shared
+    #if os(iOS)
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    #endif
 
     @State private var showingCredits = false
     @State private var selectedDestination: SettingsDestination? = SettingsView.defaultDestination
@@ -56,6 +136,119 @@ struct SettingsView: View {
     @State private var showResetConfirmation = false
     @State private var confirmEraseEverything = false
     @State private var settingsSearchText = ""
+
+    #if os(iOS)
+    /// The featured card that was tapped. ONE programmatic push serves every card, because several
+    /// links inside one List row all fire on any tap (see `SettingsSpotlightSection`).
+    /// The spotlight card tapped, and its push: non-nil while the card's page is pushing or pushed.
+    @State private var spotlightTarget: AppTip?
+
+    /// The tile tapped on the three-up Your Progress / About You / iCloud Backup row, and its push:
+    /// non-nil while that page is pushing or pushed.
+    @State private var profileDoor: ProfileTilesSection.Door?
+
+    /// The grid-mode tile that was tapped, and its push (see `SettingsGridTile`): non-nil while its
+    /// page is pushing or pushed.
+    @State private var gridDoor: SettingsGridDoor?
+
+    /// True while ANY of the three programmatic doors above is pushing or pushed.
+    ///
+    /// The three `pushDestination(item:)`s are three `navigationDestination(isPresented:)` on ONE
+    /// stack. Each tap handler used to set only its own door, so tapping a second tile before the first
+    /// push had settled left TWO of them raised at once and asked the stack to push two destinations in
+    /// one frame. That is the hazard this file's neighbours already document: the presentation stack
+    /// does not recover, the screen goes blank, and the next push can crash inside SwiftUI's navigation
+    /// rules (Abu, 2026-10-05: "i go to settings and tap on a bunch and keep switching then it turns
+    /// blank for some reason then it just crashes"; same class as the `NavigationLink(isActive:)`
+    /// EXC_BAD_ACCESS noted on `PushDestination` in Globals.swift, and the "from then on NOTHING
+    /// would present" report on SurahView's picker).
+    ///
+    /// `openDoor` below is the only way these doors are raised, and it refuses while this is true, so
+    /// at most one door is ever open. The second tap is dropped rather than queued: the user is
+    /// already travelling to the screen they asked for first, and a queued push would arrive on top
+    /// of it as an unexplained extra screen.
+    ///
+    /// Each door is ONE optional (the target IS the flag), never a Bool beside a target: with the two
+    /// apart, the push built its destination before the target's write was readable and the
+    /// `EmptyDoor` fallback closed it, four taps in five on 2026-10-11 (Abu: "Look and feel opened a
+    /// couple times as a blank tab then after a couple loaded properly"). `PushItemDestination` in
+    /// Globals.swift has the account.
+    private var anyDoorOpen: Bool {
+        spotlightTarget != nil || profileDoor != nil || gridDoor != nil
+    }
+
+    /// Raises one door, and only if no other is in flight - see `anyDoorOpen`.
+    private func openDoor(_ raise: () -> Void) {
+        guard !anyDoorOpen else { return }
+        raise()
+    }
+
+    /// `pushDestination` is `navigationDestination(isPresented:)`, which needs iOS 16.
+    private static var canPushProgrammatically: Bool {
+        if #available(iOS 16.0, *) { return true }
+        return false
+    }
+
+    /// What a grid-mode tile opens: the pages the list's rows push, by name.
+    private enum SettingsGridDoor: Hashable {
+        #if HAS_ADHAN
+        case notifications, prayer
+        #endif
+        #if HAS_QURAN
+        case quran
+        #endif
+        #if HAS_HADITH
+        case hadith
+        #endif
+        case islam
+        case appearance(SettingsAppearancePage)
+    }
+
+    @ViewBuilder
+    private func gridDestination(_ door: SettingsGridDoor) -> some View {
+        switch door {
+        #if HAS_ADHAN
+        case .notifications: NotificationView()
+        case .prayer: SettingsAdhanView(showNotifications: false)
+        #endif
+        #if HAS_QURAN
+        case .quran: SettingsQuranView()
+        #endif
+        #if HAS_HADITH
+        case .hadith: SettingsHadithView(presentedAsSheet: false)
+        #endif
+        case .islam: SettingsIslamView()
+        case .appearance(let page): AppearancePageView(page: page)
+        }
+    }
+
+    private func openGrid(_ door: SettingsGridDoor) {
+        openDoor { gridDoor = door }
+    }
+
+    /// Grid mode as a shape draws it: the iPhone stack on iOS 16 and later (the Islam tab's rule). The
+    /// iPad/Mac sidebar is a list by nature, and iOS 15 has no programmatic push for the tiles' door.
+    private func usesGrid(split: Bool) -> Bool {
+        settings.settingsGridMode && !split && Self.canPushProgrammatically
+    }
+
+    /// The ⋯ More menu every tab leads with (Abu, 2026-10-11: "for settings and hadith too put it on
+    /// the left as a menu"), holding the grid or list switch the trailing edge carried until then: the
+    /// same symbols, haptic and wording as the other tabs' items, and hidden while a search is showing
+    /// results (the Islam tab's rule).
+    @ViewBuilder
+    private var settingsMoreMenu: some View {
+        if Self.canPushProgrammatically, settingsSearchText.isEmpty {
+            TabMoreMenu {
+                TabMoreMenuItem(settings.settingsGridMode ? "Show as List" : "Show as Grid",
+                                systemImage: settings.settingsGridMode ? "list.bullet" : "square.grid.2x2") {
+                    settings.hapticFeedback()
+                    withAnimation { settings.settingsGridMode.toggle() }
+                }
+            }
+        }
+    }
+    #endif
 
     #if os(iOS)
     // Split-view multitasking (Slide Over, 1/3 Split View, narrow Stage Manager windows) makes an iPad
@@ -105,7 +298,8 @@ struct SettingsView: View {
             let keys = await MainActor.run { semanticEngine.corpus(Self.settingsSemanticCorpusID)?.itemKeys }
             await MainActor.run {
                 guard trimmed == settingsSearchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-                let byID = Dictionary(uniqueKeysWithValues: SettingsSearchEntry.all.map { ($0.id, $0) })
+                // Built from paths and titles: two entries sharing one must not trap.
+                let byID = Dictionary(SettingsSearchEntry.all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                 settingsAIHits = results.compactMap { result -> SettingsSearchEntry? in
                     if let keys, keys.indices.contains(result.index) { return byID[keys[result.index]] }
                     guard SettingsSearchEntry.all.indices.contains(result.index) else { return nil }
@@ -118,11 +312,30 @@ struct SettingsView: View {
     /// Apple Music-style: true while scrolling down, minimizing the floating search bar.
     @State private var barsCollapsed = false
 
-    /// The destination shown when nothing is explicitly selected (single source of truth).
-    private static let defaultDestination: SettingsDestination = .quranSettings
+    /// The destination shown when nothing is explicitly selected (single source of truth). Only the
+    /// iPad/Mac split view opens on a pre-selected section, and it opens on Islam Settings, the one
+    /// area that covers the whole app rather than one tab (Abu, 2026-09-25).
+    private static let defaultDestination: SettingsDestination = .islamSettings
 
     private enum SettingsDestination: Hashable {
+        #if HAS_ADHAN
+        case notification
+        case prayerSettings
+        #endif
+        #if HAS_QURAN
         case quranSettings
+        #endif
+        #if HAS_HADITH
+        case hadithSettings
+        #endif
+        case islamSettings
+        /// A spotlight card's screen in the iPad/Mac detail column, by tip id. A SELECTION like the
+        /// rows, deliberately: no row is tagged with it, so the hub rows show no highlight while a
+        /// card fills the detail (the card wears the ring instead), and every card-to-card switch is
+        /// a selection change, the one thing that resets the detail column's stack. Held as separate
+        /// state, only the detail's `.id` moved, and the previous card's pushed page (Nagging Mode,
+        /// opened a beat after its root) stayed on screen over the new card's.
+        case spotlight(String)
     }
 
     /// What re-identifies the iPad detail stack: the selected destination, or a re-tap of the same
@@ -139,7 +352,30 @@ struct SettingsView: View {
         )
     }
 
+    /// Selecting a split destination, shared by the hub rows and the spotlight cards: re-tapping what
+    /// is already selected bumps the token instead of doing nothing.
+    private func selectSplitDestination(_ value: SettingsDestination) {
+        withAnimation(.easeInOut) {
+            if selectedDestination == value {
+                settingsDetailRefreshToken &+= 1
+            } else {
+                selectedDestination = value
+            }
+        }
+    }
+
+    #if os(iOS)
+    /// The spotlight card filling the split detail, if one is (see `SettingsDestination.spotlight`).
+    private var splitSpotlightID: String? {
+        if case let .spotlight(id) = selectedDestination { return id }
+        return nil
+    }
+    #endif
+
     var body: some View {
+        #if DEBUG
+        let _ = LaunchClock.markOnce("settings root: first body")
+        #endif
         navigationContainer
     }
 
@@ -150,6 +386,7 @@ struct SettingsView: View {
                 if usesColumnNavigation {
                     NavigationSplitView {
                         settingsSplitList
+                            .splitSidebarColumn()
                     } detail: {
                         // Detail gets its own NavigationStack so the sub-screen NavigationLinks
                         // (e.g. Quran settings → Recitation) push within the detail column instead of
@@ -186,21 +423,16 @@ struct SettingsView: View {
 
     private var settingsList: some View {
         #if os(iOS)
+        // (The Classic Look switch used to be scrolled to here by "-scrollToClassicLook". It lives on
+        // Appearance's Look and Feel page now: "-settingsOpen appearanceLook" lands on it.)
         settingsListChrome(
-            ScrollViewReader { proxy in
-                List { settingsListContent(split: false) }
-                #if DEBUG
-                // "-scrollToClassicLook": land on the Classic Look switch (screenshot runs).
-                .onAppear {
-                    guard ProcessInfo.processInfo.arguments.contains("-scrollToClassicLook") else { return }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                        withAnimation { proxy.scrollTo("classicLook", anchor: .center) }
-                    }
-                }
-                #endif
-            },
+            List { settingsListContent(split: false) },
             disableNowPlayingInset: false
         )
+        // The iPhone stack only: the iPad/Mac sidebar stays a list (see `usesGrid`).
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) { settingsMoreMenu }
+        }
         #else
         List { settingsListContent(split: false) }
             .navigationTitle("Settings")
@@ -223,11 +455,36 @@ struct SettingsView: View {
     private func settingsListChrome<L: View>(_ list: L, disableNowPlayingInset: Bool) -> some View {
         list
             .collapseBarsOnScroll($barsCollapsed)
+            .navigationTitle("Settings")
+            // The Now Playing bar's inset (inside `applyConditionalListStyle`) must be applied BEFORE
+            // the search bar's, because bottom safe-area insets stack outward: the one applied first
+            // ends up nearest the content, and the one applied last sits below it. With the search bar
+            // first, the player landed UNDER it (Abu, 2026-10-07: "ProgressView goes below the search
+            // bar in settings"), which is the opposite of the Quran tab, where one inset stacks the
+            // player above the search row (`QuranView.nowPlayingInset` then `bottomControls`).
+            .applyConditionalListStyle(disableNowPlayingInset: disableNowPlayingInset)
             .adaptiveSafeArea(edge: .bottom) {
                 settingsSearchBarInset
             }
-            .navigationTitle("Settings")
-            .applyConditionalListStyle(disableNowPlayingInset: disableNowPlayingInset)
+            // Each door is pushed from the value that raised it (`pushDestination(item:)`): the target
+            // and the flag are one state, so the page can never build without its target. (A flag
+            // beside a target did exactly that, see `anyDoorOpen`.) A spotlight tip without a
+            // destination is never raised (`openDoor` below checks), so the empty branch there is the
+            // same floor `EmptyDoor` is everywhere: it closes rather than leaving a blank page.
+            .pushDestination(item: $profileDoor) { door in
+                door.destination
+            }
+            .pushDestination(item: $gridDoor) { door in
+                gridDestination(door)
+            }
+            .pushDestination(item: $spotlightTarget) { tip in
+                if let destination = tip.destination {
+                    searchDestinationView(destination)
+                        .revealsAdvancedSettings(tip.advanced)
+                } else {
+                    EmptyDoor { spotlightTarget = nil }
+                }
+            }
             #if DEBUG
             // `-openCredit <CreditItem.id>`: what a credit row in the search results does, headlessly.
             .debugPushDestination(isPresented: $debugOpenProfile) { ProfileView() }
@@ -269,10 +526,42 @@ struct SettingsView: View {
     private static var debugCreditID: String? { launchValue("-openCredit") }
 
     private static var debugSettingsPage: SettingsSearchEntry.Destination? {
-        // Only the pages this app has (no prayer, notification or hadith settings here).
         switch launchValue("-settingsOpen") {
+        #if HAS_ADHAN
+        case "prayer": return .prayerSettings
+        case "prayerSky": return .prayerPage(.sky)
+        case "notifications": return .notifications
+        case "prayerReminders": return .notificationsPage(.prayerReminders)
+        case "nagging": return .notificationsPage(.naggingMode)
+        #endif
+        #if HAS_QURAN
         case "quran": return .quranSettings
+        case "islamReminders": return .islamPage(.sunnahReminders)
+        #endif
+        #if HAS_HADITH
+        case "hadith": return .hadithSettings
+        #endif
+        case "islam": return .islamSettings
+        // The Islam sub-pages, so each can be screenshotted without a tap.
+        case "islamArabic": return .islamPage(.arabicText)
+        case "islamTextSize": return .islamPage(.textSize)
+        case "islamAlphabet": return .islamPage(.alphabet)
+        case "islamLibraries": return .islamPage(.libraries)
+        case "aboutYou": return .aboutYou
+        case "simpleMode": return .simpleMode
+        #if HAS_ICLOUD_BACKUP
+        case "cloudBackup": return .cloudBackup
+        #endif
+        case "tips": return .tips(nil)
+        case "tipsAdhan": return .tips(.adhan)
+        case "tipsNotifications": return .tips(.notifications)
+        case "tipsQuran": return .tips(.quran)
+        case "tipsHadith": return .tips(.hadith)
+        case "tipsIslam": return .tips(.islam)
+        case "tipsApp": return .tips(.app)
         case "appearance": return .appearance
+        case "appearanceColors": return .appearancePage(.customColors)
+        case "appearanceLook": return .appearancePage(.lookAndFeel)
         default: return nil
         }
     }
@@ -332,8 +621,12 @@ struct SettingsView: View {
         // you what you have done rather than asking what you want. iPhone/iPad only - the watch has
         // neither the room for the rings nor the stores (hadith, tasbih) the profile reads.
         #if os(iOS)
-        Section {
-            ProfileSettingsRow()
+        // Three tiles across one row (Abu, 2026-09-22: "about you and icloud backup should be on the
+        // same row as your progress as 3 grids"). Three NavigationLinks in one List row would all
+        // fire on any tap (see `one-link-per-list-row`), so the tiles are Buttons writing ONE door
+        // and the list owns the push; the iPad sidebar and iOS 15 fall back to three rows.
+        ProfileTilesSection(rows: split || !Self.canPushProgrammatically) { door in
+            openDoor { profileDoor = door }
         }
         #endif
 
@@ -341,6 +634,8 @@ struct SettingsView: View {
             #if os(iOS)
             if split, #available(iOS 16.0, *) {
                 settingsHubSectionSplit
+            } else if usesGrid(split: split) {
+                settingsHubGridSection
             } else {
                 settingsHubSection
             }
@@ -349,9 +644,52 @@ struct SettingsView: View {
             #endif
         }
 
-        appearanceSection
+        // Directly under the settings rows, in both modes (Abu, 2026-10-10): the switch that changes
+        // how busy every tab is has to be the first thing found here, and in Simple Mode it is also
+        // the way back out (docs/Simple Mode Guide.md). iPhone, iPad and Mac only: the watch's screens
+        // do not read it.
+        #if os(iOS)
+        SimpleModeSection()
+        #endif
+
+        // No ADVANCED section here (Abu, 2026-09-22: "dont do one general advanced settings there,
+        // do that for each one"): the hub hides nothing of its own, and each page below owns the
+        // switch for its own second half.
+
+        // Front and center (Abu, 2026-09-20): the app's unusual settings as cards, directly under the
+        // hub, each opening the screen that owns it, with every Tips & Tricks list one row below.
+        // The iPad/Mac sidebar keeps the card strip too, opening each card in the DETAIL column: its
+        // fallback of one row per card was a tall column of twelve rows (Abu, 2026-09-25: "this looks
+        // awful on mac/ipad while it looks great on phone"). Only iOS 15, with no programmatic push
+        // and no split, still gets rows.
+        #if os(iOS)
+        SettingsSpotlightSection(
+            rows: !Self.canPushProgrammatically,
+            selectedTipID: split ? splitSpotlightID : nil
+        ) { tip in
+            if split {
+                // The split's detail column is a SELECTION, not a push: swapping it cannot stack two
+                // destinations, so it needs no door guard.
+                selectSplitDestination(.spotlight(tip.id))
+            } else if tip.destination != nil {
+                openDoor { spotlightTarget = tip }
+            }
+        }
+        #endif
+
+        #if os(iOS)
+        appearanceSection(grid: usesGrid(split: split))
+        #else
+        appearanceSection(grid: false)
+        #endif
+        // Reset stays a row in both modes: a destructive action keeps its explanation and its two
+        // confirmations, never a tile's one tap.
         resetSection
-        creditsSection
+        #if os(iOS)
+        creditsSection(grid: usesGrid(split: split))
+        #else
+        creditsSection(grid: false)
+        #endif
 
         AlIslamAppsSection()
     }
@@ -361,8 +699,28 @@ struct SettingsView: View {
     private var settingsSplitDetail: some View {
         Group {
             switch selectedDestination ?? Self.defaultDestination {
+            #if HAS_ADHAN
+            case .notification:
+                NotificationView()
+            case .prayerSettings:
+                SettingsAdhanView(showNotifications: false)
+            #endif
+            #if HAS_QURAN
             case .quranSettings:
                 SettingsQuranView()
+            #endif
+            #if HAS_HADITH
+            case .hadithSettings:
+                SettingsHadithView(presentedAsSheet: false)
+            #endif
+            case .islamSettings:
+                SettingsIslamView()
+            case .spotlight(let id):
+                // Exactly what the card pushes on iPhone (`spotlightTarget`), as the detail's root.
+                if let tip = TipCatalog.spotlight.first(where: { $0.id == id }), let destination = tip.destination {
+                    searchDestinationView(destination)
+                        .revealsAdvancedSettings(tip.advanced)
+                }
             }
         }
     }
@@ -375,24 +733,13 @@ struct SettingsView: View {
     // (see `SettingsSearchEntry`) - this file only concatenates them. To add/remove a setting's entry,
     // edit the `SettingsSearchEntry` extension at the bottom of the file that owns the control.
 
-    // The whole index is composed here from the per-screen entry lists (see `SettingsSearchEntry`);
-    // the ranking is `SettingsSearchEntry.rank` and the destination mapping is below. This app has no
-    // prayer or hadith pages, so their entry lists are simply not in the sum.
-    private static let settingsSearchIndex: [SettingsSearchEntry] =
-        SettingsSearchEntry.quranEntries
-        + SettingsSearchEntry.appearanceEntries
-        + SettingsSearchEntry.creditEntries
+    // The whole index is `SettingsSearchEntry.all`, the ranking `SettingsSearchEntry.rank`, and the
+    // destination mapping `SettingsSearchDestinationView` (SettingsSearch.swift): the per-page search
+    // bars share all three with this root search.
 
     @ViewBuilder
     private func searchDestinationView(_ destination: SettingsSearchEntry.Destination) -> some View {
-        switch destination {
-        case .quranSettings: SettingsQuranView()
-        case .reciters: ReciterListView()
-        case .appearance: AppearanceSettingsScreen()
-        case .credits: CreditsView(presentedAsSheet: false)
-        case .credit(let id): CreditsView(presentedAsSheet: false, scrollTo: id)
-        case .quranPage(let page): SettingsQuranView(openPage: page)
-        }
+        SettingsSearchDestinationView.view(for: destination)
     }
 
     private var settingsSearchResults: [SettingsSearchEntry] {
@@ -415,7 +762,7 @@ struct SettingsView: View {
             }
         }
 
-        Section(header: SectionPillHeader(title: "SETTING RESULTS", count: results.count)) {
+        Section(header: SectionPillHeader(title: "SETTING RESULTS", count: results.count, icon: "magnifyingglass")) {
             if results.isEmpty {
                 Text(aiOnly.isEmpty ? "No settings match your search." : "No keyword matches. See the AI results above.")
                     .font(.subheadline)
@@ -429,7 +776,10 @@ struct SettingsView: View {
     }
 
     private func settingsSearchResultRow(_ entry: SettingsSearchEntry) -> some View {
-        NavigationLink(destination: LazyDestination { searchDestinationView(entry.destination) }) {
+        NavigationLink(destination: LazyDestination {
+            searchDestinationView(entry.destination)
+                .revealsAdvancedSettings(entry.advanced)
+        }) {
             SettingsSearchResultRow(entry: entry, query: settingsSearchText)
         }
     }
@@ -442,13 +792,14 @@ struct SettingsView: View {
         systemImage: String,
         subtitle: String? = nil,
         tint: Color? = nil,
+        secondaryTint: Color? = nil,
         @ViewBuilder destination: @escaping () -> Destination
     ) -> some View {
         // LazyDestination, same as IslamView: building the destination eagerly meant every body pass of this
         // tab constructed the full Adhan/Quran/Notification settings trees - on the watch, where TabView
         // re-evaluates neighbouring tabs on every swipe, that WAS the tab-switch lag into Settings.
         NavigationLink(destination: LazyDestination(build: destination)) {
-            toolLabel(title, systemImage: systemImage, subtitle: subtitle, chipTint: tint)
+            toolLabel(title, systemImage: systemImage, subtitle: subtitle, chipTint: tint, chipSecondaryTint: secondaryTint)
         }
         .tint(settings.accentColor.color)
     }
@@ -456,22 +807,27 @@ struct SettingsView: View {
     /// A settings row in the iOS Settings app's visual grammar, tinted the app's way: the icon on a
     /// small accent-gradient chip, an optional caption under the title. `chipTint` overrides the
     /// accent (the reset row goes red).
-    private func toolLabel(_ title: String, systemImage: String, subtitle: String? = nil, chipTint: Color? = nil) -> some View {
+    /// `chipSecondaryTint` gives the chip a SECOND colour, corner to corner - Islam Settings wears both
+    /// brand colours because it is not one tab's area (see `AccentIconChip`).
+    private func toolLabel(_ title: String, systemImage: String, subtitle: String? = nil, chipTint: Color? = nil, chipSecondaryTint: Color? = nil) -> some View {
         return HStack(spacing: 12) {
-            AccentIconChip(systemImage: systemImage, tint: chipTint)
+            AccentIconChip(systemImage: systemImage, tint: chipTint, secondaryTint: chipSecondaryTint)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .foregroundColor(.primary)
 
-                // The caption column is an iPhone luxury - the 40mm screen has no room for it.
+                // The caption column is an iPhone luxury: the 40mm screen has no room for it. One
+                // line, except at the accessibility sizes, where it cut every hub caption short
+                // ("Fonts, translations, tajweed...", see `SettingsRowLabel.stacks`).
                 #if os(iOS)
                 if let subtitle {
+                    let wraps = dynamicTypeSize.isAccessibilitySize
                     Text(subtitle)
                         .font(.caption)
                         .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                        .lineLimit(wraps ? nil : 1)
+                        .minimumScaleFactor(wraps ? 1 : 0.8)
                 }
                 #endif
             }
@@ -485,55 +841,174 @@ struct SettingsView: View {
         systemImage: String,
         subtitle: String? = nil,
         tint: Color? = nil,
+        secondaryTint: Color? = nil,
         value: SettingsDestination
     ) -> some View {
         // A Button (not `NavigationLink(value:)`) so a re-tap of the ALREADY-selected row still
         // responds - it pops that section back to its root via the refresh token. The `.tag` keeps
-        // the sidebar highlight driven by `List(selection:)`, the Islam sidebar's exact pattern.
+        // the row addressable by the selection (keyboard and pointer), the Islam sidebar's pattern.
+        //
+        // The HIGHLIGHT is drawn here, not left to `List(selection:)` (Abu, 2026-10-05: "sometimes
+        // it gets highlighted then it stops sometimes it doesnt highlight at all"). Three separate
+        // things were destroying the native selection bed, which is why it looked intermittent:
+        //   1. `.buttonStyle(.plain)` consumes the tap, so the List never routes a selection gesture
+        //      and never draws a bed - the `.tag` makes the row addressable, not highlighted.
+        //   2. `themedListRowBackground()` (applied to this whole list) sets `.listRowBackground`,
+        //      which REPLACES the cell background - including the bed - on Sepia, Gray and Custom.
+        //   3. "Default List View" off makes every list `.listStyle(.plain)`, which draws no bed at
+        //      all, and the style is latched at first appear, so it changes only after a relaunch.
+        // The row's own cell background (`rowSelectionHighlight`) survives all three.
         Button {
             settings.hapticFeedback()
-            withAnimation(.easeInOut) {
-                if selectedDestination == value {
-                    settingsDetailRefreshToken &+= 1
-                } else {
-                    selectedDestination = value
-                }
-            }
+            selectSplitDestination(value)
         } label: {
-            toolLabel(title, systemImage: systemImage, subtitle: subtitle, chipTint: tint)
+            toolLabel(title, systemImage: systemImage, subtitle: subtitle, chipTint: tint, chipSecondaryTint: secondaryTint)
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .tag(value)
         .tint(settings.accentColor.color)
+        .rowSelectionHighlight(selectedDestination == value)
     }
 
-    /// The settings destinations as ONE card - the old one-row-per-section layout spent most of the
-    /// screen on headers. This app has only the Quran page; it wears the same fixed green it wears in
-    /// Al-Islam (`SettingsTint`), the iOS Settings app's grammar. The page carries its own search bar.
+    /// The four settings destinations as ONE card - the old one-row-per-section layout spent most
+    /// of the screen on headers. Notifications shown on watchOS too (it supports local notifications).
+    /// Each area wears its own fixed colour (`SettingsTint`: prayer yellow, Quran green, hadith blue),
+    /// the iOS Settings app's grammar. Every page behind these rows carries its own search bar.
     @ViewBuilder
     private var settingsHubSection: some View {
-        Section(header: Text("SETTINGS")) {
+        Section(header: SectionIconHeader("SETTINGS", icon: "gearshape.fill")) {
+            #if HAS_ADHAN
+            resourceLink(title: "Notifications", systemImage: "bell.badge.fill",
+                         subtitle: "Prayer alerts, adhan sounds, reminders", tint: SettingsTint.notifications) {
+                NotificationView()
+            }
+            resourceLink(title: "Prayer Settings", systemImage: "safari.fill",
+                         subtitle: "Calculation, offsets, travel, sky", tint: SettingsTint.prayer) {
+                SettingsAdhanView(showNotifications: false)
+            }
+            #endif
+            #if HAS_QURAN
             resourceLink(title: "Quran Settings", systemImage: "character.book.closed.ar",
-                         subtitle: "Fonts, translations, tajweed, reciters, themes", tint: SettingsTint.quran) {
+                         subtitle: "Fonts, tajweed, reciters, themes", tint: SettingsTint.quran) {
                 SettingsQuranView()
             }
+            #endif
+            #if os(iOS)
+            #if HAS_HADITH
+            resourceLink(title: "Hadith Settings", systemImage: "text.book.closed.fill",
+                         subtitle: "Arabic and English, reading view", tint: SettingsTint.hadith) {
+                SettingsHadithView(presentedAsSheet: false)
+            }
+            #endif
+            // The fourth area, for what belongs to none of the three above. It wears BOTH brand
+            // colours rather than one of its own, because it is not one tab (see `SettingsTint.islam`).
+            resourceLink(title: "Islam Settings", systemImage: "moon.stars.fill",
+                         subtitle: "Arabic font, libraries, reminders",
+                         tint: SettingsTint.islam, secondaryTint: SettingsTint.islamSecondary) {
+                SettingsIslamView()
+            }
+            #endif
         }
     }
+
+    #if os(iOS)
+    /// The hub in grid mode: Notifications across the top as a banner, because it spans every area,
+    /// then the four areas two by two in the tab bar's order (Prayer, Quran / Hadith, Islam). The same
+    /// five pages as the rows, each keeping its caption: it is how people find where a setting lives.
+    /// The captions are short enough for a tile's one line at its 0.75 scale floor (Abu, 2026-10-11:
+    /// "line limit 1 looks chopped so shorten the actual text"); the rows say the same words.
+    private var settingsHubGridSection: some View {
+        Section(header: SectionIconHeader("SETTINGS", icon: "gearshape.fill")) {
+            VStack(spacing: 8) {
+                #if HAS_ADHAN
+                SettingsGridBanner(title: "Notifications", systemImage: "bell.badge.fill",
+                                   caption: "Prayer alerts, adhan sounds, reminders",
+                                   tint: SettingsTint.notifications) { openGrid(.notifications) }
+                #endif
+
+                #if HAS_ADHAN && HAS_QURAN && HAS_HADITH
+                SettingsGridTileRow {
+                    prayerGridTile
+                    quranGridTile
+                }
+
+                SettingsGridTileRow {
+                    SettingsGridTile(title: "Hadith Settings", systemImage: "text.book.closed.fill",
+                                     caption: "Arabic and English, reading view",
+                                     tint: SettingsTint.hadith, prominent: true) { openGrid(.hadith) }
+                    islamGridTile
+                }
+                #else
+                // A companion app's one area beside Islam Settings, on one row.
+                SettingsGridTileRow {
+                    #if HAS_ADHAN
+                    prayerGridTile
+                    #endif
+                    #if HAS_QURAN
+                    quranGridTile
+                    #endif
+                    islamGridTile
+                }
+                #endif
+            }
+            .padding(.vertical, 1)
+        }
+    }
+
+    #if HAS_ADHAN
+    private var prayerGridTile: some View {
+        SettingsGridTile(title: "Prayer Settings", systemImage: "safari.fill",
+                         caption: "Calculation, offsets, travel, sky",
+                         tint: SettingsTint.prayer, prominent: true) { openGrid(.prayer) }
+    }
+    #endif
+
+    #if HAS_QURAN
+    private var quranGridTile: some View {
+        SettingsGridTile(title: "Quran Settings", systemImage: "character.book.closed.ar",
+                         caption: "Fonts, tajweed, reciters, themes",
+                         tint: SettingsTint.quran, prominent: true) { openGrid(.quran) }
+    }
+    #endif
+
+    /// Both brand colours, as on its row (see `SettingsTint.islam`).
+    private var islamGridTile: some View {
+        SettingsGridTile(title: "Islam Settings", systemImage: "moon.stars.fill",
+                         caption: "Arabic font, libraries, reminders",
+                         tint: SettingsTint.islam, secondaryTint: SettingsTint.islamSecondary,
+                         prominent: true) { openGrid(.islam) }
+    }
+    #endif
 
     @available(iOS 16.0, *)
     @ViewBuilder
     private var settingsHubSectionSplit: some View {
-        Section(header: Text("SETTINGS")) {
+        Section(header: SectionIconHeader("SETTINGS", icon: "gearshape.fill")) {
+            #if HAS_ADHAN
+            splitResourceLink(title: "Notifications", systemImage: "bell.badge.fill",
+                              subtitle: "Prayer alerts, adhan sounds, reminders", tint: SettingsTint.notifications, value: .notification)
+            splitResourceLink(title: "Prayer Settings", systemImage: "safari.fill",
+                              subtitle: "Calculation, offsets, travel, sky", tint: SettingsTint.prayer, value: .prayerSettings)
+            #endif
+            #if HAS_QURAN
             splitResourceLink(title: "Quran Settings", systemImage: "character.book.closed.ar",
-                              subtitle: "Fonts, translations, tajweed, reciters, themes", tint: SettingsTint.quran, value: .quranSettings)
+                              subtitle: "Fonts, tajweed, reciters, themes", tint: SettingsTint.quran, value: .quranSettings)
+            #endif
+            #if HAS_HADITH
+            splitResourceLink(title: "Hadith Settings", systemImage: "text.book.closed.fill",
+                              subtitle: "Arabic and English, reading view", tint: SettingsTint.hadith, value: .hadithSettings)
+            #endif
+            splitResourceLink(title: "Islam Settings", systemImage: "moon.stars.fill",
+                              subtitle: "Arabic font, libraries, reminders",
+                              tint: SettingsTint.islam, secondaryTint: SettingsTint.islamSecondary, value: .islamSettings)
         }
     }
 
     @ViewBuilder
     private var resetSection: some View {
         #if os(iOS)
-        Section(header: Text("RESET")) {
+        Section(header: SectionIconHeader("RESET", icon: "arrow.counterclockwise")) {
             Button(role: .destructive) {
                 settings.hapticFeedback()
                 showResetConfirmation = true
@@ -561,7 +1036,15 @@ struct SettingsView: View {
 
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Reset restores every setting (appearance and Quran options) to its default and keeps your bookmarks, favorites, khatm progress, and saved location.\n\nErase removes those too.")
+                #if HAS_ICLOUD_BACKUP
+                // Generated from the same table the iCloud page's What's Included reads, so a new
+                // kind of content is named here without a second edit.
+                Text("Reset puts every setting back to its default (appearance, prayer, notification, Quran, hadith and Islam options) and keeps everything you made: \(ContentCategory.listSentence). It also keeps your saved location and this \(CloudDevice.kind)'s iCloud Backup.\n\nErase removes all of that too.")
+                #else
+                // A companion app has no iCloud Backup and no content table (ContentCategories measures
+                // a backup, so it is Al-Islam's too): the sentence is written out.
+                Text("Reset puts every setting back to its default and keeps everything you made, like bookmarks, favorites, progress and counters, and your saved location.\n\nErase removes all of that too.")
+                #endif
             }
             // A second confirmation, because this one cannot be undone.
             .confirmationDialog(
@@ -577,31 +1060,79 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This deletes your bookmarks, favorite surahs, letters and names, khatm progress, reading and listening positions, search history, and saved locations, leaving the app exactly as it was on a fresh install. This cannot be undone.")
+                #if HAS_ICLOUD_BACKUP
+                Text("This deletes everything you made on this \(CloudDevice.kind): \(ContentCategory.listSentence), plus your search history and saved locations. The app is left as it was on a fresh install, and this \(CloudDevice.kind) forgets its iCloud Backup profile (the backup already in iCloud stays until you delete it there). This cannot be undone.")
+                #else
+                Text("This deletes everything you made on this device, like bookmarks, favorites, progress and counters, plus your search history and saved locations. The app is left as it was on a fresh install. This cannot be undone.")
+                #endif
             }
         }
         #endif
     }
 
-    private var appearanceSection: some View {
-        Section(header: Text("APPEARANCE")) {
+    /// `grid`: the two appearance pages as tiles under the theme and accent controls (which stay).
+    private func appearanceSection(grid: Bool) -> some View {
+        Section(header: SectionIconHeader("APPEARANCE", icon: "paintpalette.fill")) {
+            #if os(iOS)
+            if grid {
+                SettingsAppearanceView(openPage: { openGrid(.appearance($0)) })
+            } else {
+                SettingsAppearanceView()
+            }
+            #else
             SettingsAppearanceView()
+            #endif
         }
     }
 
-    private var creditsSection: some View {
-        Section(header: Text("CREDITS")) {
+    /// `grid`: the three actions as one row of tiles, the profile row's three-across grammar. The
+    /// website and email lines stay rows: they are text to read and copy, not buttons.
+    private func creditsSection(grid: Bool) -> some View {
+        Section(header: SectionIconHeader("CREDITS", icon: "scroll.fill")) {
             creditsIntro
+            #if os(iOS)
+            if grid {
+                creditsTiles
+            } else {
+                viewCreditsButton
+                // App Settings first, the review below it (Abu, 2026-09-16).
+                openAppSettingsButton
+                leaveReviewButton
+            }
+            #else
             viewCreditsButton
-            // App Settings first, the review below it (Abu, 2026-09-16).
             openAppSettingsButton
             leaveReviewButton
+            #endif
             websiteRow
             contactRow
             VersionNumber(width: glyphWidth)
                 .font(.subheadline)
         }
     }
+
+    #if os(iOS)
+    private var creditsTiles: some View {
+        SettingsGridTileRow {
+            SettingsGridTile(title: "View Credits", systemImage: "scroll.fill", tint: SettingsTint.credits) {
+                showingCredits = true
+            }
+            SettingsGridTile(title: "Open App Settings", systemImage: "gearshape.fill", tint: SettingsTint.credits,
+                             haptic: false) {
+                openAppSettings()
+            }
+            SettingsGridTile(title: "Leave a Review", systemImage: "star.bubble.fill", haptic: false) {
+                leaveReview()
+            }
+        }
+        .padding(.vertical, 1)
+        // On the row, not a tile: one presenter for the one sheet (the list row's own rule).
+        .sheet(isPresented: $showingCredits) {
+            CreditsView()
+                .smallMediumSheetPresentation()
+        }
+    }
+    #endif
 
     private var creditsIntro: some View {
         Text("Made by Abubakr Elmallah, who was a 17-year-old high school student when this app was made.\n\nSpecial thanks to my parents and to Mr. Joe Silvey, my English teacher and Muslim Student Association Advisor.")
@@ -631,7 +1162,7 @@ struct SettingsView: View {
         Button {
             leaveReview()
         } label: {
-            toolLabel("Leave a Review", systemImage: "star.bubble.fill", chipTint: Color(red: 0.98, green: 0.72, blue: 0.20))
+            toolLabel("Leave a Review", systemImage: "star.bubble.fill")
         }
         .contextMenu {
             Text("Review")
@@ -784,7 +1315,10 @@ struct SettingsView: View {
 /// section otherwise lives inline on the Settings tab with nothing to navigate to.
 struct AppearanceSettingsScreen: View {
     var body: some View {
-        SettingsScopedSearch(scope: .appearance) {
+        SettingsScopedSearch(scope: .appearance, resolve: { destination in
+            if case .appearancePage(let page) = destination { return AnyView(AppearancePageView(page: page)) }
+            return nil
+        }) {
             Section {
                 SettingsAppearanceView()
             }
@@ -794,62 +1328,120 @@ struct AppearanceSettingsScreen: View {
 }
 
 extension SettingsSearchEntry {
-    static let appearanceEntries: [SettingsSearchEntry] = [
-        .init(title: "Accent Color", path: "Appearance", keywords: "green color swatch tint custom hex theme", destination: .appearance),
+    static let appearanceEntries: [SettingsSearchEntry] = appearanceControlEntries.filter { entry in
+        LaunchTab.isOffered || entry.title != "Open the App On"
+    }
+
+    private static let appearanceControlEntries: [SettingsSearchEntry] = [
+        .init(title: "Accent Color", path: "Appearance", keywords: "green color swatch tint theme", destination: .appearance),
         .init(title: "App Theme (Light / Dark / Sepia / Gray)", path: "Appearance", keywords: "dark mode light mode night reading sepia gray paper background", destination: .appearance),
-        .init(title: "Custom Background Color", path: "Appearance", keywords: "custom color background hex picker theme", destination: .appearance),
-        .init(title: "Top Accent Glow", path: "Appearance", keywords: "glow wash gradient accent top background flat hide al islam green yellow brand", destination: .appearance),
-        .init(title: "Default List View", path: "Appearance", keywords: "list style plain grouped inset layout", destination: .appearance),
-        .init(title: "Classic Look (No Liquid Glass)", path: "Appearance", keywords: "liquid glass classic look performance faster battery low power mode ios 26 old design", destination: .appearance),
-        .init(title: "Haptic Feedback", path: "Appearance", keywords: "vibration taptic buzz feedback toggle", destination: .appearance),
+        .init(title: "Custom Background Color", path: "Appearance → Custom Colors", keywords: "custom color background hex picker theme", destination: .appearancePage(.customColors)),
+        .init(title: "Custom Accent Color", path: "Appearance → Custom Colors", keywords: "custom color accent hex picker tint own", destination: .appearancePage(.customColors)),
+        .init(title: "Top Accent Glow", path: "Appearance → Custom Colors", keywords: "glow wash gradient accent top background flat hide al islam green yellow brand", destination: .appearancePage(.customColors)),
+        .init(title: "Open the App On", path: "Appearance → Look and Feel", keywords: "launch start first tab open adhan quran hadith islam default home landing", destination: .appearancePage(.lookAndFeel)),
+        .init(title: "Default List View", path: "Appearance → Look and Feel", keywords: "list style plain grouped inset layout", destination: .appearancePage(.lookAndFeel)),
+        .init(title: "Classic Look (No Liquid Glass)", path: "Appearance → Look and Feel", keywords: "liquid glass classic look performance faster battery low power mode ios 26 old design", destination: .appearancePage(.lookAndFeel)),
+        .init(title: "Haptic Feedback", path: "Appearance → Look and Feel", keywords: "vibration taptic buzz feedback toggle", destination: .appearancePage(.lookAndFeel)),
+        .init(title: "Simple Mode", path: "Settings", keywords: "simple simpler busy clutter cluttered overwhelming overwhelmed essentials less minimal declutter calm fewer buttons", destination: .simpleMode),
+        .init(title: "Need a Hand? on Every Tab", path: "Appearance → Look and Feel", keywords: "help shortcuts need a hand need help praying reading questions rows doors tabs hide show all nagging beginner transliteration", destination: .appearancePage(.lookAndFeel)),
     ]
 }
-#endif
 
-struct SettingsAppearanceView: View {
-    @ObservedObject var settings = Settings.shared
+// MARK: - The tab the app opens on
 
-    #if os(iOS)
-    /// The iPad sidebar gives the five-segment theme control about 54 pt a segment, and "System"
-    /// showed as "Syst..." there (2026-09-06 iPad pass); iPads say "Auto". Keyed on the idiom, not
-    /// the size class: a split view's sidebar column reports `.compact` even on a 13-inch iPad.
-    private var systemThemeLabel: String {
-        UIDevice.current.userInterfaceIdiom != .phone ? "Auto" : "System"
+/// The four tabs the app can open on (`Settings.launchTabRaw`). Settings itself is not offered:
+/// nobody opens an app to change it.
+enum LaunchTab: String, CaseIterable, Identifiable {
+    case adhan, quran, hadith, islam
+
+    var id: String { rawValue }
+
+    /// See `SettingsAppearancePage.offersLaunchTab`: Al-Islam only.
+    static var isOffered: Bool { SettingsAppearancePage.offersLaunchTab }
+
+    var title: String {
+        switch self {
+        case .adhan: return "Adhan"
+        case .quran: return "Quran"
+        case .hadith: return "Hadith"
+        case .islam: return "Islam"
+        }
     }
-    #endif
+}
 
-    // Accent-swatch grid metrics. The watch gets fewer, smaller swatches with tighter gutters so each circle
-    // actually FITS its column (see the note on the grid below); the phone keeps the roomier original.
-    #if os(watchOS)
-    private static let swatchColumns = 4
-    private static let swatchDiameter: CGFloat = 22
-    private static let swatchSpacing: CGFloat = 6
-    private static let swatchGridVerticalPadding: CGFloat = 4
-    #else
-    private static let swatchColumns = 4
-    private static let swatchDiameter: CGFloat = 30
-    private static let swatchSpacing: CGFloat = 12
-    private static let swatchGridVerticalPadding: CGFloat = 16
-    #endif
+extension Settings {
+    var launchTab: LaunchTab {
+        get { LaunchTab(rawValue: launchTabRaw) ?? .adhan }
+        set { launchTabRaw = newValue.rawValue }
+    }
+}
 
-    private func accentSwatch(_ accentColor: AccentColor) -> some View {
-        // Every preset is a single colour, so a plain circle is right here.
-        Circle()
-            .fill(accentColor.color)
-            .frame(width: Self.swatchDiameter, height: Self.swatchDiameter)
-            .overlay(
-                Circle()
-                    .stroke(settings.accentColor == accentColor ? Color.primary : Color.clear, lineWidth: 2)
-            )
-            .accessibilityLabel(accentColor.displayName)
-            .onTapGesture {
-                settings.hapticFeedback()
+/// "Open the App On": one control, on Appearance's Look and Feel page only. About You carried a
+/// second copy (where Abu first went looking for it, under a toggle whose name read as if it did
+/// this) until he asked for it to live on Look and Feel alone (2026-09-25).
+struct LaunchTabPicker: View {
+    @ObservedObject private var settings = Settings.shared
 
-                withAnimation {
-                    settings.accentColor = accentColor
+    /// Plain, never animated: an animated selection binding makes the segmented indicator slide,
+    /// snap back and slide again.
+    private var selection: Binding<LaunchTab> {
+        Binding(
+            get: { settings.launchTab },
+            set: { newValue in
+                settings.launchTab = newValue
+                settings.launchTabChosen = true
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            Text("Open the App On")
+                .font(.subheadline)
+
+            Picker("Open the App On", selection: selection) {
+                ForEach(LaunchTab.allCases) { tab in
+                    Text(tab.title).tag(tab)
                 }
             }
+            .pickerStyle(SegmentedPickerStyle())
+            .onChange(of: settings.launchTabRaw) { _ in settings.hapticFeedback() }
+
+            Text("The tab you land on when the app opens. A notification or a reminder you tap still opens where it points.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 2)
+        }
     }
+}
+
+// MARK: - Appearance sub-screens
+
+/// One of Appearance's two sub-screens (`SettingsAppearancePage`): the controls that used to run
+/// down the Settings tab under the swatches, unchanged, one push away.
+struct AppearancePageView: View {
+    @ObservedObject private var settings = Settings.shared
+
+    let page: SettingsAppearancePage
+
+    var body: some View {
+        List {
+            Group {
+                switch page {
+                case .customColors: customColorsSections
+                case .lookAndFeel: lookAndFeelSections
+                }
+            }
+            .themedListRowBackground()
+        }
+        // Holds the "Default List View" switch, so it restyles live (G3).
+        .applyConditionalListStyle(followsListViewLive: page == .lookAndFeel)
+        .navigationTitle(page.title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    // MARK: Custom Colors
 
     /// Reads/writes the stored custom hex; picking a color also switches the active accent to `.custom`.
     private var customAccentColorBinding: Binding<Color> {
@@ -897,6 +1489,259 @@ struct SettingsAppearanceView: View {
         )
     }
 
+    /// One line: color well, label, then a toggle tinted with the custom color itself (not the accent).
+    private func colorRow(_ title: String, color: Binding<Color>, enabled: Binding<Bool>, tint: Color) -> some View {
+        HStack(spacing: 12) {
+            ColorPicker("", selection: color, supportsOpacity: false)
+                .labelsHidden()
+
+            Text(title)
+                .font(.subheadline)
+
+            Spacer()
+
+            Toggle("", isOn: enabled.animation(.easeInOut))
+                .labelsHidden()
+                .tint(tint)
+        }
+    }
+
+    @ViewBuilder
+    private var customColorsSections: some View {
+        Section {
+            VStack(alignment: .leading) {
+                colorRow("Custom Background", color: customBackgroundColorBinding, enabled: customBackgroundEnabledBinding,
+                         tint: Color(hex: settings.customBackgroundColorHex) ?? .gray)
+                    .onChange(of: settings.colorSchemeString) { _ in settings.hapticFeedback() }
+
+                Text("Pick any background color for the whole app. Light or dark text is chosen automatically so it stays readable.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 2)
+            }
+
+            VStack(alignment: .leading) {
+                colorRow("Custom Color", color: customAccentColorBinding, enabled: customColorEnabledBinding,
+                         tint: Color(hex: settings.customAccentColorHex) ?? .green)
+                    .onChange(of: settings.accentColor) { _ in settings.hapticFeedback() }
+
+                Text("An accent of your own in place of the swatches on the Settings tab. Turning it off goes back to the app's green.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 2)
+            }
+        } header: {
+            Text("YOUR OWN COLORS")
+        }
+
+        Section {
+            VStack(alignment: .leading) {
+                Toggle("Top Accent Glow", isOn: $settings.showAccentGlow.animation(.easeInOut))
+                    .font(.subheadline)
+                    .onChange(of: settings.showAccentGlow) { _ in settings.hapticFeedback() }
+
+                Text("A soft wash of your accent color at the top of each screen. Turn it off for a flat background.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 2)
+
+                if settings.showAccentGlow {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Al-Islam Glow", isOn: $settings.alIslamGlow.animation(.easeInOut))
+                            .font(.subheadline)
+                            .onChange(of: settings.alIslamGlow) { _ in settings.hapticFeedback() }
+
+                        Text("Color the glow with Al-Islam's yellow and green (yellow from the left, green from the right) instead of your accent color.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .settingsDependent()
+                }
+            }
+        } header: {
+            Text("THE GLOW")
+        }
+    }
+
+    // MARK: Look and Feel
+
+    @ViewBuilder
+    private var lookAndFeelSections: some View {
+        if LaunchTab.isOffered {
+            Section {
+                LaunchTabPicker()
+            } header: {
+                Text("WHEN THE APP OPENS")
+            }
+        }
+
+        Section {
+            VStack(alignment: .leading) {
+                Toggle("Default List View", isOn: $settings.defaultView.animation(.easeInOut))
+                    .font(.subheadline)
+                    .onChange(of: settings.defaultView) { _ in settings.hapticFeedback() }
+
+                Text("The default list view is the standard interface found in many of Apple's first party apps, including Notes. Screens already open switch the next time they open.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 2)
+            }
+
+            if #available(iOS 26.0, *) {
+                VStack(alignment: .leading) {
+                    Toggle("Show Liquid Glass", isOn: $settings.showLiquidGlass.animation(.easeInOut))
+                        .font(.subheadline)
+                        .onChange(of: settings.classicLook) { _ in settings.hapticFeedback() }
+
+                    Text("Turn this off for the Classic Look, the way the app looked before iOS 26: faster and easier on the battery. It changes the app's own cards, pills, and bars. The tab bar, navigation bars, sheets, and the search field are drawn by iOS and keep their Liquid Glass either way, so screens that are mostly those will look much the same.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.vertical, 2)
+
+                    if settings.showLiquidGlass {
+                        VStack(alignment: .leading) {
+                            Toggle("Automatically in Low Power Mode", isOn: $settings.classicLookInLowPower.animation(.easeInOut))
+                                .font(.subheadline)
+                                .onChange(of: settings.classicLookInLowPower) { _ in settings.hapticFeedback() }
+
+                            Text("Turns Liquid Glass off while Low Power Mode is on and brings it back when Low Power Mode is off.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.vertical, 2)
+                        }
+                        .settingsDependent()
+                    }
+                }
+            }
+        } header: {
+            Text("HOW IT LOOKS")
+        }
+
+        Section {
+            Toggle("Haptic Feedback", isOn: $settings.hapticOn.animation(.easeInOut))
+                .font(.subheadline)
+                .onChange(of: settings.hapticOn) { _ in settings.hapticFeedback() }
+        } header: {
+            Text("HOW IT FEELS")
+        }
+
+        // The Need a Hand? questions on every tab (HelpDoors.swift), all four at once. Each tab's own
+        // switch is on its settings page, beside the list of that tab's questions.
+        Section {
+            VStack(alignment: .leading) {
+                Toggle("Show on Every Tab", isOn: helpShortcutsBinding.animation(.easeInOut))
+                    .font(.subheadline)
+
+                Text(helpShortcutsCaption)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 2)
+            }
+        } header: {
+            Text("NEED A HAND?")
+        }
+    }
+
+    /// On while any tab shows its questions. The haptic rides the binding, not an `onChange`: hiding
+    /// the last tab's section from its own menu must not tick here too.
+    private var helpShortcutsBinding: Binding<Bool> {
+        Binding(
+            get: { settings.showHelpShortcuts },
+            set: { newValue in
+                settings.hapticFeedback()
+                settings.showHelpShortcuts = newValue
+            }
+        )
+    }
+
+    /// The examples name only the tabs this app has: Al-Adhan and Al-Quran share this file, and a
+    /// question about a tab the reader does not have would send them looking for it.
+    private var helpShortcutsCaption: String {
+        #if HAS_ADHAN && HAS_QURAN
+        let examples = ": Need Help Praying? on the prayer times opens Nagging Mode, and Need Help Reading? on the Quran answers with Arabic Beginner Mode."
+        #elseif HAS_ADHAN
+        let examples = ": Need Help Praying? on the prayer times opens Nagging Mode."
+        #elseif HAS_QURAN
+        let examples = ": Need Help Reading? on the Quran answers with Arabic Beginner Mode."
+        #else
+        let examples = "."
+        #endif
+        let intro = "A few questions on each tab, each with the setting that answers it" + examples + " Each tab also has its own switch, on its settings page."
+        let hidden = settings.hiddenHelpDoorTabs
+        guard !hidden.isEmpty, hidden.count < HelpDoorArea.allCases.count else { return intro }
+        let names = hidden.count == 1 ? hidden[0] : hidden.dropLast().joined(separator: ", ") + " and " + hidden.last!
+        return intro + " Hidden now on the \(names) tab\(hidden.count == 1 ? "" : "s")."
+    }
+}
+#endif
+
+/// The APPEARANCE section of the Settings tab: the two controls people reach for (the theme and the
+/// accent swatches), then a door to each sub-screen. The watch has only the swatches and the haptics
+/// switch, so it keeps both inline.
+struct SettingsAppearanceView: View {
+    @ObservedObject var settings = Settings.shared
+
+    #if os(iOS)
+    /// Grid mode (`SettingsView.usesGrid`): the two pages as tiles that hand their page to the list's
+    /// one push. Nil keeps the rows.
+    var openPage: ((SettingsAppearancePage) -> Void)? = nil
+
+    /// The iPad sidebar gives the five-segment theme control about 54 pt a segment, and "System"
+    /// showed as "Syst..." there (2026-09-06 iPad pass); iPads say "Auto". Keyed on the idiom, not
+    /// the size class: a split view's sidebar column reports `.compact` even on a 13-inch iPad.
+    private var systemThemeLabel: String {
+        UIDevice.current.userInterfaceIdiom != .phone ? "Auto" : "System"
+    }
+    #endif
+
+    // Accent-swatch grid metrics. The watch gets fewer, smaller swatches with tighter gutters so each circle
+    // actually FITS its column (see the note on the grid below); the phone keeps the roomier original.
+    #if os(watchOS)
+    private static let swatchColumns = 4
+    private static let swatchDiameter: CGFloat = 22
+    private static let swatchSpacing: CGFloat = 6
+    private static let swatchGridVerticalPadding: CGFloat = 4
+    private static let swatchGridMaxWidth: CGFloat = .infinity
+    #else
+    private static let swatchColumns = 4
+    private static let swatchDiameter: CGFloat = 30
+    private static let swatchSpacing: CGFloat = 12
+    private static let swatchGridVerticalPadding: CGFloat = 16
+    /// See the grid's `.frame(maxWidth:)`: four 30 pt swatches about 100 pt apart.
+    private static let swatchGridMaxWidth: CGFloat = 400
+    #endif
+
+    private func accentSwatch(_ accentColor: AccentColor) -> some View {
+        // Every preset is a single colour, so a plain circle is right here.
+        Circle()
+            // The hue that names the choice, not the deeper shade light mode paints text with.
+            .fill(accentColor.swatchColor)
+            .frame(width: Self.swatchDiameter, height: Self.swatchDiameter)
+            .overlay(
+                Circle()
+                    .stroke(settings.accentColor == accentColor ? Color.primary : Color.clear, lineWidth: 2)
+            )
+            .accessibilityLabel(accentColor.displayName)
+            // A tap gesture, not a Button: VoiceOver heard "Green" with no word that it is a button
+            // or that it is the accent in use.
+            .accessibilityAddTraits(settings.accentColor == accentColor ? [.isButton, .isSelected] : .isButton)
+            .onTapGesture {
+                settings.hapticFeedback()
+
+                withAnimation {
+                    settings.accentColor = accentColor
+                }
+            }
+    }
+
     var body: some View {
         #if os(iOS)
         VStack(alignment: .leading) {
@@ -917,29 +1762,6 @@ struct SettingsAppearanceView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, 2)
         }
-
-        VStack(alignment: .leading) {
-            HStack(spacing: 12) {
-                ColorPicker("", selection: customBackgroundColorBinding, supportsOpacity: false)
-                    .labelsHidden()
-
-                Text("Custom Background")
-                    .font(.subheadline)
-
-                Spacer()
-
-                Toggle("", isOn: customBackgroundEnabledBinding.animation(.easeInOut))
-                    .labelsHidden()
-                    .tint(Color(hex: settings.customBackgroundColorHex) ?? .gray)
-            }
-            // (Haptic on theme change is already handled by the Color Theme picker's onChange above.)
-
-            Text("Pick any background color for the whole app. Light or dark text is chosen automatically so it stays readable.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.vertical, 2)
-        }
         #endif
 
         VStack(alignment: .leading) {
@@ -948,34 +1770,21 @@ struct SettingsAppearanceView: View {
             // their cells, the grid grew its row heights to compensate, and `.padding(.vertical)` piled 32pt on
             // top - which is the "random huge padding" on the watch. The phone has the width for the original
             // layout, so it keeps it.
-            LazyVGrid(columns: Array(
-                repeating: GridItem(.flexible(), spacing: Self.swatchSpacing),
-                count: Self.swatchColumns
-            ), spacing: Self.swatchSpacing) {
+            // Not lazy (`SummaryTileGrid`): a lazy grid in a List row can answer a different height on
+            // each self-sizing pass, which iOS 26 traps on.
+            SummaryTileGrid(columns: Self.swatchColumns, spacing: Self.swatchSpacing) {
                 ForEach(accentColors, id: \.self) { accentColor in
                     accentSwatch(accentColor)
                 }
             }
+            // The four columns at an iPhone's spacing, whatever the row's width: an iPad detail column
+            // spread the twelve dots over 1,400 pt with 350 pt between them (2026-10-12). Narrower than
+            // any iPhone row, so the phone's grid is untouched; wider rows centre the cluster.
+            .frame(maxWidth: Self.swatchGridMaxWidth)
+            .frame(maxWidth: .infinity)
             .padding(.vertical, Self.swatchGridVerticalPadding)
-
             #if os(iOS)
-            // One line: color well, label, then a toggle tinted with the custom color itself (not the accent).
-            HStack(spacing: 12) {
-                ColorPicker("", selection: customAccentColorBinding, supportsOpacity: false)
-                    .labelsHidden()
-
-                Text("Custom Color")
-                    .font(.subheadline)
-
-                Spacer()
-
-                Toggle("", isOn: customColorEnabledBinding.animation(.easeInOut))
-                    .labelsHidden()
-                    .tint(Color(hex: settings.customAccentColorHex) ?? .green)
-            }
-            .padding(.horizontal, 24)
             .onChange(of: settings.accentColor) { _ in settings.hapticFeedback() }
-
             #endif
 
             #if os(iOS)
@@ -984,85 +1793,482 @@ struct SettingsAppearanceView: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, 2)
-                .padding(.top, 10)
             #endif
         }
 
         #if os(iOS)
-        VStack(alignment: .leading) {
-            Toggle("Top Accent Glow", isOn: $settings.showAccentGlow.animation(.easeInOut))
-                .font(.subheadline)
-                .onChange(of: settings.showAccentGlow) { _ in settings.hapticFeedback() }
-
-            Text("A soft wash of your accent color at the top of each screen. Turn it off for a flat background.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.vertical, 2)
-
-            if settings.showAccentGlow {
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Al-Islam Glow", isOn: $settings.alIslamGlow.animation(.easeInOut))
-                        .font(.subheadline)
-                        .onChange(of: settings.alIslamGlow) { _ in settings.hapticFeedback() }
-
-                    Text("Color the glow with Al-Islam's yellow and green (yellow from the left, green from the right) instead of your accent color.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .settingsDependent()
-            }
-        }
-
-        VStack(alignment: .leading) {
-            Toggle("Default List View", isOn: $settings.defaultView.animation(.easeInOut))
-                .font(.subheadline)
-                .onChange(of: settings.defaultView) { _ in settings.hapticFeedback() }
-
-            Text("The default list view is the standard interface found in many of Apple's first party apps, including Notes.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.vertical, 2)
-        }
-
-        if #available(iOS 26.0, *) {
-            VStack(alignment: .leading) {
-                Toggle("Classic Look (No Liquid Glass)", isOn: $settings.classicLook.animation(.easeInOut))
-                    .font(.subheadline)
-                    .onChange(of: settings.classicLook) { _ in settings.hapticFeedback() }
-
-                Text("Turns off Liquid Glass so the app looks the way it did before iOS 26. Faster and easier on the battery. The search bar keeps its Liquid Glass.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.vertical, 2)
-
-                if !settings.classicLook {
-                    VStack(alignment: .leading) {
-                        Toggle("Automatically in Low Power Mode", isOn: $settings.classicLookInLowPower.animation(.easeInOut))
-                            .font(.subheadline)
-                            .onChange(of: settings.classicLookInLowPower) { _ in settings.hapticFeedback() }
-
-                        Text("Uses the Classic Look while Low Power Mode is on and brings Liquid Glass back when it is off.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.vertical, 2)
-                    }
-                    .settingsDependent()
+        if let openPage {
+            SettingsGridTileRow {
+                ForEach(SettingsAppearancePage.allCases, id: \.self) { page in
+                    SettingsGridTile(title: page.title, systemImage: page.systemImage, caption: page.caption,
+                                     tint: SettingsTint.appearance, prominent: true) { openPage(page) }
                 }
             }
-            .id("classicLook")
+            .padding(.vertical, 1)
+        } else {
+            // One List row each: a row may hold only one link.
+            ForEach(SettingsAppearancePage.allCases, id: \.self) { page in
+                NavigationLink(destination: LazyDestination { AppearancePageView(page: page) }) {
+                    SettingsRowLabel(title: page.title, systemImage: page.systemImage, subtitle: page.caption,
+                                     tint: SettingsTint.appearance)
+                }
+                .tint(settings.accentColor.color)
+            }
         }
-        #endif
-
+        #else
         VStack(alignment: .leading) {
             Toggle("Haptic Feedback", isOn: $settings.hapticOn.animation(.easeInOut))
                 .font(.subheadline)
                 .onChange(of: settings.hapticOn) { _ in settings.hapticFeedback() }
         }
+        #endif
+    }
+}
+
+#if os(iOS)
+// MARK: - Grid mode tiles
+
+/// One tile of the Settings tab's grid mode (2026-09-26, the grid button the Quran, Hadith and Islam
+/// tabs already have), drawn the way those tabs draw theirs (Abu, 2026-09-28: "grid mode in settings
+/// doesn't look the same as everywhere else. make it consistent liquid glass"). It used to sit on a
+/// flat accent wash with a 14 pt curve and a title a size up from every other grid; now it is the
+/// Islam resource tile's surface and scale: clear Liquid Glass on the shared `GlassCorner` curve, a
+/// 32 pt chip, the title under it, and the caption in the glass's own secondary (`.secondary` reads
+/// at 3.1:1 on glass). Always a Button: a grid is one List row, and several NavigationLinks in one row
+/// all fire on any tap (`one-link-per-list-row`), so each tile writes one door and the list owns the
+/// push. A leaf: it observes nothing.
+struct SettingsGridTile: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    let title: String
+    let systemImage: String
+    var caption: String? = nil
+    var tint: Color? = nil
+    var secondaryTint: Color? = nil
+    /// The hub's areas and the appearance pages, two across: a footnote title over a caption that
+    /// says what the page holds (how people find where a setting lives). Off, the Islam tile's
+    /// caption-sized title for three across.
+    var prominent: Bool = false
+    /// Off for an action that already taps its own haptic (App Settings, the review), so one tap is
+    /// one tick.
+    var haptic: Bool = true
+    let action: () -> Void
+
+    var body: some View {
+        Button {
+            if haptic { Settings.shared.hapticFeedback() }
+            action()
+        } label: {
+            VStack(spacing: 6) {
+                AccentIconChip(systemImage: systemImage, tint: tint, secondaryTint: secondaryTint, size: 32)
+
+                Text(title)
+                    .font(prominent ? .footnote.weight(.semibold) : .caption2.weight(.medium))
+                    .foregroundColor(.primary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
+                    .minimumScaleFactor(0.8)
+
+                if let caption {
+                    // One line (Abu, 2026-10-11: "make sure each caption line is line limit 1"), as the
+                    // list rows' captions are (`toolLabel`); it scales down to 0.75 before it truncates,
+                    // and the captions are written short enough never to (same day: "looks chopped so
+                    // shorten the actual text"). The accessibility sizes keep wrapping: the tiles stack
+                    // one per row there, and a one-line clamp cut every caption short.
+                    Text(caption)
+                        .font(.caption2)
+                        .foregroundColor(.secondaryOnGlass)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                        .minimumScaleFactor(0.75)
+                }
+            }
+            // Equal heights across a row: the row fixes its own height, and each tile fills it.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 6)
+            .contentShape(Rectangle())
+            .conditionalGlassEffect(clear: true, rectangle: true)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(caption.map { "\(title). \($0)" } ?? title)
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// A full-width grid tile: the chip beside the title and caption, the Islam tab's Ask AI banner. The
+/// grid mode's one area that spans every other (Notifications) gets the whole row, as Ask AI does.
+struct SettingsGridBanner: View {
+    let title: String
+    let systemImage: String
+    let caption: String
+    var tint: Color? = nil
+    let action: () -> Void
+
+    var body: some View {
+        Button {
+            Settings.shared.hapticFeedback()
+            action()
+        } label: {
+            HStack(spacing: 12) {
+                AccentIconChip(systemImage: systemImage, tint: tint, size: 32)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.primary)
+
+                    Text(caption)
+                        .font(.caption)
+                        .foregroundColor(.secondaryOnGlass)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 10)
+            .padding(.horizontal, 12)
+            .contentShape(Rectangle())
+            .conditionalGlassEffect(clear: true, rectangle: true)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title). \(caption)")
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// Tiles side by side, or one per line at the accessibility text sizes (two or three across left each
+/// caption a few letters wide). Equal heights in a row: the profile row's `fixedSize` + fill trick.
+struct SettingsGridTileRow<Content: View>: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(spacing: 8) { content() }
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            HStack(alignment: .center, spacing: 8) { content() }
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+// MARK: - Your Progress / About You / iCloud Backup
+
+/// The three personal screens, as tiles across ONE row (Abu, 2026-09-22: "about you and icloud
+/// backup should either be on the same row as your progress as 3 grids"). They were three stacked
+/// settings rows before, which read as three unrelated settings rather than as one place the app
+/// tells you who you are and how you are doing.
+///
+/// Buttons, not links: three NavigationLinks inside a single List row all fire on any tap (see
+/// `one-link-per-list-row`), so each tile writes one `Door` and `SettingsView`'s list owns the push.
+/// `rows: true` is the fallback where that push is unavailable (iOS 15) or wrong (the iPad sidebar,
+/// where it would push inside the narrow column): the same three screens as ordinary rows.
+struct ProfileTilesSection: View {
+    @ObservedObject private var settings = Settings.shared
+    /// Observed for the same reason `ProfileSettingsRow` observes them: the deferred last-read load
+    /// and a badge unlocked elsewhere must both re-render this row's caption.
+    #if HAS_QURAN
+    @ObservedObject private var quranData = QuranData.shared
+    #endif
+    #if HAS_HADITH
+    @ObservedObject private var hadithStore = HadithStore.shared
+    #endif
+    @ObservedObject private var achievements = AchievementsStore.shared
+    #if HAS_ICLOUD_BACKUP
+    @ObservedObject private var cloud = CloudBackupManager.shared
+    #endif
+
+    /// True for the fallback shape: one settings row per screen.
+    let rows: Bool
+    /// The iPhone stack's programmatic push (`SettingsView.profileDoor`).
+    var open: (Door) -> Void = { _ in }
+
+    enum Door: String, Identifiable {
+        case progress
+        case aboutYou
+        #if HAS_ICLOUD_BACKUP
+        case cloudBackup
+        #endif
+
+        var id: String { rawValue }
+
+        @ViewBuilder
+        var destination: some View {
+            switch self {
+            case .progress: ProfileView()
+            case .aboutYou: AboutYouSettingsView()
+            #if HAS_ICLOUD_BACKUP
+            case .cloudBackup: CloudBackupSettingsView()
+            #endif
+            }
+        }
+    }
+
+    private struct Tile {
+        let door: Door
+        let title: String
+        let systemImage: String
+        /// The live read-out under the title - a streak, an answer, On/Off.
+        let value: String
+        let tint: Color?
+        var secondaryTint: Color? = nil
+        /// The longer caption the fallback ROW shows beside the title; the tile has no room for it.
+        let rowSubtitle: String
+    }
+
+    /// Your Progress' one live number, short enough for a third of a screen: the streak first, then
+    /// the khatm, then badges, and the invitation when there is nothing recorded yet.
+    private var progressValue: String {
+        #if HAS_QURAN
+        let stats = ProfileStats.current(settings: settings, quranData: quranData)
+        #else
+        let stats = ProfileStats.current(settings: settings)
+        #endif
+        #if HAS_ADHAN
+        if stats.prayer.currentStreak > 0 {
+            return "\(stats.prayer.currentStreak)-day streak"
+        }
+        #endif
+        #if HAS_QURAN
+        if stats.khatmCompleted > 0 {
+            return "\(Int((stats.khatmFraction * 100).rounded()))% read"
+        }
+        #endif
+        let earned = achievements.unlockedCount(stats)
+        if earned > 0 {
+            return "\(earned) badge\(earned == 1 ? "" : "s")"
+        }
+        return "Nothing yet"
+    }
+
+    private var tiles: [Tile] {
+        var list = [
+            Tile(door: .progress, title: "Your Progress", systemImage: "person.crop.circle.fill",
+                 value: progressValue, tint: nil,
+                 rowSubtitle: "Your prayers, reading, and badges"),
+            Tile(door: .aboutYou, title: "About You", systemImage: "sparkles",
+                 value: settings.userBackground?.title ?? "Not set",
+                 tint: SettingsTint.islam, secondaryTint: SettingsTint.islamSecondary,
+                 rowSubtitle: "Start Here, welcome tutorial"),
+        ]
+        // iCloud Backup is Al-Islam's alone: a companion app shows the first two tiles.
+        #if HAS_ICLOUD_BACKUP
+        list.append(Tile(door: .cloudBackup, title: "iCloud Backup", systemImage: "icloud.fill",
+                         value: cloud.isEnabled ? "On" : "Off", tint: SettingsTint.hadith,
+                         rowSubtitle: "Profiles, restore, what's included, backup file"))
+        #endif
+        return list
+    }
+
+    var body: some View {
+        Section {
+            if rows {
+                ForEach(tiles, id: \.door.id) { tile in
+                    NavigationLink(destination: LazyDestination { tile.door.destination }) {
+                        SettingsRowLabel(title: tile.title, systemImage: tile.systemImage,
+                                         subtitle: tile.rowSubtitle,
+                                         tint: tile.tint, secondaryTint: tile.secondaryTint,
+                                         value: tile.value)
+                    }
+                    .tint(settings.accentColor.color)
+                }
+            } else {
+                // `.center`, not `.top`, so each tile's `maxHeight: .infinity` stretches it to the
+                // tallest: "Learning about Islam" wraps to two lines and "Off" does not, and three
+                // cards of three different heights read as a layout bug. The grid mode's row: at the
+                // accessibility sizes the three stack, where three across cut "Your Progr...".
+                SettingsGridTileRow {
+                    ForEach(tiles, id: \.door.id) { tile in
+                        profileTile(tile)
+                    }
+                }
+                .padding(.vertical, 1)
+            }
+        }
+    }
+
+    private func profileTile(_ tile: Tile) -> some View {
+        Button {
+            settings.hapticFeedback()
+            open(tile.door)
+        } label: {
+            VStack(spacing: 6) {
+                AccentIconChip(systemImage: tile.systemImage, tint: tile.tint,
+                               secondaryTint: tile.secondaryTint, size: 32)
+
+                Text(tile.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+
+                // Two lines, unlike the Explore tiles' one: "Just getting started" is an answer the
+                // reader gave, and shrinking it to a single scaled-down line made it unreadable.
+                Text(tile.value)
+                    .font(.caption2)
+                    .foregroundColor(.secondaryOnGlass)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 6)
+            .contentShape(Rectangle())
+            // The grid tiles' clear glass (see `SettingsGridTile`), in list mode too: these three are
+            // tiles in both modes.
+            .conditionalGlassEffect(clear: true, rectangle: true)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(tile.title). \(tile.value)")
+        .accessibilityAddTraits(.isButton)
+    }
+}
+#endif
+
+// MARK: - Advanced Settings
+
+/// The switch a simplified settings screen ends with. ONE PER SCREEN (Abu, 2026-09-22: "dont do one
+/// general advanced settings there, do that for each one - if it needs advanced mode then show it
+/// there"): the toggle writes `screen`'s own key, so turning the second half on under Nagging Mode
+/// leaves Arabic Text simple. Off, a screen keeps to its essentials and this section names what it is
+/// keeping out of sight (`hides`), so nobody wonders where an option went; the hidden options keep
+/// the values they hold. A screen that hides nothing carries no ADVANCED section at all - which is
+/// why the Settings tab's own hub no longer has one. Compiles for the watch too (its Notifications
+/// and Nagging Mode pages use it).
+/// Simple Mode's one switch, in APPEARANCE. The per-screen Advanced switches trim the SETTINGS
+/// screens; this trims the app's own chrome (Abu, 2026-10-07: "just make the app look less
+/// overwhelming and have a toggle to show more complicated stuff").
+///
+/// One switch, app-wide, where Advanced is one per screen: Advanced answers "show me the rest of
+/// THIS screen", which is a question about the screen in front of you. Simple Mode answers "I find
+/// the app busy", which is not - hunting a dozen switches to settle it would be the clutter it is
+/// meant to remove.
+struct SimpleModeSection: View {
+    @ObservedObject private var settings = Settings.shared
+
+    var body: some View {
+        Section(header: SectionIconHeader("SIMPLE MODE", icon: "rectangle.compress.vertical")) {
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Simple Mode", isOn: $settings.simpleMode.animation(.easeInOut))
+                    .font(.subheadline)
+                    .tint(settings.accentColor.color)
+                    .onChange(of: settings.simpleMode) { _ in settings.hapticFeedback() }
+
+                #if os(iOS)
+                Text(caption)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 2)
+                #endif
+            }
+        }
+    }
+
+    /// Says what moves and, either way, that nothing stops working - the one worry a switch that
+    /// hides parts of the app has to answer before it is turned on.
+    private var caption: String {
+        if settings.simpleMode {
+            return "Each tab keeps to its essentials. Shortcuts wait in the ⋯ menu at the top of a tab or in Settings, and extras like Need a Hand? and At a Glance step aside. Nothing is turned off: everything you set keeps working."
+        }
+        return "Keeps each tab to its essentials: shortcuts move into a ⋯ menu at the top or into Settings, and the extras step aside. Nothing is turned off, and turning this back off brings it all back."
+    }
+}
+
+/// Simple Mode's switch on a page of its own: where its search entry, its tip and the Islam tab's
+/// "Too Much on Screen?" door land.
+struct SimpleModeSettingsView: View {
+    var body: some View {
+        List {
+            SimpleModeSection()
+        }
+        .applyConditionalListStyle()
+        .navigationTitle("Simple Mode")
+    }
+}
+
+struct AdvancedSettingsSection: View {
+    @ObservedObject private var settings = Settings.shared
+
+    /// Which screen's switch this is.
+    let screen: Settings.AdvancedScreen
+
+    /// What THIS screen shows only with the switch on, as a plain list ("the repeat interval, the
+    /// last calls and a tone of their own").
+    var hides: String? = nil
+
+    /// False while this screen's advanced half would be empty ANYWAY, whatever the switch says
+    /// (Abu, 2026-09-22: "only show advanced setting if it applies"). Three screens gate their own
+    /// advanced content on something else first - Nagging Mode on the mode being on, Arabic Text on
+    /// Arabic being shown, the watch's Notifications on the Islamic-calendar switch - and on those a
+    /// switch promising hidden options that do not exist is worse than no switch at all.
+    ///
+    /// The stored value is untouched when the section is away: flipping the gate back on brings the
+    /// switch back exactly as it was left.
+    var applies: Bool = true
+
+    var body: some View {
+        if applies { section }
+    }
+
+    private var section: some View {
+        Section(header: SectionIconHeader("ADVANCED", icon: "slider.horizontal.3")) {
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Show Advanced Settings", isOn: settings.advancedBinding(screen).animation(.easeInOut))
+                    .font(.subheadline)
+                    .tint(settings.accentColor.color)
+                    .onChange(of: settings.advanced(screen)) { _ in settings.hapticFeedback() }
+
+                #if os(iOS)
+                Text(caption)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 2)
+                #endif
+            }
+        }
+    }
+
+    private var caption: String {
+        if settings.advanced(screen) {
+            return "Every option on this screen is shown. Turn this off to keep it to its essentials; what you set in the advanced options still applies. Each screen has its own switch."
+        }
+        if let hides {
+            return "Hidden on this screen: \(hides). Turn this on to see every option here. It changes this screen only, and anything set here before still applies."
+        }
+        return "This screen keeps to its essentials. Turn this on to see every option it has."
+    }
+}
+
+/// Turns Advanced Settings on when a search result or a tip opens a control its screen would
+/// otherwise hide. The row said "Advanced" before it was tapped, so the switch flipping is the
+/// expected outcome, not a surprise; the screen's own ADVANCED section is there to turn it back off.
+///
+/// Every screen's switch, not one: a search entry records only THAT the control is advanced, never
+/// which of the eleven screens owns it, and landing on a screen still hiding the very thing that was
+/// searched for is the failure this exists to prevent.
+struct AdvancedSettingsReveal: ViewModifier {
+    let active: Bool
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            guard active else { return }
+            Settings.shared.revealAllAdvancedSettings()
+        }
+    }
+}
+
+extension View {
+    func revealsAdvancedSettings(_ active: Bool) -> some View {
+        modifier(AdvancedSettingsReveal(active: active))
     }
 }
 
@@ -1088,8 +2294,62 @@ struct VersionNumber: View {
     }
 }
 
-#Preview {
+#Preview("Settings") {
     AlIslamPreviewContainer(embedInNavigation: false) {
         SettingsView()
     }
 }
+
+#if DEBUG
+/// THE regression preview for 2026-10-07: Settings with recitation live. The floating search bar and
+/// the Now Playing player are both bottom safe-area insets, and insets stack OUTWARD - whichever is
+/// applied first sits nearest the content. Settings used to add its search bar before
+/// `applyConditionalListStyle` (which installs the player), so the player rendered UNDERNEATH the
+/// search bar instead of above it.
+///
+/// What correct looks like here: search bar on the bottom, player directly above it, list content
+/// above that. If they ever swap, the modifier order in `settingsListChrome` has been changed back.
+///
+/// The surah and reciter are real (`QuranData.shared`), so the card shows the shipped Arabic name and
+/// a title of realistic length rather than a short placeholder that would never reveal a clipping bug.
+#if HAS_QURAN
+#Preview("Settings - player sits ABOVE the search bar") {
+    let surah = AlIslamPreviewData.quranData.quran.first(where: { $0.id == 55 })
+        ?? AlIslamPreviewData.surah
+    QuranPlayer.shared.nowPlaying.previewSeed { snapshot in
+        snapshot.isPlaying = true
+        snapshot.isPaused = false
+        snapshot.currentSurahNumber = surah.id
+        snapshot.currentAyahNumber = 13
+        snapshot.isPlayingSurah = true
+        snapshot.nowPlayingTitle = "\(surah.nameTransliteration) \(surah.id):13"
+        snapshot.nowPlayingReciter = "Mishary Rashid Alafasy"
+    }
+    PlaybackVisibility.shared.update(showsBar: true)
+    return AlIslamPreviewContainer(embedInNavigation: false) {
+        SettingsView()
+    }
+}
+
+/// The same screen with the player EXPANDED. The big card is roughly double the height, so this is
+/// where the two insets would overlap first if the order regressed: the list's bottom content must
+/// still clear both, and the search bar must stay fully tappable.
+#Preview("Settings - expanded player + search bar") {
+    let surah = AlIslamPreviewData.quranData.quran.first(where: { $0.id == 2 })
+        ?? AlIslamPreviewData.surah
+    AlIslamPreviewData.seedPersisted("nowPlayingExpanded", true)
+    QuranPlayer.shared.nowPlaying.previewSeed { snapshot in
+        snapshot.isPlaying = true
+        snapshot.currentSurahNumber = surah.id
+        snapshot.currentAyahNumber = 255
+        snapshot.isPlayingSurah = true
+        snapshot.nowPlayingTitle = "\(surah.nameTransliteration) \(surah.id):255"
+        snapshot.nowPlayingReciter = "Mishary Rashid Alafasy"
+    }
+    PlaybackVisibility.shared.update(showsBar: true)
+    return AlIslamPreviewContainer(embedInNavigation: false) {
+        SettingsView()
+    }
+}
+#endif
+#endif

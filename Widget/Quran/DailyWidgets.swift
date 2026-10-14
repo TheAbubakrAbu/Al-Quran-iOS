@@ -35,9 +35,10 @@ struct NameOfAllahEntry: TimelineEntry {
 
 private enum DailyWidgetShared {
     static let store = UserDefaults(suiteName: AppIdentifiers.appGroupSuiteName)
-    static let accent: AccentColor = {
+    /// Read on each timeline build: a reused extension process kept the previous accent (P11).
+    static var accent: AccentColor {
         AccentColor(rawValue: store?.string(forKey: "accentColor") ?? AppIdentifiers.mainColorString) ?? AppIdentifiers.mainColor
-    }()
+    }
 
     static func reload(for snapshot: DailyWidgetSnapshot?) -> Date {
         DailyRollover.nextRollover(after: Date(), fajrByDay: snapshot?.fajrByDay)
@@ -148,7 +149,9 @@ struct DailyReminderWidgetView: View {
     @ViewBuilder
     private var arabicText: some View {
         let size: CGFloat = family == .systemSmall ? 17 : 21
-        if let fontName = entry.fontName, !fontName.isEmpty {
+        // A face this process cannot draw falls back to the mushaf's own, as in the Quran widgets:
+        // asked for by name alone, a missing face came out in the system font with its marks adrift.
+        if let fontName = entry.fontName.map(Settings.drawableArabicFontName), !fontName.isEmpty {
             Text(entry.arabic)
                 .font(.custom(fontName, size: size))
                 .arabicFontDesign(custom: fontName != Settings.systemArabicFontName)
@@ -173,6 +176,7 @@ struct DailyReminderWidget: Widget {
         .supportedFamilies(quranWidgetFamilies())
         .configurationDisplayName("Reminder of the Day")
         .description("A verse, a hadith, a Sunnah, a dua, a dhikr or a Name of Allah, one each day")
+        .disfavoredInCarPlay()
     }
 }
 
@@ -285,7 +289,7 @@ struct NameOfAllahWidgetView: View {
     private func arabicText(size: CGFloat) -> some View {
         if let fontName = entry.fontName, !fontName.isEmpty, fontName != Settings.systemArabicFontName {
             Text(entry.arabic)
-                .font(.custom(fontName, size: size))
+                .font(.custom(Settings.drawableArabicFontName(fontName), size: size))
                 .arabicFontDesign(custom: true)
         } else {
             Text(entry.arabic)
