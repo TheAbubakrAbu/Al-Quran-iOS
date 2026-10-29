@@ -209,8 +209,13 @@ final class QiraatClipPlayer: ObservableObject {
         }
         if let startMs = clip.startMs {
             let start = CMTime(value: CMTimeValue(startMs), timescale: 1000)
-            player.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
-                player.play()
+            // Started only while it is still the clip playing: a stop, or the other reading tapped, during
+            // the seek into a streamed surah left this completion to start a player already let go.
+            player.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] _ in
+                Task { @MainActor in
+                    guard let self, let player, self.player === player else { return }
+                    player.play()
+                }
             }
         } else {
             player.play()
@@ -250,8 +255,8 @@ struct QiraatVariantAudioButtons: View {
         if let pair {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    clipButton("Hafs", key: key("hafs"), clip: pair.hafs)
-                    clipButton(QiraatProfiles.shortName(of: tag), key: key("riwayah"), clip: pair.riwayah)
+                    clipButton(String(localized: "Hafs"), key: key("hafs"), clip: pair.hafs)
+                    clipButton(QiraatProfiles.shortName(of: tag).localizedDisplay, key: key("riwayah"), clip: pair.riwayah)
                     if !compact {
                         Spacer(minLength: 0)
                     }
@@ -283,14 +288,9 @@ struct QiraatVariantAudioButtons: View {
                         .font(.caption2)
                 }
                 Text(playing ? "Stop" : "Hear \(label)")
-                    .font(.caption.weight(.semibold))
             }
-            .foregroundColor(playing ? .white : appearance.accent)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(playing ? appearance.accent : appearance.accent.opacity(0.12)))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.accentChip(filled: playing))
         .accessibilityLabel(playing ? "Stop" : "Hear the verse as \(label) reads it")
     }
 }

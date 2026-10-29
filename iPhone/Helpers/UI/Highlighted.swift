@@ -53,6 +53,11 @@ struct HighlightedSnippet: View {
     var trailingSuffix: String = ""
     var trailingSuffixFont: Font? = nil
     var trailingSuffixColor: Color? = nil
+    /// Text set BEFORE the source in the same run ("14: " before a book's title), so a title that wraps
+    /// carries its number along the first line instead of parking it beside a centred block.
+    var leadingPrefix: String = ""
+    var leadingPrefixFont: Font? = nil
+    var leadingPrefixColor: Color? = nil
     var lineLimit: Int? = nil
     /// With `lineLimit`, also RESERVE the clamped height (iOS 16+/watchOS 9+; plain clamp below): a
     /// one-line snippet occupies the same box as a full one, so preview cards line up. NOTE: an outer
@@ -83,14 +88,17 @@ struct HighlightedSnippet: View {
         let suffixText = Text(trailingSuffix)
             .font(trailingSuffixFont ?? font)
             .foregroundColor(trailingSuffixColor ?? fg)
+        let prefixText = Text(leadingPrefix)
+            .font(leadingPrefixFont ?? font)
+            .foregroundColor(leadingPrefixColor ?? fg)
 
         if needsAttributedWork {
             let highlightedText = memoizedHighlightedText(term: resolvedSearchTerm,
                                                           needsSearchHighlight: needsSearchHighlight)
 
-            limited(Text("\(Text(highlightedText))\(suffixText)"))
+            limited(Text("\(prefixText)\(Text(highlightedText))\(suffixText)"))
         } else {
-            limited(Text("\(Text(source).foregroundColor(fg))\(suffixText)"))
+            limited(Text("\(prefixText)\(Text(source).foregroundColor(fg))\(suffixText)"))
         }
     }
 
@@ -599,71 +607,38 @@ struct HighlightedSnippet: View {
            normalizedTerm.containsArabicLetters == source.containsArabicLetters {
             ranges = closestMatchRanges(in: source, normalizedTerm: normalizedTerm)
         }
-        // A one-letter term would snap every word it touches; below two letters the exact ranges stand.
-        return normalizedTerm.count >= 2 ? snappedToWholeWords(ranges, in: source) : ranges
+        // Exactly the letters that matched, never the word around them: "na" lights the "Na" of
+        // An-Najm and nothing more, "believ" lights those letters of "believers". The rungs above
+        // already make sure SOMETHING is lit for every matched row; what that something covers is
+        // what matched (Abu, 2026-10-20: "I want SOMETHING highlighted, doesn't mean I want the
+        // whole thing"). Touching ranges merge so a phrase still reads as one span.
+        return mergedMatchRanges(ranges, in: source)
     }
 
-    /// Every match painted as WHOLE WORDS. The rungs above find substrings - "صلاة" inside
-    /// "وَٱلصَّلَوٰةِ", "believ" inside "believers", the alef-skeleton prefix "لصل" of a word the loose
-    /// rung could only half-match - and painting exactly the matched letters left words chopped in
-    /// two colors: the head of the word in the accent, its tail in the base color, which read as a
-    /// highlight that had been cut off mid-word. A word either matched or it didn't, so each range
-    /// grows outward to the whitespace on both sides, then sheds the punctuation it picked up at the
-    /// edges (a closing quote, the comma after "ease,") - the accent covers the word and nothing
-    /// else. Overlapping or touching ranges merge, so a phrase reads as one span. Shared by every
-    /// caller of the ladder (list rows, the mushaf page reader, the cross-language token lookup), so
-    /// the same query paints the same words everywhere.
-    nonisolated private static func snappedToWholeWords(
+    /// The ladder's ranges trimmed and merged, with NO growth to word edges: each range keeps exactly
+    /// the letters it matched. A range that ends on whitespace ("patience " as the longest prefix of
+    /// "patience hardship") sheds it, and overlapping or touching ranges merge so a phrase is one span.
+    /// Whole-word snapping lived here from 2026-08-29 to 2026-10-20 and was withdrawn: "na" filling all
+    /// of "Najm" read as a wrong highlight. The matched letters are what the reader wants to see.
+    nonisolated private static func mergedMatchRanges(
         _ ranges: [Range<String.Index>],
         in source: String
     ) -> [Range<String.Index>] {
         guard !ranges.isEmpty else { return ranges }
-        var snapped: [Range<String.Index>] = []
+        var merged: [Range<String.Index>] = []
         for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
             var start = range.lowerBound
             var end = range.upperBound
-            // A range that ENDS on a space ("patience " as the longest prefix of "patience hardship")
-            // would grow across that space into the next word and paint "patience and". The edge
-            // whitespace is shed first, so only words the range really touches can grow.
-            while start < end, isWordBoundary(source[start]) { start = source.index(after: start) }
-            while end > start, isWordBoundary(source[source.index(before: end)]) { end = source.index(before: end) }
+            while start < end, source[start].isWhitespace { start = source.index(after: start) }
+            while end > start, source[source.index(before: end)].isWhitespace { end = source.index(before: end) }
             guard start < end else { continue }
-            while start > source.startIndex {
-                let previous = source.index(before: start)
-                if isWordBoundary(source[previous]) { break }
-                start = previous
-            }
-            while end < source.endIndex, !isWordBoundary(source[end]) {
-                end = source.index(after: end)
-            }
-            while start < end, !isWordCharacter(source[start]) { start = source.index(after: start) }
-            while end > start, !isWordCharacter(source[source.index(before: end)]) { end = source.index(before: end) }
-            guard start < end else { continue }
-            if let last = snapped.last, last.upperBound >= start {
-                snapped[snapped.count - 1] = last.lowerBound..<max(last.upperBound, end)
+            if let last = merged.last, last.upperBound >= start {
+                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, end)
             } else {
-                snapped.append(start..<end)
+                merged.append(start..<end)
             }
         }
-        return snapped
-    }
-
-    /// Where a snapped range stops growing: whitespace, and the dashes that glue two words together
-    /// without a space (an em or en dash), so "mercy\u{2014}indeed" never paints its neighbour. A
-    /// hyphen is NOT a boundary: "All-Knowing" is one word.
-    nonisolated private static func isWordBoundary(_ character: Character) -> Bool {
-        character.isWhitespace || character == "\u{2014}" || character == "\u{2013}" || character == "/"
-    }
-
-    /// A character that belongs to a word for painting purposes: it carries a letter or a digit, or an
-    /// Arabic mark (a standalone tashkeel cluster after its letter). Quotes, brackets, commas, and the
-    /// like are not, so they are trimmed off the ends of a snapped range.
-    nonisolated private static func isWordCharacter(_ character: Character) -> Bool {
-        character.unicodeScalars.contains { scalar in
-            CharacterSet.letters.contains(scalar)
-                || CharacterSet.decimalDigits.contains(scalar)
-                || scalar.isArabicMarkScalar
-        }
+        return merged
     }
 
     /// Convenience for callers without a cached fold (the mushaf page reader): folds `source` fresh, then
@@ -977,10 +952,21 @@ struct HighlightedSnippet: View {
 
     private func highlightArabicAllah(source: String, attributed: inout AttributedString) {
         for range in Self.arabicAllahRanges(in: source) {
-            if let start = AttributedString.Index(range.lowerBound, within: attributed),
-               let end = AttributedString.Index(range.upperBound, within: attributed) {
-                attributed[start..<end].foregroundColor = .red
+            guard let start = AttributedString.Index(range.lowerBound, within: attributed),
+                  let end = AttributedString.Index(range.upperBound, within: attributed) else { continue }
+            #if os(iOS)
+            // Over tajweed, a letter of the name a rule colored (the heavy laam of اللَّه after a fatha
+            // or damma) keeps its rule color; only the plain letters turn red. The painters color
+            // through NSAttributedString, so their colors are in the UIKit scope (see `renderDigest`).
+            if preStyledSource != nil {
+                let plainRuns = attributed[start..<end].runs
+                    .filter { !AllahNameInk.isRuleColor($0.uiKit.foregroundColor) }
+                    .map(\.range)
+                for run in plainRuns { attributed[run].foregroundColor = .red }
+                continue
             }
+            #endif
+            attributed[start..<end].foregroundColor = .red
         }
     }
 
@@ -1172,11 +1158,14 @@ struct HighlightedSnippet: View {
 
         // A cluster that folds to nothing (a standalone tashkeel or Quranic sign written as its own grapheme)
         // belongs to the word it follows. Left outside the range, the word tints in the accent while its final
-        // mark stays in the base color - the "highlight stops one mark short" artifact on Arabic. Absorb them.
+        // mark stays in the base color (the "highlight stops one mark short" artifact on Arabic). Absorb them,
+        // and only marks and modifier letters: punctuation folds to nothing too, and "aishah" lit the colon of
+        // "ʿĀʾishah:".
         while end < source.endIndex {
             let next = source.index(after: end)
             let cluster = source[end..<next]
             guard cluster.first?.isWhitespace != true,
+                  cluster.unicodeScalars.allSatisfy(\.isStandaloneMark),
                   Self.normalizeForSearchText(String(cluster), trimWhitespace: false).isEmpty else { break }
             end = next
         }
@@ -1184,6 +1173,18 @@ struct HighlightedSnippet: View {
         return start..<end
     }
 
+}
+
+private extension Unicode.Scalar {
+    /// A mark that can stand as its own grapheme after a word: an Arabic sign, any combining mark, or a
+    /// modifier letter (the ʿ and ʾ of a transliteration, "Rabīʿ").
+    var isStandaloneMark: Bool {
+        if isArabicMarkScalar { return true }
+        switch properties.generalCategory {
+        case .nonspacingMark, .spacingMark, .enclosingMark, .modifierLetter: return true
+        default: return false
+        }
+    }
 }
 
 private extension Character {
@@ -1261,6 +1262,41 @@ private extension UnicodeScalar {
     }
 }
 
+#if os(iOS)
+/// "Highlight Allah" over tajweed colors (Abu, 2026-10-14: "if highlight Allah and a tajweed color
+/// appears in Allah's name then put the tajweed color on it"). The tajweed and riwayah painters lay
+/// `UIColor.label` under the whole ayah and a rule's color over the letters it covers, so any other
+/// color on a letter of the name is a rule's, and the red goes on the remaining letters only.
+enum AllahNameInk {
+    /// Resolved under a FIXED trait: only "same color as label or not" matters, and the share
+    /// renderers call this off the main thread, where `UITraitCollection.current` is unspecified.
+    private static let traits = UITraitCollection(userInterfaceStyle: .light)
+
+    /// Whether `color` is a rule's paint rather than the plain text color (`plain`, label by default).
+    static func isRuleColor(_ color: UIColor?, plain: UIColor = .label) -> Bool {
+        guard let color else { return false }
+        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+        var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+        guard color.resolvedColor(with: traits).getRed(&r1, green: &g1, blue: &b1, alpha: &a1),
+              plain.resolvedColor(with: traits).getRed(&r2, green: &g2, blue: &b2, alpha: &a2) else {
+            return false
+        }
+        return abs(r1 - r2) >= 0.01 || abs(g1 - g2) >= 0.01 || abs(b1 - b2) >= 0.01 || abs(a1 - a2) >= 0.01
+    }
+
+    /// Paints `color` over `range` of `attributed`, leaving every code unit a rule already colored.
+    static func paint(_ attributed: NSMutableAttributedString, range: NSRange, color: UIColor,
+                      plain: UIColor = .label) {
+        guard range.location >= 0, range.location + range.length <= attributed.length else { return }
+        var plainRuns: [NSRange] = []
+        attributed.enumerateAttribute(.foregroundColor, in: range) { value, run, _ in
+            if !isRuleColor(value as? UIColor, plain: plain) { plainRuns.append(run) }
+        }
+        for run in plainRuns { attributed.addAttribute(.foregroundColor, value: color, range: run) }
+    }
+}
+#endif
+
 extension Text {
     /// Text on the Islam tab (a dua, a dhikr, a name's description, an article's quote) with the name
     /// of Allah in red when the reader has Islam Settings' "Highlight Allah" on: the Arabic name by
@@ -1268,18 +1304,23 @@ extension Text {
     /// Quran and hadith readers, and the English word "Allah" the way those readers paint it. Every
     /// other run keeps whatever color the call site gives the `Text`.
     static func islamText(_ source: String, highlightAllah: Bool) -> Text {
-        guard highlightAllah else { return Text(source) }
+        if let attributed = islamHighlighted(source, highlightAllah: highlightAllah) { return Text(attributed) }
+        return Text(source)
+    }
+
+    /// The string `islamText` draws, as the attributed form: the name of Allah painted, or nil when the
+    /// setting is off or the text names Allah nowhere (draw the plain string). The selectable article
+    /// paragraphs (`ArticleParagraph`, ArticleDesign.swift) hand this to a text view, so a passage reads
+    /// the same whether it is a `Text` or a drag-selectable block.
+    static func islamHighlighted(_ source: String, highlightAllah: Bool) -> AttributedString? {
+        guard highlightAllah else { return nil }
         // Cached per source (Phase 10.8): every verbatim article paragraph, dua line and name tile runs
         // this on each body pass, with a diacritic-insensitive `range(of:)` scan over the whole string.
         let key = source as NSString
-        if let hit = IslamTextCache.cache.object(forKey: key) {
-            if let attributed = hit.value { return Text(attributed) }
-            return Text(source)
-        }
+        if let hit = IslamTextCache.cache.object(forKey: key) { return hit.value }
         let attributed = islamAttributed(source)
         IslamTextCache.cache.setObject(IslamTextCache.Box(attributed), forKey: key)
-        if let attributed { return Text(attributed) }
-        return Text(source)
+        return attributed
     }
 
     /// The highlighted form, or nil when the text names Allah nowhere.

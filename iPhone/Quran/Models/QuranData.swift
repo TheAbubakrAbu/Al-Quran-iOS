@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import CoreText
 import Combine
 #if canImport(AppKit)
 import AppKit
@@ -134,8 +135,34 @@ struct Surah: Codable, Identifiable, Equatable {
         self.letterCount = ayahs.reduce(0) { $0 + $1.letterCount }
     }
 
-    var wordCountLabel: String { "\(wordCount) Words" }
-    var letterCountLabel: String { "\(letterCount) Letters" }
+    var wordCountLabel: String { String(localized: "\(wordCount) Words") }
+    var letterCountLabel: String { String(localized: "\(letterCount) Letters") }
+
+    /// The name a reader sees: the Arabic name in an Arabic interface (cleaned the way the surah rows
+    /// and the reader's title pill draw it), the transliteration otherwise. Display only: search,
+    /// sorting, aliases, stored records and the on-device model keep `nameTransliteration`.
+    var displayName: String {
+        AppLanguage.isArabicScript ? Self.arabicLabel(nameArabic) : nameTransliteration
+    }
+
+    /// An Arabic NAME used as a label: vowel marks follow the clean-Arabic setting, but the letters keep
+    /// their dots. Hide Arabic Dots is a way of reading the Quran's text, and a dotless name was unreadable.
+    static func arabicLabel(_ name: String) -> String {
+        Settings.shared.cleanArabicText ? name.removingArabicDiacriticsAndSigns : name
+    }
+
+    /// The English meaning drawn under or beside the name ("The Cow"), or nil in an Arabic interface,
+    /// where the Arabic name already says it.
+    var displayMeaning: String? {
+        AppLanguage.isArabicScript ? nil : nameEnglish
+    }
+
+    /// `displayName` for a surah known only by its number (a stored record), falling back to the
+    /// stored name when the number is out of range.
+    static func displayName(id: Int, stored: String) -> String {
+        guard AppLanguage.isArabicScript, let surah = QuranData.shared.surah(id) else { return stored }
+        return surah.displayName
+    }
 
     var pageCount: Int {
         if let n = numberOfPages, n > 0 { return n }
@@ -169,7 +196,7 @@ struct Surah: Codable, Identifiable, Equatable {
 
     func ayahCountLabel(for displayQiraah: String? = nil) -> String {
         let count = displayQiraah == nil ? numberOfAyahs : numberOfAyahs(for: displayQiraah)
-        return count == 1 ? "1 Ayah" : "\(count) Ayahs"
+        return count == 1 ? String(localized: "1 Ayah") : String(localized: "\(count) Ayahs")
     }
 
     /// Ayah count for the given qiraah (e.g. Baqarah has 286 in Hafs but 285 in Warsh). Use for display and range selection.
@@ -198,6 +225,7 @@ enum SurahPageLength {
 
     /// "¾ Page", "1 Page", "2⅓ Pages" ("¾ Pg", "2⅓ Pgs" short, for the watch).
     static func label(twelfths: Int, short: Bool = false) -> String {
+        if AppLanguage.isArabicScript { return arabicLabel(twelfths: twelfths) }
         let whole = twelfths / 12
         let part: String
         switch twelfths % 12 {
@@ -209,8 +237,37 @@ enum SurahPageLength {
         default: part = ""
         }
         let amount = whole == 0 && !part.isEmpty ? part : "\(whole)\(part)"
-        let unit = twelfths > 12 ? (short ? "Pgs" : "Pages") : (short ? "Pg" : "Page")
-        return "\(amount) \(unit)"
+        if twelfths > 12 {
+            return short ? String(localized: "\(amount) Pgs") : String(localized: "\(amount) Pages")
+        }
+        return short ? String(localized: "\(amount) Pg") : String(localized: "\(amount) Page")
+    }
+
+    /// The Arabic interface counts pages in words, the way Arabic says a length: "نصف صفحة",
+    /// "صفحتان وثلث", "٤٨ صفحة". A fraction glyph glued to Arabic-Indic digits, under one noun for
+    /// every count ("٢⅓ صفحة"), read as broken. The same on the watch, where it is no longer.
+    private static func arabicLabel(twelfths: Int) -> String {
+        let whole = twelfths / 12
+        let part = twelfths % 12
+        if whole == 0 {
+            switch part {
+            case 3: return String(localized: "a quarter of a page")
+            case 4: return String(localized: "a third of a page")
+            case 6: return String(localized: "half a page")
+            case 8: return String(localized: "two thirds of a page")
+            case 9: return String(localized: "three quarters of a page")
+            default: break
+            }
+        }
+        let pages = String(localized: "\(whole) pages")
+        switch part {
+        case 3: return String(localized: "\(pages) and a quarter")
+        case 4: return String(localized: "\(pages) and a third")
+        case 6: return String(localized: "\(pages) and a half")
+        case 8: return String(localized: "\(pages) and two thirds")
+        case 9: return String(localized: "\(pages) and three quarters")
+        default: return pages
+        }
     }
 
     // BEGIN GENERATED SURAH PAGE LENGTHS
@@ -437,7 +494,10 @@ struct Ayah: Codable, Identifiable, Equatable {
     /// Arabic to show in UI. For Fatiha ayah 1 with clean mode, if the ayah doesn’t start with بسم (e.g. ta'awwudh), shows Bismillah instead.
     /// - Parameter qiraahOverride: When non-nil, use this qiraah instead of Settings (e.g. comparison mode). Use "" for Hafs.
     /// - Parameter removeDots: Whether the dots go, with or without `clean`. Nil follows the app setting.
-    func displayArabicText(surahId: Int, clean: Bool, removeDots: Bool? = nil, qiraahOverride: String? = nil) -> String {
+    /// - Parameter waslSign: Which hamzat al-wasl notation shows (WaslSigns.swift). Nil follows the
+    ///   setting, resolved for this riwayah; the off-main page composer passes its snapshot.
+    func displayArabicText(surahId: Int, clean: Bool, removeDots: Bool? = nil, qiraahOverride: String? = nil,
+                           waslSign: Settings.WaslSignStyle? = nil) -> String {
         let qiraah: String? = if let override = qiraahOverride {
             (override.isEmpty || override == "Hafs") ? nil : override
         } else {
@@ -448,11 +508,13 @@ struct Ayah: Codable, Identifiable, Equatable {
         // stripping tashkeel + signs is exactly what exposes the shared Uthmani rasm across qiraat.
         let text = if qiraah == nil {
             clean ? textCleanArabic(for: qiraah, removeDots: removeDots)
-                  : vocalized(textArabic(for: qiraah, surahID: surahId), removeDots: removeDots)
+                  : vocalized(waslShaped(textArabic(for: qiraah, surahID: surahId), qiraah: nil, surahId: surahId, style: waslSign),
+                              removeDots: removeDots)
         } else if clean {
             textCleanArabic(for: qiraah, surahID: surahId, removeDots: removeDots)
         } else {
-            vocalized(Self.withoutSukoon(textArabic(for: qiraah, surahID: surahId)), removeDots: removeDots)
+            vocalized(waslShaped(Self.withoutSukoon(textArabic(for: qiraah, surahID: surahId)), qiraah: qiraah, surahId: surahId, style: waslSign),
+                      removeDots: removeDots)
         }
         // Al-Fatihah 1:1 in clean mode: only a ta'awwudh gives way to the basmala, tested on the RAW
         // text with the signs stripped (the composer's own check). "Does not start with بسم" also
@@ -472,7 +534,22 @@ struct Ayah: Codable, Identifiable, Equatable {
     /// letters, and a dotless ٮ is no longer the qalqalah ب. (`displayArabicText(clean: false)`
     /// follows Hide Dots since 2026-09-11, so it stopped meaning "raw" for the callers that used it so.)
     func rawArabicText(surahId: Int, qiraahOverride: String? = nil) -> String {
-        displayArabicText(surahId: surahId, clean: false, removeDots: false, qiraahOverride: qiraahOverride)
+        displayArabicText(surahId: surahId, clean: false, removeDots: false, qiraahOverride: qiraahOverride, waslSign: .print)
+    }
+
+    /// The hamzat al-wasl notation the reader asked for (`Settings.WaslSignStyle`), applied to one
+    /// ayah's vocalized text from the engine's per-word codes (WaslSigns.swift). Nothing is derived
+    /// here: the codes say which alef changes and what it carries. Hide Tashkeel never reaches this
+    /// (the stripped text has neither notation), and `rawArabicText` pins `.print`.
+    private func waslShaped(_ raw: String, qiraah: String?, surahId: Int, style: Settings.WaslSignStyle?) -> String {
+        let style = style ?? Settings.shared.waslSign(for: qiraah)
+        guard style != .print,
+              let codes = WaslSignStore.shared.codes(qiraah: qiraah, surah: surahId, ayah: id, style: style) else { return raw }
+        let key = ("W:" + codes + "|" + raw) as NSString
+        if let cached = CleanArabicTextCache.cache.object(forKey: key) { return cached as String }
+        let result = WaslSignTransform.apply(raw, codes: codes)
+        CleanArabicTextCache.cache.setObject(result as NSString, forKey: key)
+        return result
     }
 
     init(from decoder: Decoder) throws {
@@ -523,6 +600,128 @@ struct Ayah: Codable, Identifiable, Equatable {
     // (A `displayArabic(qiraah:clean:)` convenience used to live here. Deleted: it had no callers,
     // and with no `surahID` it could never serve beta-riwayat text - the silent-Hafs-fallback trap.
     // Use `displayArabicText(surahId:clean:qiraahOverride:)`.)
+}
+
+/// Where a face begins each glyph of a word. A glyph is drawn in the colour of its FIRST character only
+/// (CoreText keeps a ligature across colour-only attribute runs), so any colour on a later character of
+/// a ligature never shows: the painter reads this to put the colour where it can (see
+/// `TajweedStore.tinyMeemPaintRanges` and `paintWholeGlyphs`). Shaped once per word and face.
+enum FontGlyphs {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cache: [String: [Int]] = [:]
+    /// The Quran has about 18,000 distinct word forms; past this the cache just starts over.
+    private static let capacity = 40_000
+
+    /// The UTF-16 offsets in `word` where `fontName` starts a glyph, ascending. A face that does not
+    /// load answers every offset, so nothing counts as shared and the paint is left as it is.
+    static func starts(word: String, fontName: String) -> [Int] {
+        let key = fontName + "|" + word
+        lock.lock()
+        if let hit = cache[key] { lock.unlock(); return hit }
+        lock.unlock()
+
+        let length = word.utf16.count
+        var starts: [Int]
+        if let font = QuranFontCache.font(name: fontName, size: 40) {
+            var found = Set<Int>()
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: word, attributes: [.font: font]))
+            for run in (CTLineGetGlyphRuns(line) as? [CTRun]) ?? [] {
+                let count = CTRunGetGlyphCount(run)
+                var indices = [CFIndex](repeating: 0, count: count)
+                CTRunGetStringIndices(run, CFRange(location: 0, length: count), &indices)
+                indices.forEach { found.insert(Int($0)) }
+            }
+            starts = found.sorted()
+            if starts.first != 0 { starts.insert(0, at: 0) }
+        } else {
+            starts = Array(0..<length)
+        }
+        lock.lock()
+        if cache.count >= capacity { cache.removeAll(keepingCapacity: true) }
+        cache[key] = starts
+        lock.unlock()
+        return starts
+    }
+
+    /// Where a glyph's first character is plain (`painted` false) and every painted character inside it
+    /// has the same colour, the whole glyph takes that colour, so the rule shows on the glyph that carries
+    /// it. A glyph whose first character has a colour of its own, or that carries two, can show only one
+    /// and keeps the first. Words split on spaces; only a word with a plain character before a painted
+    /// one is shaped at all. A colour `staysOnItsLetters` names is never spread.
+    static func colourWholeGlyphs(_ attributed: NSMutableAttributedString, painted: [Bool], fontName: String,
+                                  staysOnItsLetters: (AnyObject) -> Bool = { _ in false }) {
+        let text = attributed.string as NSString
+        let length = text.length
+        guard painted.count == length else { return }
+        var wordStart = 0
+        for end in 0...length where end == length || text.character(at: end) == 0x20 {
+            defer { wordStart = end + 1 }
+            guard end - wordStart > 1 else { continue }
+            var sawPlain = false, plainThenPainted = false
+            for i in wordStart..<end {
+                if !painted[i] { sawPlain = true } else if sawPlain { plainThenPainted = true; break }
+            }
+            guard plainThenPainted else { continue }
+            let glyphStarts = starts(word: text.substring(with: NSRange(location: wordStart, length: end - wordStart)),
+                                     fontName: fontName)
+            for (k, start) in glyphStarts.enumerated() {
+                let glyphStart = wordStart + start
+                let glyphEnd = wordStart + (k + 1 < glyphStarts.count ? glyphStarts[k + 1] : end - wordStart)
+                guard glyphEnd - glyphStart > 1, !painted[glyphStart] else { continue }
+                var colour: AnyObject?
+                var mixed = false
+                for i in (glyphStart + 1)..<glyphEnd where painted[i] {
+                    guard let here = attributed.attribute(.foregroundColor, at: i, effectiveRange: nil) as AnyObject? else { continue }
+                    if let colour, !colour.isEqual(here) { mixed = true; break }
+                    colour = here
+                }
+                if let colour, !mixed, !staysOnItsLetters(colour) {
+                    attributed.addAttribute(.foregroundColor, value: colour,
+                                            range: NSRange(location: glyphStart, length: glyphEnd - glyphStart))
+                }
+            }
+        }
+    }
+
+    /// The sajdah overline (U+06E4, on the 26 words that call for the prostration) is drawn plain. The
+    /// face bakes most of those words, line included, into ONE glyph, and a glyph takes one colour, so a
+    /// coloured word drew a coloured line: خَرُّواْ heavy blue end to end, ٱسۡجُدۡ grey (Abu, 2026-10-28:
+    /// "just dont make the line colored ... keep it for now"). The glyph carrying the line goes plain; a
+    /// letter the face leaves outside it (the وَ of وَٱسۡجُدُواْ) keeps its colour.
+    static func plainSajdahLine(_ attributed: NSMutableAttributedString, fontName: String, plain: AnyObject) {
+        let text = attributed.string as NSString
+        let length = text.length
+        var wordStart = 0
+        for end in 0...length where end == length || text.character(at: end) == 0x20 {
+            defer { wordStart = end + 1 }
+            let lines = (wordStart..<end).filter { text.character(at: $0) == 0x06E4 }
+            guard !lines.isEmpty else { continue }
+            let glyphStarts = starts(word: text.substring(with: NSRange(location: wordStart, length: end - wordStart)),
+                                     fontName: fontName)
+            for line in lines {
+                let offset = line - wordStart
+                let start = glyphStarts.last { $0 <= offset } ?? offset
+                let next = glyphStarts.first { $0 > offset } ?? (end - wordStart)
+                attributed.addAttribute(.foregroundColor, value: plain,
+                                        range: NSRange(location: wordStart + start, length: next - start))
+            }
+        }
+    }
+
+    /// For each small iqlab meem (ۢ U+06E2, ۭ U+06ED) of `word`, by its UTF-16 offset, the offset of the
+    /// first character of the glyph that draws it: itself when the meem is a glyph of its own.
+    static func tinyMeemGlyphStarts(word: String, fontName: String) -> [Int: Int] {
+        let units = Array(word.utf16)
+        let meems = units.indices.filter { units[$0] == 0x06E2 || units[$0] == 0x06ED }
+        guard !meems.isEmpty else { return [:] }
+        let glyphStarts = starts(word: word, fontName: fontName)
+        var result: [Int: Int] = [:]
+        for meem in meems {
+            // The glyph holding the meem is the one that starts last at or before it.
+            result[meem] = glyphStarts.last { $0 <= meem } ?? meem
+        }
+        return result
+    }
 }
 
 final class TajweedStore {
@@ -692,10 +891,13 @@ final class TajweedStore {
 
     private func paintCacheKey(
         surah: Int, ayah: Int, text: String, requestedDisplayText: String?,
-        cleanDisplayText: Bool, beginnerSpacing: Bool, removeArabicDots: Bool, visibilitySignature: String
+        cleanDisplayText: Bool, beginnerSpacing: Bool, removeArabicDots: Bool, visibilitySignature: String,
+        waslSign: Settings.WaslSignStyle = .print
     ) -> NSString {
         let requestedDisplayDigest = requestedDisplayText.map(Self.stableTextDigest) ?? 0
-        return "\(surah):\(ayah):\(Self.stableTextDigest(text)):\(requestedDisplayDigest):\(cleanDisplayText ? 1 : 0):\(beginnerSpacing ? 1 : 0):\(removeArabicDots ? 1 : 0):\(visibilitySignature)" as NSString
+        // The face too: where a colour can go depends on which characters the face draws as one glyph
+        // (`tinyMeemPaintRanges`, `paintWholeGlyphs`).
+        return "\(surah):\(ayah):\(Self.stableTextDigest(text)):\(requestedDisplayDigest):\(cleanDisplayText ? 1 : 0):\(beginnerSpacing ? 1 : 0):\(removeArabicDots ? 1 : 0):\(waslSign.rawValue):\(visibilitySignature):\(drawingFontName)" as NSString
     }
 
     /// What the caches know about one ayah's paint, for a row that must not paint in its body.
@@ -724,14 +926,16 @@ final class TajweedStore {
         displayText requestedDisplayText: String? = nil,
         cleanDisplayText: Bool = false,
         beginnerSpacing: Bool = false,
-        removeArabicDots: Bool? = nil
+        removeArabicDots: Bool? = nil,
+        waslSign: Settings.WaslSignStyle? = nil
     ) -> CachedPaint? {
         // Hide Dots stands on its own (2026-09-11): it never waits for Hide Tashkeel.
         let shouldRemoveArabicDots = removeArabicDots ?? settings.removeArabicDots
+        let shouldWaslSign = waslSign ?? settings.waslSign(for: nil)
         let cacheKey = paintCacheKey(
             surah: surah, ayah: ayah, text: text, requestedDisplayText: requestedDisplayText,
             cleanDisplayText: cleanDisplayText, beginnerSpacing: beginnerSpacing,
-            removeArabicDots: shouldRemoveArabicDots, visibilitySignature: snapshotVisibility()
+            removeArabicDots: shouldRemoveArabicDots, visibilitySignature: snapshotVisibility(), waslSign: shouldWaslSign
         )
         if let cached = attributedCache.object(forKey: cacheKey) { return .painted(cached.value) }
         if unpaintedKeys.object(forKey: cacheKey) != nil { return .nothing }
@@ -751,14 +955,16 @@ final class TajweedStore {
         cleanDisplayText: Bool = false,
         beginnerSpacing: Bool = false,
         removeArabicDots: Bool? = nil,
+        waslSign: Settings.WaslSignStyle? = nil,
         completion: @escaping @MainActor () -> Void
     ) {
         // Hide Dots stands on its own (2026-09-11): it never waits for Hide Tashkeel.
         let shouldRemoveArabicDots = removeArabicDots ?? settings.removeArabicDots
+        let shouldWaslSign = waslSign ?? settings.waslSign(for: nil)
         let cacheKey = paintCacheKey(
             surah: surah, ayah: ayah, text: text, requestedDisplayText: requestedDisplayText,
             cleanDisplayText: cleanDisplayText, beginnerSpacing: beginnerSpacing,
-            removeArabicDots: shouldRemoveArabicDots, visibilitySignature: snapshotVisibility()
+            removeArabicDots: shouldRemoveArabicDots, visibilitySignature: snapshotVisibility(), waslSign: shouldWaslSign
         ) as String
         guard !inFlightPaintKeys.contains(cacheKey) else { return }
         inFlightPaintKeys.insert(cacheKey)
@@ -769,7 +975,7 @@ final class TajweedStore {
             _ = self.attributedText(
                 surah: surah, ayah: ayah, text: text, displayText: requestedDisplayText,
                 cleanDisplayText: cleanDisplayText, beginnerSpacing: beginnerSpacing,
-                removeArabicDots: shouldRemoveArabicDots
+                removeArabicDots: shouldRemoveArabicDots, waslSign: shouldWaslSign
             )
             await MainActor.run {
                 self.inFlightPaintKeys.remove(cacheKey)
@@ -785,7 +991,8 @@ final class TajweedStore {
         displayText requestedDisplayText: String? = nil,
         cleanDisplayText: Bool = false,
         beginnerSpacing: Bool = false,
-        removeArabicDots: Bool? = nil
+        removeArabicDots: Bool? = nil,
+        waslSign: Settings.WaslSignStyle? = nil
     ) -> AttributedString? {
         // The visibility is PART of the key now: toggling a legend category used to wipe all 1,800
         // entries; now it just misses, and toggling back finds the old entries still there.
@@ -793,6 +1000,7 @@ final class TajweedStore {
 
         // Hide Dots stands on its own (2026-09-11): it never waits for Hide Tashkeel.
         let shouldRemoveArabicDots = removeArabicDots ?? settings.removeArabicDots
+        let shouldWaslSign = waslSign ?? settings.waslSign(for: nil)
 
         // Key the cache on the INPUTS, not on the projected `displayText`. `displayText` is a pure function of
         // (text, requestedDisplayText, cleanDisplayText, beginnerSpacing, shouldRemoveArabicDots), so keying on
@@ -802,7 +1010,7 @@ final class TajweedStore {
         let cacheKey = paintCacheKey(
             surah: surah, ayah: ayah, text: text, requestedDisplayText: requestedDisplayText,
             cleanDisplayText: cleanDisplayText, beginnerSpacing: beginnerSpacing,
-            removeArabicDots: shouldRemoveArabicDots, visibilitySignature: visibilitySignature
+            removeArabicDots: shouldRemoveArabicDots, visibilitySignature: visibilitySignature, waslSign: shouldWaslSign
         )
         if let cached = attributedCache.object(forKey: cacheKey) {
             return cached.value
@@ -810,7 +1018,7 @@ final class TajweedStore {
         return paint(
             surah: surah, ayah: ayah, text: text, requestedDisplayText: requestedDisplayText,
             cleanDisplayText: cleanDisplayText, beginnerSpacing: beginnerSpacing,
-            removeArabicDots: shouldRemoveArabicDots, cacheKey: cacheKey, visibilitySignature: visibilitySignature
+            removeArabicDots: shouldRemoveArabicDots, waslSign: shouldWaslSign, cacheKey: cacheKey, visibilitySignature: visibilitySignature
         ).string
     }
 
@@ -824,17 +1032,23 @@ final class TajweedStore {
         cleanDisplayText: Bool,
         beginnerSpacing: Bool,
         removeArabicDots shouldRemoveArabicDots: Bool,
+        waslSign: Settings.WaslSignStyle = .print,
         cacheKey: NSString,
         visibilitySignature: String
     ) -> (string: AttributedString?, ops: [PaintOp]) {
+        // The hamzat al-wasl codes for THIS ayah of the Hafs text (this painter is Hafs-only): nil
+        // under Follow the Print and Saad, where the raw text already is the display text, and under
+        // Hide Tashkeel, which strips both notations.
+        let waslCodes = cleanDisplayText ? nil : WaslSignStore.shared.codes(qiraah: nil, surah: surah, ayah: ayah, style: waslSign)
         // Only now run the expensive projection + painting.
-        let projection = (requestedDisplayText != nil || cleanDisplayText || beginnerSpacing || shouldRemoveArabicDots)
+        let projection = (requestedDisplayText != nil || cleanDisplayText || beginnerSpacing || shouldRemoveArabicDots || waslCodes != nil)
             ? tajweedProjection(
                 from: text,
                 requestedDisplayText: requestedDisplayText,
                 cleanDisplayText: cleanDisplayText,
                 beginnerSpacing: beginnerSpacing,
-                removeArabicDots: shouldRemoveArabicDots
+                removeArabicDots: shouldRemoveArabicDots,
+                waslCodes: waslCodes
             )
             : nil
         let displayText = projection?.displayText ?? text
@@ -970,6 +1184,8 @@ final class TajweedStore {
             if settled { unpaintedKeys.setObject(NSNumber(value: true), forKey: cacheKey) }
             return (nil, ops)
         }
+        paintWholeGlyphs(attributed, priorities: priorityPerUTF16)
+        FontGlyphs.plainSajdahLine(attributed, fontName: drawingFontName, plain: platformLabelColor())
 
         let result = AttributedString(attributed)
         if settled { attributedCache.setObject(AttributedStringBox(result), forKey: cacheKey) }
@@ -1052,10 +1268,17 @@ final class TajweedStore {
         requestedDisplayText: String?,
         cleanDisplayText: Bool,
         beginnerSpacing: Bool,
-        removeArabicDots: Bool
+        removeArabicDots: Bool,
+        waslCodes: String? = nil
     ) -> TajweedProjection {
         var projectedScalars = String.UnicodeScalarView()
         projectedScalars.reserveCapacity(rawText.unicodeScalars.count * (beginnerSpacing ? 2 : 1))
+        // Hamzat al-wasl in the dot notation (WaslSigns.swift): one code per word, applied to the
+        // word's first U+0671 exactly as `displayArabicText` applies it, so the projected text stays
+        // byte-identical to the row's. Words are counted over the same U+0020 gaps the splice uses.
+        let codes: [Character] = waslCodes.map(Array.init) ?? []
+        var wordIndex = 0
+        var waslaSeenInWord = false
 
         let rawUTF16Count = rawText.utf16.count
         var rawUTF16ToDisplayRange = [Range<Int>?](repeating: nil, count: rawUTF16Count)
@@ -1077,7 +1300,20 @@ final class TajweedStore {
 
             for scalar in String(character).unicodeScalars {
                 let rawLength = utf16Length(of: scalar)
-                let outScalars = displayScalars(for: scalar, cleanDisplayText: cleanDisplayText, removeArabicDots: removeArabicDots)
+                let outScalars: [UnicodeScalar]
+                if scalar.value == 0x20 {
+                    wordIndex += 1
+                    waslaSeenInWord = false
+                    outScalars = displayScalars(for: scalar, cleanDisplayText: cleanDisplayText, removeArabicDots: removeArabicDots)
+                } else if scalar == WaslSignTransform.wasla, !cleanDisplayText, wordIndex < codes.count,
+                          let expansion = WaslSignTransform.expansion(forCode: codes[wordIndex]) {
+                    // the word's first wasla takes the join vowel and the start sign; a later one is bare
+                    let shaped = waslaSeenInWord ? [WaslSignTransform.alef] : expansion
+                    outScalars = removeArabicDots ? shaped.map { dotlessArabicScalar($0) } : shaped
+                    waslaSeenInWord = true
+                } else {
+                    outScalars = displayScalars(for: scalar, cleanDisplayText: cleanDisplayText, removeArabicDots: removeArabicDots)
+                }
                 if pendingBeginnerSpacer, !outScalars.isEmpty {
                     projectedScalars.append(" ")
                     displayUTF16Offset += 1
@@ -1291,8 +1527,8 @@ final class TajweedStore {
             )
 
             // Small high yeh (ۧ) sits on a tatweel (e.g. ـۧ in ٱلنَّبِيِّـۧنَ) and the font won't paint a
-            // foreground color onto the bare mark, so color the whole carrier cluster instead - the same
-            // "color the whole letter" approach used for the tiny iqlaab meem - so it's actually visible.
+            // foreground color onto the bare mark, so color the whole carrier cluster instead, so it's
+            // actually visible.
             for cluster in clusters where clusterHasSmallHighYehMaddMark(cluster) {
                 for range in smallHighYehMaddPaintRanges(in: cluster) {
                     appendPaintOpIfVisible(
@@ -2808,18 +3044,65 @@ final class TajweedStore {
         return !hasAnyTashkeel(clusters[index]) || clusters[index].contains(Self.smallHighUprightRectangularZero)
     }
 
-    private func tinyMeemPaintRanges(in cluster: CharacterClusterInfo) -> [NSRange] {
-        // Color the whole carrier letter (e.g. the ة in ةُۢ before baa), not just the small meem mark,
-        // so the iqlaab is actually visible on the letter.
+    /// A face draws some runs of characters as ONE glyph, and a glyph shows only its first character's
+    /// colour, so a rule painted on a later character of it never showed. A whole-Quran audit against
+    /// KFGQPC HAFS (2026-10-27) found 738 such characters: the madd of the alif inside every lam-alif
+    /// (لۡأٓ of ٱلۡأٓخِرَةِ, about 270 places), the alif of بِـَٔا (بِـَٔايَٰتِنَا, 119), and a handful of word bakes
+    /// (the dagger-alif forms, the sajdah words). Where the glyph's first character is plain and every
+    /// painted character inside it has the same colour, the whole glyph takes that colour, so the rule
+    /// shows on the glyph that carries it. A glyph whose first character has a rule of its own, or that
+    /// carries two different rules (رَٰءۡ 2:72, some sajdah words), can show only one and keeps the first.
+    private func paintWholeGlyphs(_ attributed: NSMutableAttributedString, priorities: [Int]) {
+        // The greys say "not pronounced": spread over a glyph they would silence letters that are read
+        // (the sajdah word سُجَّدٗاۤ 19:58 went grey from end to end), so they stay on their own letters.
+        // Lam shamsiyah too: its grey is the same "not pronounced", and with the other three greys
+        // recolored it would otherwise be the one grey left free to spread.
+        let silent = [TajweedLegendCategory.hamzatWaslSilent, .droppedLetter, .idghamBilaGhunnah, .lamShamsiyah]
+            .map { platformTajweedColor($0.color) }
+        FontGlyphs.colourWholeGlyphs(attributed, painted: priorities.map { $0 > 0 }, fontName: drawingFontName,
+                                     staysOnItsLetters: { colour in silent.contains { $0.isEqual(colour) } })
+    }
+
+    /// The face the Hafs text is actually drawn in: the reader's pick resolved through the script style
+    /// (Maghribi sets even Hafs in the Warsh face), the same choke point every renderer reads. Which
+    /// characters share a glyph is the face's to decide.
+    private var drawingFontName: String {
+        Settings.quranArabicFontName(selectedFontName: settings.fontArabic, qiraah: nil, style: settings.arabicScriptStyle)
+    }
+
+    /// The iqlab colour goes on the small meem itself, above (ۢ) or below (ۭ), and the letter carrying it
+    /// keeps its own rule (Abu, 2026-10-27: "it was just supposed to be bottom and top meem"). The whole
+    /// letter was painted from 4.4.0, which hid the weight of 33 raas (بَصِيرُۢ) and 14 isti'la letters.
+    ///
+    /// The paint follows the GLYPH, though, because KFGQPC HAFS draws only 412 of the 609 small meems as
+    /// a glyph of their own: 61 share one with the kasra over them (قِۭ, a `liga` ligature) and 136 are
+    /// baked into the letter itself (مُحِيطُۢ, كَافِرِۭ, the noon of أَنۢبِئۡهُم: 21 `calt` ligatures). A glyph
+    /// takes the colour of its FIRST character, so a meem-only paint left those with no visible iqlab at
+    /// all, which is why the whole letter was painted. Deleting the ligatures is no way out: rendered
+    /// without them the meem lands on the letter or its vowel in every one (checked 2026-10-27). So the
+    /// range runs from the start of the glyph that draws the meem: the meem alone, the kasra and meem, or
+    /// the whole letter where the font leaves no choice.
+    private func tinyMeemPaintRanges(clusters: [CharacterClusterInfo], index: Int) -> [NSRange] {
+        let cluster = clusters[index]
         guard clusterHasTinyMeemIqlaabMark(cluster) else { return [] }
-        // ... unless the letter is a noon or meem with shadda (صُمُّۢ بُكۡمٌ 2:18 and 2:171, مُطۡمَئِنُّۢ بِ
-        // 16:106: five sites), whose own ghunnah a whole-cluster iqlab hid until 2026-10-12. There the
-        // mark alone takes the iqlab colour and the letter keeps its ghunnah; the word card lists both.
-        if let base = cluster.primaryArabicLetter, base == "ن" || base == "م", hasShadda(cluster) {
-            let marks = [Self.smallHighMeem, Self.smallLowMeem].compactMap { scalarRange(in: cluster, scalar: $0) }
-            if !marks.isEmpty { return marks }
+        var first = index, last = index
+        while first > 0, !isWhitespaceOnly(clusters[first - 1]) { first -= 1 }
+        while last + 1 < clusters.count, !isWhitespaceOnly(clusters[last + 1]) { last += 1 }
+        let wordStart = clusters[first].utf16Range.lowerBound
+        let glyphStarts = FontGlyphs.tinyMeemGlyphStarts(word: clusters[first...last].map(\.text).joined(),
+                                                         fontName: drawingFontName)
+        var ranges: [NSRange] = []
+        var offset = cluster.utf16Range.lowerBound
+        for scalar in cluster.text.unicodeScalars {
+            let length = utf16Length(of: scalar)
+            if scalar == Self.smallHighMeem || scalar == Self.smallLowMeem {
+                // Never reach back past this letter, whatever the font did.
+                let start = max(wordStart + (glyphStarts[offset - wordStart] ?? offset - wordStart), cluster.utf16Range.lowerBound)
+                ranges.append(NSRange(location: start, length: offset + length - start))
+            }
+            offset += length
         }
-        return [nsRange(for: cluster)]
+        return ranges
     }
 
     private func clusterHasSmallHighYehMaddMark(_ cluster: CharacterClusterInfo) -> Bool {
@@ -2828,7 +3111,7 @@ final class TajweedStore {
 
     private func smallHighYehMaddPaintRanges(in cluster: CharacterClusterInfo) -> [NSRange] {
         // Color the whole carrier cluster (e.g. the ـۧ in ٱلنَّبِيِّـۧنَ), not just the bare small high yeh
-        // mark, so this miniature natural madd actually shows - same reasoning as `tinyMeemPaintRanges`.
+        // mark, so this miniature natural madd actually shows (the font will not colour the bare mark).
         guard clusterHasSmallHighYehMaddMark(cluster) else { return [] }
         return [nsRange(for: cluster)]
     }
@@ -2974,10 +3257,10 @@ final class TajweedStore {
         for idx in clusters.indices {
             let cluster = clusters[idx]
 
-            // Tiny high meem (ۢ): color only the mark. Tiny low meem (ۭ): color the full cluster.
+            // The small meem of iqlab, above (ۢ) or below (ۭ): only the glyph that draws it.
             if clusterHasTinyMeemIqlaabMark(cluster),
                !shouldSuppressTinyMeemIqlaab(clusters: clusters, index: idx) {
-                for range in tinyMeemPaintRanges(in: cluster) {
+                for range in tinyMeemPaintRanges(clusters: clusters, index: idx) {
                     appendPaintOpIfVisible(range: range, priority: PaintPriority.tinyMeemIqlaab, category: .iqlaab, into: &ops)
                 }
             }
@@ -3047,6 +3330,9 @@ final class TajweedStore {
 
             // Noon with no tashkeel: classify from the next Arabic letter (ignoring spaces).
             if base == "ن" && !hasAnyTashkeel(cluster) {
+                // A noon carrying the small meem (مِنۢ, 270 sites) is the iqlab the meem above already
+                // paints; painting the noon too coloured the whole letter.
+                if clusterHasTinyMeemIqlaabMark(cluster) { continue }
                 guard let nextIndex = nextArabicLetterClusterIndex(clusters: clusters, after: idx),
                       let nextBase = clusters[nextIndex].primaryArabicLetter else {
                     continue
@@ -3382,6 +3668,11 @@ final class TajweedStore {
         }
 
         if TajweedRules.alifFollowerLetters.contains(base), index > 0 {
+            // The alif under the small upright zero (U+06E0) is dropped in connected reading, and the four
+            // that end an ayah are left unpainted (`appendBareConsonantSilentPaintOps`). After a heavy raa
+            // it took the raa's weight instead: قَوَارِيرَا۠ (76:15) was the one alif in the Quran drawn heavy
+            // until 2026-10-28.
+            if clusters[index].contains(Self.smallHighUprightRectangularZero) { return false }
             if let previous = previousArabicLetterClusterIndex(clusters: clusters, before: index),
                hasFathatayn(clusters[previous]),
                isSilentFinalLetter(clusters: clusters, index: index) {
@@ -3433,16 +3724,23 @@ final class TajweedStore {
         guard clusters[index].primaryArabicLetter == "ر" else { return false }
         let current = clusters[index]
         if indexOfFinalPronouncedArabicLetterCluster(clusters: clusters) == index {
+            // A tanween fath is not stopped on a sukoon: it turns into the 'iwad alif and the raa keeps
+            // its fatha, so it is heavy whatever comes before it (سَعِيرًا 33:64, ذِكۡرٗا 18:70). The
+            // letter-before rule below is for a raa stopped on a sukoon. 131 ayah ends were painted
+            // light until 2026-10-27, 117 of them after a madd yaa.
+            if hasFathatayn(current) { return true }
             guard let previousIndex = previousPronouncedArabicLetterClusterIndex(clusters: clusters, before: index) else { return false }
             let previous = finalRaaVowelContextCluster(clusters: clusters, previousIndex: previousIndex)
             if hasKasraFamily(previous) { return false }
-            if previous.primaryArabicLetter == "و" {
-                return !hasAnyTashkeel(previous) || hasDammaFamily(previous)
-            }
-            if previous.primaryArabicLetter == "ا" || previous.primaryArabicLetter == "ى" {
+            // A vowelled letter decides by its vowel, a waw included: past the saakin taa of وَٱلۡوَتۡرِ
+            // (89:3) the waw is a consonant with a fatha, which the madd-waw test (a bare waw, or one
+            // with a damma) painted light until 2026-10-27.
+            if hasFathaFamily(previous) || hasDammaFamily(previous) { return true }
+            // A bare madd waw or alif is heavy (ٱلۡأُمُورُ, ٱلنَّارِ); a bare madd yaa is not (قَدِيرٞ).
+            if let base = previous.primaryArabicLetter, base == "و" || base == "ا" || base == "ى" {
                 return !hasAnyTashkeel(previous)
             }
-            return hasFathaFamily(previous) || hasDammaFamily(previous)
+            return false
         }
         if hasKasraFamily(current) { return false }
         if hasHeavyOpenVowel(current) { return true }
@@ -4354,6 +4652,14 @@ final class QuranData: ObservableObject {
             self.isVerseSearchReady = false
         }
 
+        #if DEBUG
+        // "-slowQuranLoad": hold the core load for 3 s, so a launch can be made to LOSE the race the
+        // page-mode auto-open ran against it (`QuranView.openMushafWhereLeftOff`, 2026-10-22). On
+        // the simulator the text lands in ~300 ms and that race was never visible without this.
+        if ProcessInfo.processInfo.arguments.contains("-slowQuranLoad") {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+        }
+        #endif
         // Off the load path: reclaim the disk the retired plist cache layer left behind.
         Task.detached(priority: .background) {
             Self.purgeLegacyDerivedCaches()

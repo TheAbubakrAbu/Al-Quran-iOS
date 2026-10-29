@@ -8,7 +8,11 @@ import SwiftUI
 // search.
 
 struct ThemeHighlightsView: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var islamSettings = IslamSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @ObservedObject private var quranData = QuranData.shared
     @ObservedObject private var themeHighlights = ThemeHighlights.shared
     @Environment(\.appearance) private var appearance
@@ -34,7 +38,7 @@ struct ThemeHighlightsView: View {
             }
             .themedListRowBackground()
         }
-        .applyConditionalListStyle(disableNowPlayingInset: true)
+        .applyConditionalListStyle()
         .compactListSectionSpacing()
         .navigationTitle("Highlight Themes")
         .navigationBarTitleDisplayMode(.inline)
@@ -55,7 +59,7 @@ struct ThemeHighlightsView: View {
                 get: { themeHighlights.allSectionsLit },
                 set: { on in
                     settings.hapticFeedback()
-                    withAnimation(.easeInOut) { themeHighlights.setAllSectionsLit(on) }
+                    themeHighlights.setAllSectionsLit(on)
                 }
             )) {
                 HStack(spacing: 12) {
@@ -64,8 +68,8 @@ struct ThemeHighlightsView: View {
                         Text("Highlight Every Passage")
                             .font(.subheadline.weight(.semibold))
                         Text(themeHighlights.allSectionsLit
-                             ? "All \(SurahSectionsStore.shared.allSections().count) passages, each in its meaning's color"
-                             : "Every surah, passage by passage, in the colors below")
+                             ? String(localized: "All \(SurahSectionsStore.shared.allSections().count) passages, each in its meaning's color")
+                             : String(localized: "Every surah, passage by passage, in the colors below"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -75,7 +79,6 @@ struct ThemeHighlightsView: View {
         } footer: {
             if SurahSectionsStore.isBundled {
                 Text("Passage outlines from Quranpedia. The colors follow the legend, matched from each passage's title, so a passage about the Day of Judgment reads orange wherever it falls.")
-                    .font(.caption)
             }
         }
     }
@@ -136,7 +139,7 @@ struct ThemeHighlightsView: View {
         // label lags the tap (memory "picker-no-animated-binding", Quality Guide G8).
         Picker(selection: $surahID) {
             ForEach(quranData.quran) { surah in
-                Text("\(surah.id). \(surah.nameTransliteration)").tag(surah.id)
+                Text("\(surah.id). \(surah.displayName)").tag(surah.id)
             }
         } label: {
             HStack(spacing: 12) {
@@ -145,7 +148,7 @@ struct ThemeHighlightsView: View {
                     Text("Surah")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(quranData.surah(surahID)?.nameTransliteration ?? "Surah \(surahID)")
+                    Text(quranData.surah(surahID)?.displayName ?? String(localized: "Surah \(surahID)"))
                         .font(.subheadline.weight(.semibold))
                         .foregroundColor(.primary)
                 }
@@ -200,7 +203,7 @@ struct ThemeHighlightsView: View {
                 Spacer(minLength: 8)
 
                 VStack(alignment: .trailing, spacing: 6) {
-                    Text("\(section.ayahCount) ayah\(section.ayahCount == 1 ? "" : "s")")
+                    Text(section.ayahCount == 1 ? String(localized: "\(section.ayahCount) ayah") : String(localized: "\(section.ayahCount) ayahs"))
                         .font(.caption2.weight(.semibold))
                         .foregroundColor(lit ? color.ink : .secondary)
                         .monospacedDigit()
@@ -239,16 +242,11 @@ struct ThemeHighlightsView: View {
     /// The themes lit from Browse by Theme, each in its meaning's colour, and the door to more of them.
     @ViewBuilder
     private var litThemesSection: some View {
-        Section(header: HStack {
-            Text("THEMES")
-            Spacer()
+        Section(header: SectionHeaderLine(String(localized: "THEMES")) {
             if !themeHighlights.lit.isEmpty {
-                Button("Put Out All") {
-                    settings.hapticFeedback()
+                SectionHeaderAction(String(localized: "Put Out All")) {
                     withAnimation(.easeInOut) { themeHighlights.clear() }
                 }
-                .font(.caption.weight(.semibold))
-                .foregroundColor(settings.accentColor.color)
             }
         }) {
             ForEach(themeHighlights.lit) { theme in
@@ -267,6 +265,7 @@ struct ThemeHighlightsView: View {
                     Text("\(theme.count)")
                         .font(.caption.weight(.semibold).monospacedDigit())
                         .foregroundStyle(.secondary)
+                        .hiddenInSimple(.sectionCounts)
                     Button {
                         settings.hapticFeedback()
                         withAnimation(.easeInOut) { themeHighlights.remove(theme.id) }
@@ -283,18 +282,11 @@ struct ThemeHighlightsView: View {
                 NavigationLink(destination: LazyDestination {
                     ThemesBrowseView { surahID, ayahID in openAyah(surah: surahID, ayah: ayahID) }
                 }) {
-                    HStack(spacing: 12) {
-                        AccentIconChip(systemImage: "square.grid.2x2.fill", size: 30)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Browse by Theme")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(.primary)
-                            Text(themeHighlights.lit.isEmpty ? "Light a subject across the whole Quran" : "Light more subjects")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 3)
+                    SettingsRowLabel(
+                        title: String(localized: "Browse by Theme"),
+                        systemImage: "square.grid.2x2.fill",
+                        subtitle: themeHighlights.lit.isEmpty ? String(localized: "Light a subject across the whole Quran") : String(localized: "Light more subjects")
+                    )
                 }
                 .tint(settings.accentColor.color)
             }

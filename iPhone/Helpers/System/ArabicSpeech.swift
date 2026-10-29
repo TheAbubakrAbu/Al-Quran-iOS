@@ -301,7 +301,9 @@ final class ArabicSpeech: NSObject, ObservableObject {
     /// why long duas sounded bad: the synthesizer flattens prosody across it and never pauses. Phrase
     /// utterances with a short post-utterance breath read far more naturally - and the diacritized
     /// Arabic the app already ships gives the voice its best shot at each one.
-    private static let phraseSeparators = CharacterSet(charactersIn: "،؛.…!؟?\n·")
+    /// Parentheses too: a narrator's aside in a dua row ("(أَوْ قَالَ: ...)", see
+    /// `WordRange.parenthesizingAsides`) is read as its own breath, the way a reader would.
+    private static let phraseSeparators = CharacterSet(charactersIn: "،؛.…!؟?\n·()")
 
     private static func phrases(of text: String) -> [String] {
         let parts = text.components(separatedBy: phraseSeparators)
@@ -497,7 +499,7 @@ struct ListenAllPill: View {
         if speech.isAvailable {
             HStack(spacing: 4) {
                 Image(systemName: speech.isSpeakingQueue ? "stop.fill" : "play.fill")
-                Text(speech.isSpeakingQueue ? "Stop" : "Listen All")
+                Text(speech.isSpeakingQueue ? String(localized: "Stop") : String(localized: "Listen All"))
             }
             .font(.caption.weight(.semibold))
             .foregroundColor(appearance.accent)
@@ -512,7 +514,7 @@ struct ListenAllPill: View {
                     speech.speakAll(texts)
                 }
             }
-            .accessibilityLabel(speech.isSpeakingQueue ? "Stop listening" : "Listen to every item in order")
+            .accessibilityLabel(speech.isSpeakingQueue ? String(localized: "Stop listening") : String(localized: "Listen to every item in order"))
         }
     }
 }

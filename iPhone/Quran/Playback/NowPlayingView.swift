@@ -2,7 +2,11 @@ import SwiftUI
 import AVFoundation
 
 struct NowPlayingView: View {
-    @ObservedObject var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     /// Actions and the `AVPlayer` only: not observed. Playback state comes from `nowPlaying`, which
     /// republishes once per turn instead of once per player write (see `NowPlayingState`).
     private let quranPlayer = QuranPlayer.shared
@@ -20,6 +24,16 @@ struct NowPlayingView: View {
     private let singleRow: Bool
 
     @State private var confirmClearQueue = false
+    /// The range sheet (`CustomRangeAyahsSheet`): every ayah of the playing custom range. Raised by a
+    /// tap on the title block's range line, or by "Range Ayahs" in the context menu.
+    @State private var showRangeAyahs = false
+    #if DEBUG
+    /// "-showRangeAyahsSheet": opens the range sheet 2 s after a custom range starts, for screenshot
+    /// runs (a tap cannot be scripted into a launch). Once, from the first bar that sees the range:
+    /// several bars are mounted at a time, one per tab's inset.
+    private static let debugRangeSheetWanted = ProcessInfo.processInfo.arguments.contains("-showRangeAyahsSheet")
+    private static var debugRangeSheetOpened = false
+    #endif
     /// What the big player's scrubber shows in place of the playhead, 0...1: the finger while it drags,
     /// then where its seek is headed until the seek lands (`PlaybackScrubber`). The elapsed time follows
     /// it. Nil while the bar follows the recitation.
@@ -127,6 +141,9 @@ struct NowPlayingView: View {
                 } message: {
                     Text("This removes all surahs you've queued up. This can't be undone.")
                 }
+                .sheet(isPresented: $showRangeAyahs) {
+                    CustomRangeAyahsSheet()
+                }
                 .cornerRadius(24)
                 .padding(.horizontal, 8)
                 // Always use the rounded-rectangle glass so the shape never morphs between a capsule and a
@@ -140,10 +157,18 @@ struct NowPlayingView: View {
                 // stop the bar fell back to EmptyView and vanished without fading. Capturing on appear fixes it.
                 .onAppear {
                     if let pc = playbackContext { retained.value = pc }
+                    #if DEBUG
+                    debugOpenRangeSheetIfWanted()
+                    #endif
                 }
                 .onChange(of: playbackContextKey) { _ in
                     if let pc = playbackContext { retained.value = pc }
                 }
+                #if DEBUG
+                .onChange(of: nowPlaying.isPlayingCustomRange) { _ in
+                    debugOpenRangeSheetIfWanted()
+                }
+                #endif
             )
         #else
         guard let playbackContext else {
@@ -300,7 +325,7 @@ struct NowPlayingView: View {
                 // playback while expanded, both showed the spinner over a page that was just there.
                 // Flexible everything: the labels shrink to their text, the spacers to nothing.
                 HStack(spacing: 8) {
-                    Text(total > 0 ? Self.formatMMSS(safeElapsed) : "")
+                    Text(total > 0 ? Self.formatMMSS(safeElapsed).localizedDigits : "")
                         .frame(minWidth: 0, idealWidth: 40, maxWidth: 40, alignment: .leading)
 
                     Spacer(minLength: 0)
@@ -311,7 +336,7 @@ struct NowPlayingView: View {
 
                     Spacer(minLength: 0)
 
-                    Text(total > 0 ? Self.formatMMSS(total) : "")
+                    Text(total > 0 ? Self.formatMMSS(total).localizedDigits : "")
                         .frame(minWidth: 0, idealWidth: 40, maxWidth: 40, alignment: .trailing)
                 }
                 .font(.caption2)
@@ -319,6 +344,9 @@ struct NowPlayingView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             }
+            // Media transport never mirrors: rewind stays left of play, the bar fills left to right,
+            // elapsed time on the left (the Arabic interface flipped all of it).
+            .environment(\.layoutDirection, .leftToRight)
             // The progress bar / times tick every 0.5s and on play/resume. Opt this subtree out of any
             // implicit animation inherited from the player card so the bar jumps to its position instead of
             // easing - otherwise resuming (and each tick) shows a weird sliding/lurching animation.
@@ -357,25 +385,45 @@ struct NowPlayingView: View {
         return String(format: "%02d:%02d", m, s)
     }
 
+    #if DEBUG
+    /// See `debugRangeSheetWanted`. The reader's bar only (`onOpenPlayback`): the Quran root's bar
+    /// mounts too, behind the pushed reader, and a sheet raised from a host that is not on screen
+    /// never presents (and the once-flag would then be spent on it).
+    private func debugOpenRangeSheetIfWanted() {
+        guard Self.debugRangeSheetWanted, !Self.debugRangeSheetOpened, onOpenPlayback != nil,
+              nowPlaying.isPlayingCustomRange else { return }
+        Self.debugRangeSheetOpened = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showRangeAyahs = true }
+    }
+    #endif
+
     /// A range set to repeat forever (`QuranPlayer.infiniteRepeat`): its counts are per pass.
     private var customRangeLoops: Bool {
         nowPlaying.customRangeRepeatSection == QuranPlayer.infiniteRepeat
     }
 
+    /// Whether the range repeats at all: each ayah more than once, or the section more than once
+    /// (forever included). Without repeats the counts line says nothing ("Ayah 1/1 · Section 1/1").
+    private var customRangeRepeats: Bool {
+        nowPlaying.customRangeRepeatPerAyah > 1 || nowPlaying.customRangeRepeatSection > 1
+    }
+
+    /// "Ayahs 1–10 · 3/30": the range, and which play of the whole run this is.
     private func customRangeLineOne(start: Int, end: Int) -> String {
         let current = nowPlaying.customRangeCurrentIndex ?? 1
         let section = customRangeLoops ? 1 : nowPlaying.customRangeRepeatSection
         let total = nowPlaying.customRangeTotalItems
             ?? max(1, (end - start + 1) * nowPlaying.customRangeRepeatPerAyah * section)
-        return "Ayahs \(start)-\(end) (\(current)/\(total))"
+        return String(localized: "Ayahs \(start)\u{2013}\(end) \u{00B7} \(current)/\(total)")
     }
 
+    /// "Ayah 1/3 · Section 1/∞": the repeat counts.
     private func customRangeLineTwo() -> String {
         let ayahProgress = nowPlaying.customRangeCurrentRepeatWithinAyah ?? 1
         let ayahTotal = max(1, nowPlaying.customRangeRepeatPerAyah)
         let sectionProgress = nowPlaying.customRangeRepeatSectionIndex ?? 1
         let sectionTotal = customRangeLoops ? "\u{221E}" : "\(max(1, nowPlaying.customRangeRepeatSection))"
-        return "Ayah \(ayahProgress)/\(ayahTotal) · Section \(sectionProgress)/\(sectionTotal)"
+        return String(localized: "Ayah \(ayahProgress)/\(ayahTotal) · Section \(sectionProgress)/\(sectionTotal.localizedDigits)")
     }
 
     /// For a custom range, keep the top title short (just "Name S:A") since the per-ayah/section detail
@@ -385,7 +433,7 @@ struct NowPlayingView: View {
            let surahNumber = nowPlaying.currentSurahNumber,
            let ayahNumber = nowPlaying.currentAyahNumber,
            let surah = quranPlayer.quranData.quran.first(where: { $0.id == surahNumber }) {
-            return "\(surah.nameTransliteration) \(surahNumber):\(ayahNumber)"
+            return "\(surah.displayName) \(surahNumber):\(ayahNumber)"
         }
         return nowPlaying.nowPlayingTitle
     }
@@ -458,6 +506,7 @@ struct NowPlayingView: View {
             HStack(spacing: 12) {
                 transportButtons(isPlaying: isPlaying)
             }
+            .environment(\.layoutDirection, .leftToRight)
             .font(.headline)
             .padding(.top, 2)
         }
@@ -494,6 +543,7 @@ struct NowPlayingView: View {
                 HStack(spacing: 14) {
                     transportButtons(isPlaying: isPlaying)
                 }
+                .environment(\.layoutDirection, .leftToRight)
             }
         }
         .padding(.vertical, 6)
@@ -521,6 +571,7 @@ struct NowPlayingView: View {
             HStack(spacing: 14) {
                 transportButtons(isPlaying: isPlaying)
             }
+            .environment(\.layoutDirection, .leftToRight)
             .fixedSize()
             // Clearance for the expand button, as on the small player.
             .padding(.trailing, 30)
@@ -543,7 +594,7 @@ struct NowPlayingView: View {
             let safeElapsed = scrubFraction.map { $0 * total } ?? playedElapsed
 
             HStack(spacing: 8) {
-                Text(total > 0 ? Self.formatMMSS(safeElapsed) : "")
+                Text(total > 0 ? Self.formatMMSS(safeElapsed).localizedDigits : "")
                     .frame(minWidth: 0, idealWidth: 40, maxWidth: 48, alignment: .trailing)
 
                 if total > 0 {
@@ -552,9 +603,11 @@ struct NowPlayingView: View {
                     TinyProgressBar(fraction: 0, color: settings.accentColor.color)
                 }
 
-                Text(total > 0 ? Self.formatMMSS(total) : "")
+                Text(total > 0 ? Self.formatMMSS(total).localizedDigits : "")
                     .frame(minWidth: 0, idealWidth: 40, maxWidth: 48, alignment: .leading)
             }
+            // A scrubber, like the transport beside it, never mirrors.
+            .environment(\.layoutDirection, .leftToRight)
             .font(.caption2)
             .monospacedDigit()
             .foregroundColor(.secondary)
@@ -579,6 +632,8 @@ struct NowPlayingView: View {
             HStack(spacing: 10) {
                 compactTransportButtons(isPlaying: isPlaying)
             }
+            // Media transport never mirrors (rewind left of play in every language).
+            .environment(\.layoutDirection, .leftToRight)
             // Clearance for the top-right expand button lives on the controls (not the row) so the row keeps
             // the SAME horizontal padding as the expanded player.
             .padding(.trailing, 30)
@@ -623,11 +678,13 @@ struct NowPlayingView: View {
 
     @ViewBuilder
     private func titleBlock(expanded: Bool) -> some View {
-        // Big player mirrors Control Center exactly (full title, with the custom-range ayah/section detail
-        // already inline). Small player uses the short title and breaks the detail out onto its own lines.
-        let titleText = expanded ? nowPlaying.nowPlayingTitle : displayTitle
-        if let title = titleText {
-            Text(title)
+        // The short "Name S:A" title in BOTH sizes. The big player used to mirror Control Center's full
+        // title, which for a range packs "(Ayah 1/3) (Sec 1/2)" into the bold headline over a caption
+        // reciter: the detail was the biggest thing on the card and the reciter the smallest (Abu,
+        // 2026-10-19: "reciter is small but the range is big"). The detail now sits under the reciter
+        // at the reciter's size, as the small player always drew it, and opens the range sheet.
+        if let title = displayTitle {
+            Text(title.localizedDigits)
                 .foregroundColor(.primary)
                 #if os(iOS)
                 .font(.headline.bold())
@@ -649,23 +706,54 @@ struct NowPlayingView: View {
                 #endif
         }
 
-        // Custom range: the "Ayahs X-Y (n/total)" line shows under the reciter in BOTH sizes; the
-        // per-ayah/section breakdown line is small-player only.
+        // Custom range: the "Ayahs 1–10 · 3/30" line under the reciter in BOTH sizes, opening the range
+        // sheet. The big player folds the repeat counts into it (it has the width); the small player
+        // keeps them on their own line, and only while something repeats.
         if nowPlaying.isPlayingCustomRange,
            let start = nowPlaying.customRangeStartAyah,
            let end = nowPlaying.customRangeEndAyah {
-            Text(customRangeLineOne(start: start, end: end))
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
+            let repeats = customRangeRepeats
+            let lineOne = customRangeLineOne(start: start, end: end)
+            rangeLine(expanded && repeats ? lineOne + " \u{00B7} " + customRangeLineTwo() : lineOne)
 
-            if !expanded {
+            if !expanded, repeats {
                 Text(customRangeLineTwo())
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
             }
         }
+    }
+
+    /// The range line, which opens the range sheet on iOS. A tap gesture, not a Button: the block sits
+    /// inside the bar's own NavigationLink / Button, where the transport icons already take their taps
+    /// the same way. The watch has no sheet, so there it is the plain caption.
+    @ViewBuilder
+    private func rangeLine(_ text: String) -> some View {
+        #if os(iOS)
+        HStack(spacing: 3) {
+            Text(text)
+            Image(systemName: "chevron.forward")
+                .font(.system(size: 8, weight: .bold))
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundColor(settings.accentColor.color)
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            settings.hapticFeedback()
+            showRangeAyahs = true
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Range ayahs, \(text)")
+        #else
+        Text(text)
+            .font(.caption2)
+            .foregroundColor(.secondary)
+            .lineLimit(1)
+        #endif
     }
 
     private var stopButton: some View {
@@ -718,7 +806,7 @@ struct NowPlayingView: View {
             quranPlayer.seek(by: seconds)
         } label: {
             Label(
-                seconds < 0 ? "Back 10 Seconds" : "Forward 10 Seconds",
+                seconds < 0 ? String(localized: "Back 10 Seconds").localizedDigits : String(localized: "Forward 10 Seconds").localizedDigits,
                 systemImage: seconds < 0 ? "gobackward.10" : "goforward.10"
             )
         }
@@ -739,6 +827,18 @@ struct NowPlayingView: View {
         }
 
         Divider()
+
+        // The range sheet's second door (the first is the range line on the card itself).
+        if nowPlaying.isPlayingCustomRange {
+            Button {
+                settings.hapticFeedback()
+                showRangeAyahs = true
+            } label: {
+                Label("Range Ayahs", systemImage: "list.number")
+            }
+
+            Divider()
+        }
 
         Button {
             settings.hapticFeedback()
@@ -788,14 +888,17 @@ struct NowPlayingView: View {
         #if os(iOS)
         // In a reader the play button is Stop while this bar is up, which takes Test Mode's usual home
         // (that button's menu) away until the recitation ends, so its rows ride here meanwhile. Only the
-        // readers supply `onOpenPlayback`.
+        // readers supply `onOpenPlayback`. Simple Mode trims them, and the divider above them, while Test
+        // Mode is off.
         if onOpenPlayback != nil {
-            Divider()
+            QuranTestModeMenuGate(settings: settings) {
+                Divider()
 
-            QuranTestModeMenuSection(
-                settings: settings,
-                available: !(settings.quranPageMode && settings.resolvedMushafPageLanguage.isPDF)
-            )
+                QuranTestModeMenuSection(
+                    settings: settings,
+                    available: !(settings.quranPageMode && settings.resolvedMushafPageLanguage.isPDF)
+                )
+            }
         }
         #endif
 
@@ -905,7 +1008,7 @@ struct PlaybackScrubber: View {
             .onDisappear { shownFraction = nil }
             .accessibilityElement()
             .accessibilityLabel("Playback Position")
-            .accessibilityValue(Self.spoken(shown * total) + " of " + Self.spoken(total))
+            .accessibilityValue(String(localized: "\(Self.spoken(shown * total)) of \(Self.spoken(total))"))
             .accessibilityAdjustableAction { direction in
                 let step: Double = direction == .increment ? 10 : -10
                 onSeek(min(total, max(0, shown * total + step))) {}

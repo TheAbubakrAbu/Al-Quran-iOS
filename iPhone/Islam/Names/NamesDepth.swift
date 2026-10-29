@@ -161,10 +161,11 @@ struct NameThemeChips: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                chip("All", id: nil)
+                chip(String(localized: "All"), id: nil)
                 // Nil until the pack has parsed off-main; `readiness` re-evaluates this row then.
                 ForEach(NamesDetailsStore.shared.themesIfLoaded ?? []) { theme in
-                    chip(theme.label, id: theme.id)
+                    // The pack's English label (the theme's id stays the filter): translated to show.
+                    chip(theme.label.localizedDisplay, id: theme.id)
                 }
             }
             .padding(.vertical, 2)
@@ -194,7 +195,9 @@ struct NameThemeChips: View {
 /// other names it goes by, and every verse that names it, the word tinted.
 struct NameDetailView: View {
     @Environment(\.appearance) private var appearance
+    #if HAS_QURAN
     @ObservedObject private var quranData = QuranData.shared
+    #endif
 
     let name: NameOfAllah
     /// True when presented as a sheet (the Names list's "More about this name"), which is the only
@@ -214,6 +217,7 @@ struct NameDetailView: View {
                     if !depth.explanation.isEmpty {
                         Section(header: Text("WHAT IT MEANS")) {
                             SelectableProse(text: depth.explanation)
+                                .leftToRightContent()
                                 .padding(.vertical, 2)
                         }
                     }
@@ -223,7 +227,7 @@ struct NameDetailView: View {
                         // `Text.islamText`, so Highlight Allah still paints it (the plain init reads
                         // markdown).
                         Section {
-                            ArticleCallout(paragraphs: [depth.living], title: "Living by It", systemImage: "figure.walk")
+                            ArticleCallout(paragraphs: [depth.living], title: String(localized: "Living by It"), systemImage: "figure.walk")
                                 .articleCardRow()
                         }
                     }
@@ -237,6 +241,7 @@ struct NameDetailView: View {
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
+                                    .leftToRightContent()
                             }
                             if !name.otherNames.isEmpty {
                                 FlowLayoutView(spacing: 6) {
@@ -269,7 +274,7 @@ struct NameDetailView: View {
     private var heroSection: some View {
         Section {
             VStack(spacing: 8) {
-                Text("\(name.number) of 99")
+                Text(String(localized: "\(name.number) of 99").localizedDigits)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
 
@@ -288,12 +293,13 @@ struct NameDetailView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                    .leftToRightContent()
 
                 if let depth {
                     HStack(spacing: 8) {
-                        chip(NamesDetailsStore.shared.themeLabel(depth.theme), systemImage: "square.grid.2x2")
+                        chip(NamesDetailsStore.shared.themeLabel(depth.theme).localizedDisplay, systemImage: "square.grid.2x2")
                         if !depth.root.isEmpty {
-                            chip("Root " + depth.root, systemImage: nil)
+                            chip(String(localized: "Root \(depth.root)"), systemImage: nil)
                         }
                     }
                     .padding(.top, 4)
@@ -328,23 +334,41 @@ struct NameDetailView: View {
     @ViewBuilder
     private var versesSection: some View {
         let verses = depth?.verses ?? []
-        Section(header: SectionPillHeader(title: "IN THE QURAN", count: verses.count)) {
+        Section(header: SectionPillHeader(title: String(localized: "IN THE QURAN"), count: verses.count)) {
             if verses.isEmpty {
                 Text("The Quran carries this attribute in other wordings rather than in this exact name.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
+                #if HAS_QURAN
                 ForEach(verses) { verse in
                     if let surah = quranData.surah(verse.surah),
                        let ayah = quranData.ayah(surah: verse.surah, ayah: verse.ayah) {
                         NavigationLink(destination: LazyDestination { SurahView(surah: surah, ayah: verse.ayah) }) {
                             WordOccurrenceRow(surah: surah, ayah: ayah, tokens: verse.tokens,
-                                              caption: verse.tokens.isEmpty ? "Named in another form here" : nil)
+                                              caption: verse.tokens.isEmpty ? String(localized: "Named in another form here") : nil)
                                 .equatable()
                         }
                     }
                 }
+                #else
+                // Without the Quran text (Al-Adhan) there is no verse to print or reader to open, so the
+                // names are cited by reference alone.
+                ForEach(verses) { verse in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Quran \("\(verse.surah):\(verse.ayah)".localizedDigits)")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(accent)
+                        if verse.tokens.isEmpty {
+                            Text("Named in another form here")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                #endif
             }
         }
     }

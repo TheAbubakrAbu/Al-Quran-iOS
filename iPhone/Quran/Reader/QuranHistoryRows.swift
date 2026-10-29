@@ -28,8 +28,8 @@ func formatHistoryTimestamp(_ date: Date) -> String {
     let calendar = Calendar.current
     let time = historyTimeFormatter.string(from: date)
 
-    if calendar.isDateInToday(date) { return "Today \(time)" }
-    if calendar.isDateInYesterday(date) { return "Yesterday \(time)" }
+    if calendar.isDateInToday(date) { return String(localized: "Today \(time)") }
+    if calendar.isDateInYesterday(date) { return String(localized: "Yesterday \(time)") }
 
     let daysAgo = calendar.dateComponents(
         [.day],
@@ -56,7 +56,7 @@ func formatCompactHistoryTimestamp(_ date: Date) -> String {
         to: calendar.startOfDay(for: Date())
     ).day ?? 0
 
-    if daysAgo > 0 && daysAgo < 7 { return "\(daysAgo)d" }
+    if daysAgo > 0 && daysAgo < 7 { return String(localized: "\(daysAgo)d") }
     return historyDayFormatter.string(from: date)
 }
 
@@ -86,7 +86,11 @@ func formatMMSS(_ seconds: Double) -> String {
 
 #if os(iOS)
 struct LastListenedSurahRow: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @ObservedObject private var quranData = QuranData.shared
     /// Actions only: not observed. Play state and the history lists publish on their own objects
     /// (see `NowPlayingState`), so an ayah advance no longer re-evaluates the summary tiles.
@@ -103,7 +107,6 @@ struct LastListenedSurahRow: View {
     @Binding var showListeningHistory: Bool
     var onSelectSurah: ((Int) -> Void)? = nil
 
-    @State private var confirmDeleteForever = false
 
     var body: some View {
         guard let surah = quranData.surah(lastListenedSurah.surahNumber)
@@ -112,7 +115,7 @@ struct LastListenedSurahRow: View {
         return AnyView(
             Section(header:
                 HStack {
-                    Text("LAST LISTENED SURAH")
+                    SectionIconHeader(String(localized: "LAST LISTENED SURAH"), icon: "headphones", accentTitle: true)
 
                     Spacer()
 
@@ -168,7 +171,7 @@ struct LastListenedSurahRow: View {
 
                         Spacer()
 
-                        Text("\(formatMMSS(lastListenedSurah.currentDuration)) / \(formatMMSS(lastListenedSurah.fullDuration))")
+                        Text("\(formatMMSS(lastListenedSurah.currentDuration).localizedDigits) / \(formatMMSS(lastListenedSurah.fullDuration).localizedDigits)")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                             .padding(.leading, 4)
@@ -186,26 +189,6 @@ struct LastListenedSurahRow: View {
                 }
                 .padding(.vertical, 8)
                 .contentShape(Rectangle())
-                // On this ONE row, not on the Section: a modifier on a Section inside a List is applied
-                // to each of its rows (this one and every history row), so one dialog became several
-                // presentation bridges bound to one Bool, UIKit refused every presentation after the
-                // first, and SwiftUI answered by resetting the Bool, which closed the dialog the first
-                // time it opened (2026-09-22; see `AskAISearchSection`). The context menu that raises
-                // it stays on the Section, so any row's "Delete Forever" still lands here.
-                #if os(iOS)
-                .confirmationDialog("Are you sure?", isPresented: $confirmDeleteForever, titleVisibility: .visible) {
-                    Button("Remove Permanently", role: .destructive) {
-                        settings.hapticFeedback()
-                        withAnimation {
-                            settings.lastListenedSurah = nil
-                            settings.saveLastListenedSurah = false
-                        }
-                    }
-                    Button("Cancel") {}
-                } message: {
-                    Text("You can re-enable Last Listened Surah later in Quran Settings.")
-                }
-                #endif
 
                 if showListeningHistory && !playbackHistory.listeningHistory.isEmpty {
                     ForEach(playbackHistory.listeningHistory) { item in
@@ -255,13 +238,6 @@ struct LastListenedSurahRow: View {
                     Label("Remove", systemImage: "minus.circle")
                 }
 
-                Button(role: .destructive) {
-                    settings.hapticFeedback()
-                    confirmDeleteForever = true
-                } label: {
-                    Label("Delete Forever", systemImage: "trash")
-                }
-
                 Divider()
 
                 Button {
@@ -303,7 +279,7 @@ struct LastListenedSurahRow: View {
 
     private func lastListenedTitleRow(surah: Surah) -> some View {
         HStack {
-            Text("Surah \(lastListenedSurah.surahNumber): \(lastListenedSurah.surahName)")
+            Text("Surah \(lastListenedSurah.surahNumber): \(lastListenedSurah.displaySurahName)")
                 .font(.title2.bold())
                 .foregroundColor(settings.accentColor.color)
                 .lineLimit(1)
@@ -311,7 +287,11 @@ struct LastListenedSurahRow: View {
 
             Spacer()
 
-            Menu {
+            ShortcutMenu(doubleTap: MenuShortcut(String(localized: "Play Last Listened")) {
+                settings.hapticFeedback()
+                quranPlayer.playSurah(surahNumber: lastListenedSurah.surahNumber,
+                                      surahName: lastListenedSurah.surahName, certainReciter: true)
+            }) {
                 Text("Last Listened")
                     .foregroundStyle(.secondary)
 
@@ -352,7 +332,7 @@ struct LastListenedSurahRow: View {
     private func listeningHistoryLabel(_ item: ListeningHistoryItem) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Surah \(item.surahNumber): \(item.surahName)")
+                Text("Surah \(item.surahNumber): \(item.displaySurahName)")
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(settings.accentColor.color.opacity(0.75))
                     .lineLimit(1)
@@ -366,7 +346,7 @@ struct LastListenedSurahRow: View {
 
                 // Where the user stopped, when the entry knows it (entries from older builds don't).
                 if let current = item.currentDuration, let full = item.fullDuration, full > 0 {
-                    Text("\(formatMMSS(current)) / \(formatMMSS(full))")
+                    Text("\(formatMMSS(current).localizedDigits) / \(formatMMSS(full).localizedDigits)")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
@@ -381,8 +361,11 @@ struct LastListenedSurahRow: View {
             #if os(iOS)
             // Play controls for the history entry: from the top, or - when the stopped position is known - 
             // picking up exactly where the user left off (the same resume path Last Listened uses).
-            Menu {
-                Text("Surah \(item.surahNumber): \(item.surahName)")
+            ShortcutMenu(doubleTap: MenuShortcut(String(localized: "Play from Beginning")) {
+                settings.hapticFeedback()
+                quranPlayer.playSurah(surahNumber: item.surahNumber, surahName: item.surahName)
+            }) {
+                Text("Surah \(item.surahNumber): \(item.displaySurahName)")
                     .foregroundStyle(.secondary)
 
                 if let current = item.currentDuration, item.fullDuration != nil, current > 1 {
@@ -392,7 +375,7 @@ struct LastListenedSurahRow: View {
                         // position, after filing the surah it displaces (`resumeHistoryItem`).
                         quranPlayer.resumeHistoryItem(item)
                     } label: {
-                        Label("Resume from \(formatMMSS(current))", systemImage: "play.fill")
+                        Label("Resume from \(formatMMSS(current).localizedDigits)", systemImage: "play.fill")
                     }
                 }
 
@@ -432,7 +415,10 @@ struct SummaryTileHeightKey: PreferenceKey {
 /// Compact summary-mode tile that previews a single ayah (Arabic / transliteration / English),
 /// each limited to one line - like a normal AyahRow but trimmed to fit a tile.
 struct SummaryAyahTile: View {
-    @ObservedObject var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     /// An iPad sidebar's half-width tile is about 120 pt: "Last Listened Ayah" needs its third line
     /// there, where two cut it to "Last Listen..." (2026-10-12).
     @Environment(\.isSidebarColumn) private var isSidebarColumn
@@ -452,7 +438,7 @@ struct SummaryAyahTile: View {
     let onTap: () -> Void
 
     /// e.g. "Al-Fatiha 1:5"
-    private var detail: String { "\(surah.nameTransliteration) \(surah.id):\(ayah.id)" }
+    private var detail: String { "\(surah.displayName) \(surah.id):\(ayah.id)" }
 
     private func arabicDisplayText() -> String {
         let text = ayah.displayArabicText(surahId: surah.id, clean: settings.cleanArabicText)
@@ -521,7 +507,7 @@ struct SummaryAyahTile: View {
                     }
                 }
 
-                Text(detail)
+                Text(detail.localizedDigits)
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(settings.accentColor.color)
                     .lineLimit(1)
@@ -566,6 +552,8 @@ struct SummaryAyahTile: View {
                 .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+                // Arabic keeps the right edge: in the Arabic interface `.trailing` is the left.
+                .environment(\.layoutDirection, .leftToRight)
             }
 
             if settings.showTransliteration, settings.isHafsDisplay {
@@ -574,6 +562,7 @@ struct SummaryAyahTile: View {
                     .foregroundColor(.primary)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .leftToRightContent()
             }
 
             if settings.showEnglishSaheeh, settings.isHafsDisplay {
@@ -582,12 +571,14 @@ struct SummaryAyahTile: View {
                     .foregroundColor(.primary)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .leftToRightContent()
             } else if settings.showEnglishMustafa, settings.isHafsDisplay {
                 Text(ayah.textEnglishMustafa)
                     .font(.caption)
                     .foregroundColor(.primary)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .leftToRightContent()
             }
         }
     }
@@ -596,7 +587,9 @@ struct SummaryAyahTile: View {
 /// Compact summary-mode tile for the last-listened surah. There is no ayah, so it shows the reciter,
 /// duration, a play button, and a tiny progress bar instead - sized to match the ayah tile beside it.
 struct SummarySurahTile: View {
-    @ObservedObject var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     /// A third title line in an iPad sidebar's half-width tile, as `SummaryAyahTile` ("Last Listened
     /// Surah" was "Last Listene..." there, 2026-10-12).
     @Environment(\.isSidebarColumn) private var isSidebarColumn
@@ -669,7 +662,7 @@ struct SummarySurahTile: View {
     }
 
     /// e.g. "1 - Al-Fatiha"
-    private var detail: String { "\(surah.id) - \(surah.nameTransliteration)" }
+    private var detail: String { "\(surah.id) - \(surah.displayName)" }
 
     var body: some View {
         Button {
@@ -706,7 +699,7 @@ struct SummarySurahTile: View {
                     }
                 }
 
-                Text(detail)
+                Text(detail.localizedDigits)
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(settings.accentColor.color)
                     .lineLimit(1)
@@ -733,7 +726,7 @@ struct SummarySurahTile: View {
                     }
 
                 HStack(spacing: 6) {
-                    Text("\(formatMMSS(lastListenedSurah.currentDuration)) / \(formatMMSS(lastListenedSurah.fullDuration))")
+                    Text("\(formatMMSS(lastListenedSurah.currentDuration).localizedDigits) / \(formatMMSS(lastListenedSurah.fullDuration).localizedDigits)")
                         .font(.caption2)
                         // The system secondary read 3.1:1 on this glass (see `secondaryOnGlass`).
                         .foregroundColor(.secondaryOnGlass)
@@ -742,7 +735,11 @@ struct SummarySurahTile: View {
 
                     Spacer()
 
-                    Menu {
+                    ShortcutMenu(doubleTap: MenuShortcut(String(localized: "Play Last Listened")) {
+                        settings.hapticFeedback()
+                        quranPlayer.playSurah(surahNumber: lastListenedSurah.surahNumber,
+                                              surahName: lastListenedSurah.surahName, certainReciter: true)
+                    }) {
                         Text("Last Listened")
                             .foregroundStyle(.secondary)
 
@@ -806,7 +803,10 @@ struct SummarySurahTile: View {
 #endif
 
 struct LastReadAyahRow: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     /// Actions only: not observed. Play state and the history lists publish on their own objects
     /// (see `NowPlayingState`), so an ayah advance no longer re-evaluates the summary tiles.
     private let quranPlayer = QuranPlayer.shared
@@ -874,7 +874,7 @@ struct LastReadAyahRow: View {
     var body: some View {
         Section(header:
             HStack {
-                SectionIconHeader("LAST READ AYAH", icon: "clock.arrow.circlepath")
+                SectionIconHeader(String(localized: "LAST READ AYAH"), icon: "clock.arrow.circlepath", accentTitle: true)
 
                 Spacer()
 
@@ -971,14 +971,16 @@ struct LastReadAyahRow: View {
                             bookmarkedSurah: surah.id,
                             bookmarkedAyah: ayah.id
                         )
+                        // No `lastRead:` here, as on the listening history's rows: that flag leads the
+                        // menu with Remove, which clears the LAST READ position, so holding an older
+                        // history entry and tapping Remove wiped the card above and kept the entry.
                         .ayahContextMenuModifier(
                             surah: surah.id,
                             ayah: ayah.id,
                             favoriteSurahs: favoriteSurahs,
                             bookmarkedAyahs: bookmarkedAyahs,
                             searchText: $searchText,
-                            scrollToSurahID: $scrollToSurahID,
-                            lastRead: true
+                            scrollToSurahID: $scrollToSurahID
                         )
                     }
                 }
@@ -990,7 +992,11 @@ struct LastReadAyahRow: View {
 #if os(iOS)
 /// The last individual ayah the user listened to (single ayah or custom range). Mirrors LastReadAyahRow.
 struct LastListenedAyahRow: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     /// Actions only: not observed. Play state and the history lists publish on their own objects
     /// (see `NowPlayingState`), so an ayah advance no longer re-evaluates the summary tiles.
     private let quranPlayer = QuranPlayer.shared
@@ -1008,7 +1014,6 @@ struct LastListenedAyahRow: View {
     @Binding var showAyahListeningHistory: Bool
     var onSelectAyah: ((Int, Int) -> Void)? = nil
 
-    @State private var confirmDeleteForever = false
 
     private var rowContent: some View {
         HStack(spacing: 8) {
@@ -1095,7 +1100,7 @@ struct LastListenedAyahRow: View {
     var body: some View {
         Section(header:
             HStack {
-                Text("LAST LISTENED AYAH")
+                SectionIconHeader(String(localized: "LAST LISTENED AYAH"), icon: "headphones", accentTitle: true)
 
                 Spacer()
 
@@ -1158,13 +1163,6 @@ struct LastListenedAyahRow: View {
                     Label("Remove", systemImage: "minus.circle")
                 }
 
-                Button(role: .destructive) {
-                    settings.hapticFeedback()
-                    confirmDeleteForever = true
-                } label: {
-                    Label("Delete Forever", systemImage: "trash")
-                }
-
                 Divider()
 
                 Button {
@@ -1181,18 +1179,6 @@ struct LastListenedAyahRow: View {
                     Label("Play From Ayah", systemImage: "play.circle.fill")
                 }
             }
-            .confirmationDialog("Are you sure?", isPresented: $confirmDeleteForever, titleVisibility: .visible) {
-                Button("Remove Permanently", role: .destructive) {
-                    settings.hapticFeedback()
-                    withAnimation {
-                        settings.lastListenedAyah = nil
-                        settings.saveLastListenedAyah = false
-                    }
-                }
-                Button("Cancel") {}
-            } message: {
-                Text("You can re-enable Last Listened Ayah later in Quran Settings.")
-            }
 
             if showAyahListeningHistory && !playbackHistory.ayahListeningHistory.isEmpty {
                 ForEach(playbackHistory.ayahListeningHistory) { item in
@@ -1205,7 +1191,10 @@ struct LastListenedAyahRow: View {
 
 /// The deterministic daily "Ayah of the Day" card shown at the top of the Quran tab.
 struct AyahOfTheDayRow: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     /// Actions only: not observed. Play state and the history lists publish on their own objects
     /// (see `NowPlayingState`), so an ayah advance no longer re-evaluates the summary tiles.
     private let quranPlayer = QuranPlayer.shared
@@ -1231,10 +1220,12 @@ struct AyahOfTheDayRow: View {
                     .arabicFontDesign(custom: settings.quranDisplayUsesCustomArabicFace)
                     .multilineTextAlignment(.trailing)
                     .frame(maxWidth: .infinity, alignment: .trailing)
+                    // Arabic keeps the right edge: in the Arabic interface `.trailing` is the left.
+                    .environment(\.layoutDirection, .leftToRight)
                     .lineSpacing(6)
             }
 
-            Text("Surah \(surah.id):\(ayah.id) · \(surah.nameTransliteration)")
+            Text("Surah \(surah.id):\(ayah.id) · \(surah.displayName)")
                 .font(.caption.weight(.semibold))
                 .foregroundColor(settings.accentColor.color)
 
@@ -1242,6 +1233,7 @@ struct AyahOfTheDayRow: View {
                 .font(.subheadline)
                 .foregroundColor(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .leftToRightContent()
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1251,11 +1243,8 @@ struct AyahOfTheDayRow: View {
 
     var body: some View {
         Section(header:
-            HStack(spacing: 6) {
-                Image(systemName: "sparkles")
-                Text("AYAH OF THE DAY")
-            }
-            .foregroundColor(settings.accentColor.color)
+            // Gray: the day's pick, not one of yours (`SectionIconHeader.accentTitle`'s rule).
+            SectionIconHeader(String(localized: "AYAH OF THE DAY"), icon: "sparkles")
         ) {
             Group {
                 if let onSelectAyah {
@@ -1319,7 +1308,11 @@ struct AyahOfTheDayRow: View {
 /// through `onOpen`, the tab's own `push(surahID:ayahID:)`, so a history row lands in the reader
 /// exactly like a bookmark does.
 struct QuranHistoryView: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @ObservedObject private var quranData = QuranData.shared
     @ObservedObject private var playbackHistory = QuranPlayer.shared.history
     @Environment(\.dismiss) private var dismiss
@@ -1357,16 +1350,16 @@ struct QuranHistoryView: View {
         List {
             Group {
                 // What the screen is, said once at the top rather than as a caption on the door that
-                // opens it (Abu, 2026-09-07).
+                // opens it (Abu, 2026-09-07). The article kit's lead card, as the Hadith tab's History
+                // opens (2026-10-26); it was a plain paragraph here.
                 Section {
-                    Text(verbatim: "Everything this tab remembers: the ayahs you read, what you listened to, the Ayah of the Day on earlier days, and your recent searches. Tap any of them to open it in the reader. It never leaves this device.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    ArticleLead(String(localized: "Everything this tab remembers: the ayahs you read, what you listened to, the Ayah of the Day on earlier days, and your recent searches. Tap any of them to open it in the reader. It never leaves this device."),
+                                eyebrow: String(localized: "IN SHORT"))
                 }
 
                 if reading.isEmpty, listenedAyahs.isEmpty, listenedSurahs.isEmpty, daily.isEmpty, searches.isEmpty {
                     Section {
-                        Text(verbatim: "Nothing yet. Read an ayah, play a surah or search, and it collects here.")
+                        Text(String(localized: "Nothing yet. Read an ayah, play a surah or search, and it collects here."))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -1495,7 +1488,7 @@ struct QuranHistoryView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
-                Text("\(surah.id) - \(surah.nameTransliteration)")
+                Text("\(surah.id) - \(surah.displayName)")
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(settings.accentColor.color)
 

@@ -15,6 +15,12 @@ import SwiftUI
 //
 // The answer never leaves the device. It is read in two places only: `StartHere` (the Islam tab's
 // guide) and the About You screen in Settings, which changes it.
+//
+// Since 2026-10-19 a new install meets it as the second page of the welcome (SplashScreen.swift,
+// `embedded`), with Skip in place of Not Now (Abu: "when it says not now replace that to skip and make
+// it skip just that screen"). Both steps carry Skip ("have each page option have a skip button"): on
+// the question it saves nothing, on the tailored page it keeps the answer and leaves the suggested
+// settings alone. Everyone who already had the app still meets the stage on its own.
 
 // MARK: - The answer
 
@@ -25,19 +31,19 @@ enum UserBackground: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .raised: return "Raised Muslim"
-        case .revert: return "Revert"
-        case .beginner: return "Just getting started"
-        case .exploring: return "Learning about Islam"
+        case .raised: return String(localized: "Raised Muslim")
+        case .revert: return String(localized: "Revert")
+        case .beginner: return String(localized: "Just getting started")
+        case .exploring: return String(localized: "Learning about Islam")
         }
     }
 
     var subtitle: String {
         switch self {
-        case .raised: return "I grew up with Islam."
-        case .revert: return "I embraced Islam."
-        case .beginner: return "I am new to practicing, or coming back to it."
-        case .exploring: return "I am not Muslim, and I would like to understand it."
+        case .raised: return String(localized: "I grew up with Islam.")
+        case .revert: return String(localized: "I embraced Islam.")
+        case .beginner: return String(localized: "I am new to practicing, or coming back to it.")
+        case .exploring: return String(localized: "I am not Muslim, and I would like to understand it.")
         }
     }
 
@@ -96,30 +102,30 @@ enum StartHere {
         switch background {
         case .exploring:
             return [
-                .init(id: "beliefs", title: "What Muslims believe", subtitle: "The Five Pillars and the Six Beliefs, with their sources",
+                .init(id: "beliefs", title: String(localized: "What Muslims believe"), subtitle: String(localized: "The Five Pillars and the Six Beliefs, with their sources"),
                       systemImage: "moon.stars", resource: "pillarsAndBasics"),
-                .init(id: "quran", title: "Read the Quran in English", subtitle: "Every ayah with its translation, and each surah's background",
+                .init(id: "quran", title: String(localized: "Read the Quran in English"), subtitle: String(localized: "Every ayah with its translation, and each surah's background"),
                       systemImage: "character.book.closed.ar", resource: nil),
-                .init(id: "miracles", title: "Why Muslims trust it", subtitle: "Signs in the Quran, in creation, science, and history",
+                .init(id: "miracles", title: String(localized: "Why Muslims trust it"), subtitle: String(localized: "Signs in the Quran, in creation, science, and history"),
                       systemImage: "sparkle.magnifyingglass", resource: "miraclesOfQuran"),
-                .init(id: "prophecies", title: "What the Prophet foretold", subtitle: "His prophecies, and what history did",
+                .init(id: "prophecies", title: String(localized: "What the Prophet foretold"), subtitle: String(localized: "His prophecies, and what history did"),
                       systemImage: "checkmark.seal", resource: "propheciesOfProphet"),
-                .init(id: "proving", title: "Is it true?", subtitle: "The complete case, one line of evidence at a time",
+                .init(id: "proving", title: String(localized: "Is it true?"), subtitle: String(localized: "The complete case, one line of evidence at a time"),
                       systemImage: "checkmark.shield", resource: "provingIslam"),
-                .init(id: "names", title: "Who Allah is", subtitle: "His 99 Names, each with its meaning",
+                .init(id: "names", title: String(localized: "Who Allah is"), subtitle: String(localized: "His 99 Names, each with its meaning"),
                       systemImage: "signature", resource: "namesOfAllah"),
             ]
         case .raised, .revert, .beginner:
             return [
-                .init(id: "beliefs", title: "The foundations", subtitle: "The Five Pillars and the Six Beliefs, with their sources",
+                .init(id: "beliefs", title: String(localized: "The foundations"), subtitle: String(localized: "The Five Pillars and the Six Beliefs, with their sources"),
                       systemImage: "moon.stars", resource: "pillarsAndBasics"),
-                .init(id: "guides", title: "Wudu and the prayer, step by step", subtitle: "How-To Guides for wudu, salah, Jumuah, and more",
+                .init(id: "guides", title: String(localized: "Wudu and the prayer, step by step"), subtitle: String(localized: "How-To Guides for wudu, salah, Jumuah, and more"),
                       systemImage: "list.bullet.rectangle", resource: "howToGuides"),
-                .init(id: "alphabet", title: "The Arabic letters", subtitle: "Every letter and mark, with their sounds",
+                .init(id: "alphabet", title: String(localized: "The Arabic letters"), subtitle: String(localized: "Every letter and mark, with their sounds"),
                       systemImage: "textformat.size.ar", resource: "arabicAlphabet"),
-                .init(id: "duas", title: "Duas for every day", subtitle: "Authenticated supplications with their sources",
+                .init(id: "duas", title: String(localized: "Duas for every day"), subtitle: String(localized: "Authenticated supplications with their sources"),
                       systemImage: "text.book.closed", resource: "commonDuas"),
-                .init(id: "quran", title: "Read the Quran with help", subtitle: "Translation, transliteration, and a word's meaning with two taps",
+                .init(id: "quran", title: String(localized: "Read the Quran with help"), subtitle: String(localized: "Translation, transliteration, and a word's meaning with two taps"),
                       systemImage: "character.book.closed.ar", resource: nil),
             ]
         }
@@ -143,7 +149,11 @@ enum StartHere {
 // MARK: - The welcome
 
 struct AboutYouView: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var adhanSettings = AdhanSettings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @Environment(\.colorScheme) private var systemColorScheme
     @Environment(\.dismiss) private var dismiss
 
@@ -154,6 +164,11 @@ struct AboutYouView: View {
     /// switched on ahead of time; anyone who already had the app sees their own settings as they are,
     /// and nothing changes unless they change it.
     var isNewInstall = false
+    /// True as a page of the welcome (SplashScreen.swift): the splash draws the backdrop and moves on
+    /// through `onFinished` when the question is answered or skipped; the stage's flag is still set, so
+    /// the standalone stage never follows.
+    var embedded = false
+    var onFinished: (() -> Void)? = nil
 
     @State private var choice: UserBackground?
     @State private var page = 0
@@ -168,7 +183,7 @@ struct AboutYouView: View {
 
     var body: some View {
         ZStack {
-            backdrop
+            if !embedded { backdrop }
 
             VStack(spacing: 0) {
                 ScrollView(showsIndicators: false) {
@@ -186,14 +201,14 @@ struct AboutYouView: View {
                     .frame(maxWidth: 560)
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 22)
-                    .padding(.top, presentedAsSheet ? 24 : 36)
+                    .padding(.top, presentedAsSheet ? 24 : (embedded ? 8 : 36))
                     .padding(.bottom, 16)
                 }
 
                 actions
                     .frame(maxWidth: 560)
                     .padding(.horizontal, 20)
-                    .padding(.bottom, 24)
+                    .padding(.bottom, embedded ? 16 : 24)
             }
         }
         .onAppear(perform: applyDebugArguments)
@@ -214,7 +229,7 @@ struct AboutYouView: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("\(AppIdentifiers.appName) shows you where to begin based on your answer. It stays on this \(deviceName), and you can change it in Settings.")
+                Text("\(AppIdentifiers.displayName) shows you where to begin based on your answer. It stays on this \(deviceName), and you can change it in Settings.")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -298,14 +313,14 @@ struct AboutYouView: View {
 
     private func intros(for background: UserBackground) -> [TabIntro] {
         let adhan = TabIntro(id: "adhan", systemImage: "safari.fill", tint: SettingsTint.prayer,
-                             title: "Adhan", text: adhanText(background))
+                             title: String(localized: "Adhan"), text: adhanText(background))
         let quran = TabIntro(id: "quran", systemImage: "character.book.closed.ar", tint: SettingsTint.quran,
-                             title: "Quran", text: quranText(background))
+                             title: String(localized: "Quran"), text: quranText(background))
         let hadith = TabIntro(id: "hadith", systemImage: "text.book.closed.fill", tint: SettingsTint.hadith,
-                              title: "Hadith", text: hadithText(background))
+                              title: String(localized: "Hadith"), text: hadithText(background))
         let islam = TabIntro(id: "islam", systemImage: "moon.stars.fill", tint: SettingsTint.islam,
                              secondaryTint: SettingsTint.islamSecondary,
-                             title: "Islam", text: islamText(background))
+                             title: String(localized: "Islam"), text: islamText(background))
         // Someone here to learn meets the two learning tabs first; everyone else, the tab bar's order.
         let ordered = background == .raised ? [adhan, quran, hadith, islam] : [islam, quran, adhan, hadith]
         return ordered.filter { Self.appTabs.contains($0.id) }
@@ -329,51 +344,51 @@ struct AboutYouView: View {
 
     private static var tabCountPhrase: String {
         switch appTabs.count {
-        case 4: return "Four tabs"
-        case 3: return "Three tabs"
-        default: return "Two tabs"
+        case 4: return String(localized: "Four tabs")
+        case 3: return String(localized: "Three tabs")
+        default: return String(localized: "Two tabs")
         }
     }
 
     private func islamText(_ background: UserBackground) -> String {
         switch background {
         case .raised:
-            return "Duas and dhikr, a tasbih, the 99 Names, zakah and inheritance calculators, a tajweed course, and a journal."
+            return String(localized: "Duas and dhikr, a tasbih, the 99 Names, zakah and inheritance calculators, a tajweed course, and a journal.")
         case .revert, .beginner:
-            return "Begin with Start Here, at the top of the Islam tab: the pillars, wudu and the prayer step by step, the Arabic letters, and the duas of every day."
+            return String(localized: "Begin with Start Here, at the top of the Islam tab: the pillars, wudu and the prayer step by step, the Arabic letters, and the duas of every day.")
         case .exploring:
-            return "Begin with Start Here, at the top of the Islam tab: what Muslims believe, in plain English, with the sources for every claim."
+            return String(localized: "Begin with Start Here, at the top of the Islam tab: what Muslims believe, in plain English, with the sources for every claim.")
         }
     }
 
     private func quranText(_ background: UserBackground) -> String {
         switch background {
         case .raised:
-            return "Tajweed colors you can change, the riwayat side by side, tafsir, and a word's meaning and root with two taps."
+            return String(localized: "Tajweed colors you can change, the riwayat side by side, tafsir, and a word's meaning and root with two taps.")
         case .revert, .beginner:
-            return "Read with a translation and a transliteration, tap a word twice for its meaning, and listen ayah by ayah."
+            return String(localized: "Read with a translation and a transliteration, tap a word twice for its meaning, and listen ayah by ayah.")
         case .exploring:
-            return "Every ayah with its English translation, tafsir to explain it, and About this Surah for each surah's background."
+            return String(localized: "Every ayah with its English translation, tafsir to explain it, and About this Surah for each surah's background.")
         }
     }
 
     private func adhanText(_ background: UserBackground) -> String {
         switch background {
         case .raised:
-            return "Prayer times, the qibla, and a tracker for the five. Nagging Mode asks \u{201C}Did you pray?\u{201D} until you answer."
+            return String(localized: "Prayer times, the qibla, and a tracker for the five. Nagging Mode asks \u{201C}Did you pray?\u{201D} until you answer.")
         case .revert, .beginner:
-            return "The five prayer times for where you are, the direction of the qibla, and a tracker to build the habit a day at a time."
+            return String(localized: "The five prayer times for where you are, the direction of the qibla, and a tracker to build the habit a day at a time.")
         case .exploring:
-            return "The five daily prayer times for where you are: the rhythm of a Muslim's day. Their notifications can be switched off below."
+            return String(localized: "The five daily prayer times for where you are: the rhythm of a Muslim's day. Their notifications can be switched off below.")
         }
     }
 
     private func hadithText(_ background: UserBackground) -> String {
         switch background {
         case .raised:
-            return "Seventeen collections with their grades, searched by reference, by word, or by meaning."
+            return String(localized: "Seventeen collections with their grades, searched by reference, by word, or by meaning.")
         case .revert, .beginner, .exploring:
-            return "What the Prophet, peace be upon him, said and did: seventeen collections, searchable in plain English."
+            return String(localized: "What the Prophet, peace be upon him, said and did: seventeen collections, searchable in plain English.")
         }
     }
 
@@ -381,7 +396,7 @@ struct AboutYouView: View {
         let background = choice ?? .raised
         return VStack(spacing: 18) {
             VStack(spacing: 8) {
-                Text(background == .exploring ? "Welcome" : "Ahlan wa sahlan")
+                Text(background == .exploring ? String(localized: "Welcome") : String(localized: "Ahlan wa sahlan"))
                     .font(.title.bold())
                     .multilineTextAlignment(.center)
 
@@ -435,19 +450,19 @@ struct AboutYouView: View {
                 .foregroundColor(.secondary)
 
             #if HAS_QURAN
-            suggestionToggle("Transliteration under the Arabic",
-                             "The Quran in Latin letters beneath each ayah, for reading along before you know the script.",
+            suggestionToggle(String(localized: "Transliteration under the Arabic"),
+                             String(localized: "The Quran in Latin letters beneath each ayah, for reading along before you know the script."),
                              isOn: $transliteration)
             #endif
 
             #if HAS_ADHAN
-            suggestionToggle("What each prayer's name means",
-                             "Notifications that read \u{201C}Time for Maghrib (sunset)\u{201D}.",
+            suggestionToggle(String(localized: "What each prayer's name means"),
+                             String(localized: "Notifications that read \u{201C}Time for Maghrib (sunset)\u{201D}."),
                              isOn: $englishMeanings)
 
             if background == .exploring {
-                suggestionToggle("Prayer-time notifications",
-                                 "Off if you are only here to read. You can bring them back in Settings.",
+                suggestionToggle(String(localized: "Prayer-time notifications"),
+                                 String(localized: "Off if you are only here to read. You can bring them back in Settings."),
                                  isOn: $prayerNotifications)
             }
             #endif
@@ -462,67 +477,44 @@ struct AboutYouView: View {
     }
 
     private func suggestionToggle(_ title: String, _ detail: String, isOn: Binding<Bool>) -> some View {
-        Toggle(isOn: isOn.animation(.easeInOut)) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-
-                Text(detail)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .tint(accent)
-        .onChange(of: isOn.wrappedValue) { _ in settings.hapticFeedback() }
+        SettingsToggle(title, caption: detail, isOn: isOn)
     }
 
     // MARK: Actions
 
+    /// Continue (then Get Started or Start Learning) with Skip under it, and Back beside Skip on the
+    /// tailored page. The welcome's bar (WelcomePages.swift), so every page of it ends the same way.
     private var actions: some View {
-        VStack(spacing: 10) {
-            Button {
-                settings.hapticFeedback()
+        WelcomeActionBar(
+            primaryTitle: primaryTitle,
+            primaryEnabled: choice != nil,
+            primaryAction: {
                 if page == 0 {
                     seedSuggestions()
                     withAnimation(.easeInOut(duration: 0.3)) { page = 1 }
                 } else {
                     finish(saving: true)
                 }
-            } label: {
-                Text(primaryTitle)
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-            }
-            .conditionalGlassEffect(rectangle: true, useColor: 0.38, customTint: AppIdentifiers.mainColor.color)
-            .disabled(choice == nil)
-            .opacity(choice == nil ? 0.5 : 1)
-
-            Button {
-                settings.hapticFeedback()
+            },
+            secondaryTitle: String(localized: "Skip"),
+            secondaryIdentifier: "welcomeSkip",
+            secondaryAction: {
                 if page == 0 {
                     finish(saving: false)
                 } else {
-                    withAnimation(.easeInOut(duration: 0.3)) { page = 0 }
+                    finish(saving: true, applyingSuggestions: false)
                 }
-            } label: {
-                Text(page == 0 ? "Not Now" : "Back")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundColor(.secondary)
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 16)
-                    .contentShape(Rectangle())
+            },
+            backAction: page == 0 ? nil : {
+                withAnimation(.easeInOut(duration: 0.3)) { page = 0 }
             }
-            .buttonStyle(.plain)
-        }
+        )
     }
 
     private var primaryTitle: String {
-        guard page == 1 else { return "Continue" }
-        if presentedAsSheet { return "Done" }
-        return choice?.landsOnIslamTab == true ? "Start Learning" : "Get Started"
+        guard page == 1 else { return String(localized: "Continue") }
+        if presentedAsSheet { return String(localized: "Done") }
+        return choice?.landsOnIslamTab == true ? String(localized: "Start Learning") : String(localized: "Get Started")
     }
 
     /// The suggestions open on the reader's OWN settings. A new install has none worth keeping, so
@@ -540,11 +532,14 @@ struct AboutYouView: View {
         #endif
     }
 
-    private func finish(saving: Bool) {
+    /// `applyingSuggestions` false is Skip on the tailored page: the answer is kept, the page's toggles
+    /// and its jump to the Islam tab are not.
+    private func finish(saving: Bool, applyingSuggestions: Bool = true) {
         if saving, let choice {
             settings.userBackground = choice
             if choice.wantsStartHere { settings.startHereHidden = false }
-
+        }
+        if saving, applyingSuggestions, let choice {
             if choice != .raised {
                 #if HAS_QURAN
                 if transliteration != settings.showTransliteration { settings.showTransliteration = transliteration }
@@ -569,13 +564,19 @@ struct AboutYouView: View {
             dismiss()
             return
         }
-        // Ends the root stage: `RootAppearance` sees the version and the cover fades away.
-        withAnimation {
+        if embedded {
+            // A page of the welcome: the splash moves on, and the standalone stage never follows.
             settings.aboutYouVersionSeen = Settings.aboutYouCurrentVersion
+        } else {
+            // Ends the root stage: `RootAppearance` sees the version and the cover fades away.
+            withAnimation {
+                settings.aboutYouVersionSeen = Settings.aboutYouCurrentVersion
+            }
         }
-        if saving, choice?.landsOnIslamTab == true {
+        if saving, applyingSuggestions, choice?.landsOnIslamTab == true {
             AppNavigation.shared.openIslam(.tab)
         }
+        onFinished?()
     }
 
     // MARK: Backdrop
@@ -621,14 +622,16 @@ struct AboutYouView: View {
 
 /// The answer, changeable: a row of the Settings tab, under Your Progress.
 struct AboutYouSettingsView: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @State private var showWelcome = false
 
     var body: some View {
         List {
             Group {
                 Section(header: Text("WHICH DESCRIBES YOU BEST"),
-                        footer: Text("This stays on your device. It decides only what \(AppIdentifiers.appName) suggests, such as the Start Here guide on the Islam tab. Nothing in the app is locked or hidden by it.")) {
+                        footer: Text("This stays on your device. It decides only what \(AppIdentifiers.displayName) suggests, such as the Start Here guide on the Islam tab. Nothing in the app is locked or hidden by it.")) {
                     ForEach(UserBackground.allCases) { option in
                         choiceRow(title: option.title, subtitle: option.subtitle, systemImage: option.systemImage,
                                   selected: settings.userBackground == option) {
@@ -637,44 +640,35 @@ struct AboutYouSettingsView: View {
                         }
                     }
 
-                    choiceRow(title: "Prefer not to say", subtitle: "No suggestions are tailored.", systemImage: "hand.raised.fill",
+                    choiceRow(title: String(localized: "Prefer not to say"), subtitle: String(localized: "No suggestions are tailored."), systemImage: "hand.raised.fill",
                               selected: settings.userBackground == nil) {
                         settings.userBackground = nil
                     }
                 }
 
                 if settings.userBackground?.wantsStartHere == true {
-                    Section {
-                        VStack(alignment: .leading) {
-                            // Was "Start Here on the Islam Tab", which reads as "start the app on
-                            // the Islam tab" (Abu read it that way himself, 2026-09-21). It shows a
-                            // guide; the opening tab is Appearance > Look and Feel's picker, which
-                            // is its only home now (Abu, 2026-09-25: "remove open the app on in
-                            // about you, only keep that for the looks one").
-                            Toggle("Show the Start Here Guide", isOn: Binding(
-                                get: { !settings.startHereHidden },
-                                set: { newValue in withAnimation(.easeInOut) { settings.startHereHidden = !newValue } }
-                            ))
-                            .font(.subheadline)
-                            .tint(settings.accentColor.color)
-                            .onChange(of: settings.startHereHidden) { _ in settings.hapticFeedback() }
-
-                            Text("A short guided path shown at the top of the Islam tab. It ticks off each step as you open it. This does not change which tab the app opens on.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .padding(.vertical, 2)
-                        }
+                    Section(header: Text("START HERE")) {
+                        // Was "Start Here on the Islam Tab", which reads as "start the app on
+                        // the Islam tab" (Abu read it that way himself, 2026-09-21). It shows a
+                        // guide; the opening tab is Appearance > Look and Feel's picker, which
+                        // is its only home now (Abu, 2026-09-25: "remove open the app on in
+                        // about you, only keep that for the looks one"). The settings switch
+                        // (haptic, flagged page animation) like every other switch in Settings.
+                        SettingsToggle(String(localized: "Show the Start Here Guide"),
+                                       caption: String(localized: "A short guided path shown at the top of the Islam tab. It ticks off each step as you open it. This does not change which tab the app opens on."),
+                                       isOn: Binding(
+                                           get: { !settings.startHereHidden },
+                                           set: { settings.startHereHidden = !$0 }
+                                       ))
                     }
                 }
 
-                Section {
+                Section(header: Text("WELCOME")) {
                     Button {
                         settings.hapticFeedback()
                         showWelcome = true
                     } label: {
                         Label("Replay the Welcome Tutorial", systemImage: "arrow.counterclockwise")
-                            .font(.subheadline)
                     }
                     .tint(settings.accentColor.color)
                 }
@@ -684,12 +678,11 @@ struct AboutYouSettingsView: View {
         .applyConditionalListStyle()
         .navigationTitle("About You")
         .sheet(isPresented: $showWelcome) {
-            NavigationView {
+            SheetNavigationContainer {
                 AboutYouView(presentedAsSheet: true)
                     .navigationBarTitleDisplayMode(.inline)
                     .sheetDismissToolbar()
             }
-            .navigationViewStyle(.stack)
         }
     }
 
@@ -732,17 +725,17 @@ struct AboutYouSettingsView: View {
 /// own two colors (Abu, 2026-09-20: "allow me to change my tutorial somewhere in settings"; the
 /// guide it switches on lives on the Islam tab, so that is where he looked). One screen, two doors.
 struct AboutYouSettingsRow: View {
-    @ObservedObject private var settings = Settings.shared
-
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
     var tint: Color? = nil
     var secondaryTint: Color? = nil
 
     var body: some View {
         NavigationLink(destination: LazyDestination { AboutYouSettingsView() }) {
-            SettingsRowLabel(title: "About You", systemImage: "person.crop.circle.fill",
+            SettingsRowLabel(title: String(localized: "About You"), systemImage: "person.crop.circle.fill",
                              // Short on purpose: this column outranks the value, and a longer caption squeezed the
                              // answer beside it ("Just getting started") down to a single dot.
-                             subtitle: "Start Here, welcome tutorial",
+                             subtitle: String(localized: "Start Here, welcome tutorial"),
                              tint: tint, secondaryTint: secondaryTint,
                              value: settings.userBackground?.title)
         }

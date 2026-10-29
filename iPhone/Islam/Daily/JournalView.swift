@@ -19,13 +19,13 @@ enum JournalKind: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .note: return "Note"
-        case .lecture: return "Lecture"
-        case .khutbah: return "Khutbah"
-        case .classNotes: return "Class"
-        case .study: return "Study"
-        case .reflection: return "Reflection"
-        case .dua: return "Dua"
+        case .note: return String(localized: "Note")
+        case .lecture: return String(localized: "Lecture")
+        case .khutbah: return String(localized: "Khutbah")
+        case .classNotes: return String(localized: "Class")
+        case .study: return String(localized: "Study")
+        case .reflection: return String(localized: "Reflection")
+        case .dua: return String(localized: "Dua")
         }
     }
 
@@ -43,13 +43,26 @@ enum JournalKind: String, Codable, CaseIterable, Identifiable {
 
     var placeholder: String {
         switch self {
-        case .note: return "Write it down before it slips away..."
-        case .lecture: return "What was said, and what you want to keep from it..."
-        case .khutbah: return "What the khutbah argued, and what to act on..."
-        case .classNotes: return "What was taught, the evidences, your questions..."
-        case .study: return "What you studied today, and what it opened up..."
-        case .reflection: return "What stayed with you, and why..."
-        case .dua: return "What you are asking Allah for..."
+        case .note: return String(localized: "Write it down before it slips away...")
+        case .lecture: return String(localized: "What was said, and what you want to keep from it...")
+        case .khutbah: return String(localized: "What the khutbah argued, and what to act on...")
+        case .classNotes: return String(localized: "What was taught, the evidences, your questions...")
+        case .study: return String(localized: "What you studied today, and what it opened up...")
+        case .reflection: return String(localized: "What stayed with you, and why...")
+        case .dua: return String(localized: "What you are asking Allah for...")
+        }
+    }
+
+    /// The headline of an entry with nothing to take one from.
+    var untitled: String {
+        switch self {
+        case .note: return String(localized: "Untitled note")
+        case .lecture: return String(localized: "Untitled lecture")
+        case .khutbah: return String(localized: "Untitled khutbah")
+        case .classNotes: return String(localized: "Untitled class")
+        case .study: return String(localized: "Untitled study")
+        case .reflection: return String(localized: "Untitled reflection")
+        case .dua: return String(localized: "Untitled dua")
         }
     }
 
@@ -60,11 +73,11 @@ enum JournalKind: String, Codable, CaseIterable, Identifiable {
     var template: String? {
         switch self {
         case .khutbah:
-            return "## First khutbah\n\n## Second khutbah\n\n## Action points\n- "
+            return String(localized: "## First khutbah\n\n## Second khutbah\n\n## Action points\n- ")
         case .lecture, .classNotes:
-            return "## Key points\n- \n\n## Evidences\n\n## Questions\n- "
+            return String(localized: "## Key points\n- \n\n## Evidences\n\n## Questions\n- ")
         case .study:
-            return "## Passage\n\n## Benefits\n- "
+            return String(localized: "## Passage\n\n## Benefits\n- ")
         default:
             return nil
         }
@@ -155,8 +168,8 @@ struct JournalEntry: Codable, Identifiable, Equatable {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty && !$0.hasPrefix("## ") && $0 != "-" }
         if let firstLine { return String(firstLine.prefix(80)) }
-        if let attachment = attachments.first { return attachment.title }
-        return "Untitled \(kind.title.lowercased())"
+        if let attachment = attachments.first { return attachment.title.localizedDisplay }
+        return kind.untitled
     }
 
     var searchKey: String {
@@ -272,7 +285,7 @@ final class JournalStore: ObservableObject {
             if a.pinned != b.pinned { return a.pinned }
             return a.createdAt > b.createdAt
         }
-        var out = "# Islamic Journal\n\n"
+        var out = "# " + String(localized: "Islamic Journal") + "\n\n"
         let formatter = DateFormatter()
         formatter.dateStyle = .long
         formatter.timeStyle = .short
@@ -285,7 +298,7 @@ final class JournalStore: ObservableObject {
             out += "\n\n"
             if !entry.text.isEmpty { out += entry.text + "\n\n" }
             for attachment in entry.attachments {
-                out += "> \(attachment.title)"
+                out += "> \(attachment.title.localizedDisplay)"
                 if !attachment.arabic.isEmpty { out += "\n> \(attachment.arabic)" }
                 if !attachment.body.isEmpty { out += "\n> \(attachment.body)" }
                 if !attachment.source.isEmpty { out += "\n> (\(attachment.source))" }
@@ -350,17 +363,17 @@ final class JournalStore: ObservableObject {
 }
 
 /// Where the journal is kept, in a sentence that is true either way: on the device only, or in the
-/// user's iCloud Backup profile as well (docs/iCloud Sync Guide.md, decision 7).
+/// user's iCloud Backup profile as well (Docs/Engineering/iCloud Sync Guide.md, decision 7).
 @MainActor
 private var journalKeepingLine: String {
     #if HAS_ICLOUD_BACKUP
     if CloudBackupManager.shared.isEnabled {
-        return "Your journal is kept on this device and in your iCloud Backup profile (Settings, iCloud Backup). Export it as text any time from the menu."
+        return String(localized: "Your journal is kept on this device and in your iCloud Backup profile (Settings, iCloud Backup). Export it as text any time from the menu.")
     }
-    return "Your journal stays on this device (it is in the app's Documents, so an iCloud or iTunes backup carries it, and iCloud Backup in Settings can keep it too). Export it as text any time from the menu."
+    return String(localized: "Your journal stays on this device (it is in the app's Documents, so an iCloud or iTunes backup carries it, and iCloud Backup in Settings can keep it too). Export it as text any time from the menu.")
     #else
     // A companion app has no iCloud Backup of its own (HAS_ICLOUD_BACKUP is Al-Islam's).
-    return "Your journal stays on this device (it is in the app's Documents, so an iCloud or iTunes backup carries it). Export it as text any time from the menu."
+    return String(localized: "Your journal stays on this device (it is in the app's Documents, so an iCloud or iTunes backup carries it). Export it as text any time from the menu.")
     #endif
 }
 
@@ -368,16 +381,16 @@ private var journalKeepingLine: String {
 
 enum JournalPrompts {
     static let all: [String] = [
-        "What is one benefit from this week's khutbah worth keeping?",
-        "Which ayah did you sit with today, and what did it open?",
-        "What did you learn recently that you do not want to forget?",
-        "Write down one evidence you heard, and where it is from.",
-        "What would you teach someone else from your last class?",
-        "Which word in the Quran surprised you this week?",
-        "What are you asking Allah for today?",
-        "What is one question you want to ask a person of knowledge?",
-        "Which name of Allah did you lean on today?",
-        "What did a hadith you read this week ask of you?",
+        String(localized: "What is one benefit from this week's khutbah worth keeping?"),
+        String(localized: "Which ayah did you sit with today, and what did it open?"),
+        String(localized: "What did you learn recently that you do not want to forget?"),
+        String(localized: "Write down one evidence you heard, and where it is from."),
+        String(localized: "What would you teach someone else from your last class?"),
+        String(localized: "Which word in the Quran surprised you this week?"),
+        String(localized: "What are you asking Allah for today?"),
+        String(localized: "What is one question you want to ask a person of knowledge?"),
+        String(localized: "Which name of Allah did you lean on today?"),
+        String(localized: "What did a hadith you read this week ask of you?"),
     ]
 
     /// The day's prompt (rotates daily, on the same boundary as every other "of the day" surface:
@@ -404,9 +417,14 @@ struct JournalMarginNote: Identifiable {
 // MARK: - Screens
 
 struct JournalView: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @ObservedObject private var store = JournalStore.shared
+    #if HAS_QURAN
     @ObservedObject private var quranData = QuranData.shared
+    #endif
 
     enum Filter: Hashable {
         case all, pinned, kind(JournalKind), tag(String), marginNotes
@@ -439,23 +457,39 @@ struct JournalView: View {
 
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateFormat = "EEEE, d MMMM yyyy"
+        // English keeps its own order ("SUNDAY, 25 OCTOBER 2026"); other languages take theirs.
+        if AppLanguage.code.hasPrefix("en") {
+            formatter.dateFormat = "EEEE, d MMMM yyyy"
+        } else {
+            formatter.setLocalizedDateFormatFromTemplate("EEEEdMMMMyyyy")
+        }
         return formatter
     }()
 
     private var query: String { IslamArticles.fold(searchText.trimmingCharacters(in: .whitespacesAndNewlines)) }
 
-    /// The notes the reader left on bookmarked ayahs, read from the bookmark records.
+    /// The notes the reader left on bookmarked ayahs and hadiths, read from the bookmark records.
     private func marginNotes() -> [JournalMarginNote] {
         var notes: [JournalMarginNote] = []
+        #if HAS_QURAN
         for bookmark in settings.bookmarkedAyahs {
             guard let note = bookmark.note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty else { continue }
-            let name = quranData.surah(bookmark.surah)?.nameTransliteration ?? "Surah \(bookmark.surah)"
+            let name = quranData.surah(bookmark.surah)?.nameTransliteration ?? String(localized: "Surah \(bookmark.surah)")
             let preview = quranData.ayah(surah: bookmark.surah, ayah: bookmark.ayah)?.textEnglishSaheeh ?? ""
             notes.append(JournalMarginNote(id: "ayah-\(bookmark.surah)-\(bookmark.ayah)",
                                            source: .ayah(surah: bookmark.surah, ayah: bookmark.ayah),
                                            title: "\(name) \(bookmark.surah):\(bookmark.ayah)", text: note, preview: preview))
         }
+        #endif
+        #if HAS_HADITH
+        for bookmark in HadithUserData.shared.bookmarks {
+            guard let note = bookmark.note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty else { continue }
+            notes.append(JournalMarginNote(id: "hadith-\(bookmark.slug)-\(bookmark.idInBook)",
+                                           source: .hadith(slug: bookmark.slug, idInBook: bookmark.idInBook),
+                                           title: bookmark.reference, text: note,
+                                           preview: bookmark.englishPreview ?? bookmark.preview))
+        }
+        #endif
         return notes
     }
 
@@ -510,7 +544,7 @@ struct JournalView: View {
         let pinned = entries.filter(\.pinned)
         let rest = entries.filter { !$0.pinned }
         var groups: [(String, [JournalEntry])] = []
-        if !pinned.isEmpty, filter != .pinned { groups.append(("PINNED", pinned)) }
+        if !pinned.isEmpty, filter != .pinned { groups.append((String(localized: "PINNED"), pinned)) }
         let calendar = Calendar.current
         var byDay: [(Date, [JournalEntry])] = []
         for entry in (filter == .pinned ? entries : rest) {
@@ -523,8 +557,8 @@ struct JournalView: View {
         }
         for (day, list) in byDay {
             let title: String
-            if calendar.isDateInToday(day) { title = "TODAY" }
-            else if calendar.isDateInYesterday(day) { title = "YESTERDAY" }
+            if calendar.isDateInToday(day) { title = String(localized: "TODAY") }
+            else if calendar.isDateInYesterday(day) { title = String(localized: "YESTERDAY") }
             else { title = dayFormatter.string(from: day).uppercased() }
             groups.append((title, list))
         }
@@ -537,14 +571,14 @@ struct JournalView: View {
             Group {
                 if query.isEmpty {
                     ResourceHeroSection(ResourceHero(
-                        eyebrow: "YOUR ISLAMIC JOURNAL",
+                        eyebrow: String(localized: "YOUR ISLAMIC JOURNAL"),
                         systemImage: "square.and.pencil",
-                        headline: "My Lord, increase me in knowledge.",
-                        source: "Quran 20:114",
-                        message: "Notes from khutbahs, classes and your own reading, with every note you leave on an ayah or a hadith gathered beside them.",
+                        headline: String(localized: "My Lord, increase me in knowledge."),
+                        source: String(localized: "Quran 20:114"),
+                        message: String(localized: "Notes from khutbahs, classes and your own reading, with every note you leave on an ayah or a hadith gathered beside them."),
                         stats: [
-                            ResourceHeroStat("\(store.entries.count)", store.entries.count == 1 ? "entry" : "entries"),
-                            ResourceHeroStat("\(shown.notesCount)", shown.notesCount == 1 ? "margin note" : "margin notes"),
+                            ResourceHeroStat(store.entries.count.formatted(), store.entries.count == 1 ? String(localized: "entry") : String(localized: "entries")),
+                            ResourceHeroStat(shown.notesCount.formatted(), shown.notesCount == 1 ? String(localized: "margin note") : String(localized: "margin notes")),
                         ]
                     ))
                     writeSection
@@ -562,7 +596,7 @@ struct JournalView: View {
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) { confirmDelete = entry } label: { Label("Delete", systemImage: "trash") }
                                 Button { store.togglePin(id: entry.id) } label: {
-                                    Label(entry.pinned ? "Unpin" : "Pin", systemImage: entry.pinned ? "pin.slash" : "pin")
+                                    Label(entry.pinned ? String(localized: "Unpin") : String(localized: "Pin"), systemImage: entry.pinned ? "pin.slash" : "pin")
                                 }
                                 .tint(accent)
                             }
@@ -572,7 +606,7 @@ struct JournalView: View {
 
                 let notes = shown.notes
                 if !notes.isEmpty {
-                    Section(header: SectionPillHeader(title: "NOTES ON AYAHS AND HADITHS", count: notes.count)) {
+                    Section(header: SectionPillHeader(title: String(localized: "NOTES ON AYAHS AND HADITHS"), count: notes.count)) {
                         ForEach(notes) { note in
                             marginNoteRow(note)
                         }
@@ -582,11 +616,11 @@ struct JournalView: View {
                 if groups.isEmpty, notes.isEmpty {
                     Section {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(query.isEmpty ? "Nothing written yet" : "Nothing here matches that yet.")
+                            Text(query.isEmpty ? String(localized: "Nothing written yet") : String(localized: "Nothing here matches that yet."))
                                 .font(.subheadline.weight(.semibold))
                             Text(query.isEmpty
-                                 ? "Write what you learn: a khutbah, a class, an ayah you sat with. Notes you leave on bookmarked ayahs and hadiths show up here too."
-                                 : "Try another word, or clear the filter.")
+                                 ? String(localized: "Write what you learn: a khutbah, a class, an ayah you sat with. Notes you leave on bookmarked ayahs and hadiths show up here too.")
+                                 : String(localized: "Try another word, or clear the filter."))
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -598,7 +632,6 @@ struct JournalView: View {
                 if query.isEmpty, !store.entries.isEmpty {
                     Section(footer:
                         Text(journalKeepingLine)
-                            .font(.caption2)
                     ) { EmptyView() }
                 }
             }
@@ -607,7 +640,7 @@ struct JournalView: View {
         .applyConditionalListStyle(disableNowPlayingInset: true)
         .compactListSectionSpacing()
         .adaptiveSafeArea(edge: .bottom) {
-            SearchBar(text: AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut), placeholder: "Search your journal")
+            SearchBar(text: AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut), placeholder: String(localized: "Search your journal"))
                 .padding(.horizontal, 24)
                 .padding(.bottom, BottomBarCushion.standard)
                 .background(Color.white.opacity(0.00001))
@@ -684,7 +717,7 @@ struct JournalView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Image(systemName: "chevron.right")
+                    Image(systemName: "chevron.forward")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
@@ -740,12 +773,12 @@ struct JournalView: View {
             Section {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        filterChip("All", count: store.entries.count + notesCount, .all)
-                        if pinnedCount > 0 { filterChip("Pinned", count: pinnedCount, .pinned) }
+                        filterChip(String(localized: "All"), count: store.entries.count + notesCount, .all)
+                        if pinnedCount > 0 { filterChip(String(localized: "Pinned"), count: pinnedCount, .pinned) }
                         ForEach(kinds) { kind in
                             filterChip(kind.title, count: shown.kindCounts[kind] ?? 0, .kind(kind))
                         }
-                        if notesCount > 0 { filterChip("Margin notes", count: notesCount, .marginNotes) }
+                        if notesCount > 0 { filterChip(String(localized: "Margin notes"), count: notesCount, .marginNotes) }
                         ForEach(shown.tagCounts, id: \.tag) { item in
                             filterChip("#" + item.tag, count: item.count, .tag(item.tag))
                         }
@@ -769,6 +802,7 @@ struct JournalView: View {
                 Text(title)
                 Text("\(count)")
                     .foregroundColor(selected ? .white.opacity(0.85) : .secondary)
+                    .hiddenInSimple(.sectionCounts)
             }
             .font(.caption.weight(.semibold))
             .foregroundColor(selected ? .white : .primary)
@@ -837,6 +871,28 @@ struct JournalView: View {
         return body.joined(separator: " ")
     }
 
+    /// A margin note's title as the reader sees it: the surah's name and the hadith book's title in the
+    /// interface's language, the numbers in its digits. `title` stays the English the search folds.
+    private func marginNoteTitle(_ note: JournalMarginNote) -> String {
+        switch note.source {
+        #if HAS_QURAN
+        case .ayah(let surah, let ayah):
+            let name = quranData.surah(surah)?.displayName ?? String(localized: "Surah \(surah)")
+            return "\(name) \(surah):\(ayah)".localizedDigits
+        #else
+        case .ayah:
+            return note.title.localizedDigits
+        #endif
+        #if HAS_HADITH
+        case .hadith(let slug, _):
+            return HadithCatalogBook.displayReference(stored: note.title, slug: slug)
+        #else
+        case .hadith:
+            return note.title
+        #endif
+        }
+    }
+
     private func marginNoteRow(_ note: JournalMarginNote) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
@@ -844,7 +900,7 @@ struct JournalView: View {
                 case .ayah: Image(systemName: "book.closed").font(.caption).foregroundColor(accent)
                 case .hadith: Image(systemName: "text.book.closed").font(.caption).foregroundColor(accent)
                 }
-                Text(note.title)
+                Text(marginNoteTitle(note))
                     .font(.caption2.weight(.bold))
                     .foregroundColor(accent)
             }
@@ -856,6 +912,8 @@ struct JournalView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .leftToRightContent()
             }
         }
         .padding(.vertical, 3)
@@ -927,7 +985,7 @@ struct JournalEntryView: View {
                     }
 
                     if !entry.attachments.isEmpty {
-                        Section(header: SectionPillHeader(title: "ATTACHED", count: entry.attachments.count)) {
+                        Section(header: SectionPillHeader(title: String(localized: "ATTACHED"), count: entry.attachments.count)) {
                             ForEach(entry.attachments) { attachment in
                                 JournalAttachmentCard(attachment: attachment)
                             }
@@ -942,7 +1000,7 @@ struct JournalEntryView: View {
         }
         .applyConditionalListStyle(disableNowPlayingInset: true)
         .compactListSectionSpacing()
-        .navigationTitle(entry?.kind.title ?? "Entry")
+        .navigationTitle(entry?.kind.title ?? String(localized: "Entry"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -955,7 +1013,7 @@ struct JournalEntryView: View {
                         Button {
                             Settings.shared.hapticFeedback()
                             store.togglePin(id: entry.id)
-                        } label: { Label(entry.pinned ? "Unpin" : "Pin", systemImage: entry.pinned ? "pin.slash" : "pin") }
+                        } label: { Label(entry.pinned ? String(localized: "Unpin") : String(localized: "Pin"), systemImage: entry.pinned ? "pin.slash" : "pin") }
                         Button {
                             Settings.shared.hapticFeedback()
                             UIPasteboard.general.string = Self.shareText(entry)
@@ -990,7 +1048,7 @@ struct JournalEntryView: View {
         var out = entry.headline + "\n"
         if !entry.text.isEmpty { out += "\n" + entry.text + "\n" }
         for attachment in entry.attachments {
-            out += "\n" + attachment.title
+            out += "\n" + attachment.title.localizedDisplay
             if !attachment.arabic.isEmpty { out += "\n" + attachment.arabic }
             if !attachment.body.isEmpty { out += "\n" + attachment.body }
             if !attachment.source.isEmpty { out += "\n(" + attachment.source + ")" }
@@ -1052,11 +1110,11 @@ struct JournalAttachmentCard: View {
             HStack(spacing: 6) {
                 Image(systemName: symbol)
                     .font(.caption)
-                Text(attachment.title)
+                Text(displayTitle)
                     .font(.caption.weight(.bold))
                 Spacer()
                 if !attachment.subtitle.isEmpty {
-                    Text(attachment.subtitle)
+                    Text(displaySubtitle)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -1071,11 +1129,15 @@ struct JournalAttachmentCard: View {
                     .lineSpacing(6)
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .fixedSize(horizontal: false, vertical: true)
+                    // Arabic keeps the right edge: in the Arabic interface `.trailing` is the left.
+                    .environment(\.layoutDirection, .leftToRight)
             }
             if !english.isEmpty {
                 Text(english)
                     .font(.footnote)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .leftToRightContent()
             }
             if !attachment.source.isEmpty {
                 Text(attachment.source)
@@ -1085,6 +1147,40 @@ struct JournalAttachmentCard: View {
         }
         .padding(.vertical, 4)
         .textSelection(.enabled)
+    }
+
+    /// The title as the reader sees it; the saved one stays as written ("Ibrahim 14:7", a hadith's
+    /// English reference, "Dua"). An ayah's is rebuilt from its reference with the surah's name in the
+    /// interface's language, a hadith's through its book, the rest looked up in the catalog.
+    private var displayTitle: String {
+        switch attachment.kind {
+        case .ayah:
+            #if HAS_QURAN
+            if let reference = QuranQuoteReference(attachment.refID), let surah = QuranData.shared.surah(reference.surah) {
+                return "\(surah.displayName) \(reference.text)".localizedDigits
+            }
+            #else
+            break
+            #endif
+        case .hadith:
+            #if HAS_HADITH
+            let slug = attachment.refID.split(separator: ":").first.map(String.init) ?? ""
+            return HadithCatalogBook.displayReference(stored: attachment.title, slug: slug)
+            #else
+            break
+            #endif
+        case .dua, .name:
+            break
+        }
+        return attachment.title.localizedDisplay.localizedDigits
+    }
+
+    /// A hadith's number in the interface's digits; the rest as stored.
+    private var displaySubtitle: String {
+        #if HAS_HADITH
+        if attachment.kind == .hadith { return HadithCatalogBook.displayNumber(attachment.subtitle) }
+        #endif
+        return attachment.subtitle
     }
 
     private var symbol: String {
@@ -1102,7 +1198,6 @@ struct JournalAttachmentCard: View {
 struct JournalEditorSheet: View {
     @Environment(\.appearance) private var appearance
     @ObservedObject private var store = JournalStore.shared
-    @ObservedObject private var quranData = QuranData.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var entry: JournalEntry
@@ -1160,7 +1255,7 @@ struct JournalEditorSheet: View {
                         }
                     }
 
-                    Section(header: Text("WRITING"), footer: Text("Start a line with ## for a heading and - for a bullet.").font(.caption2)) {
+                    Section(header: Text("WRITING"), footer: Text("Start a line with ## for a heading and - for a bullet.")) {
                         ZStack(alignment: .topLeading) {
                             if entry.text.isEmpty {
                                 Text(entry.kind.placeholder)
@@ -1201,17 +1296,10 @@ struct JournalEditorSheet: View {
                         }
                     }
 
-                    Section(header: HStack {
-                        Text("ATTACHED")
-                        Spacer()
-                        Button {
-                            Settings.shared.hapticFeedback()
+                    Section(header: SectionHeaderLine(String(localized: "ATTACHED")) {
+                        SectionHeaderAction(String(localized: "Attach"), systemImage: "paperclip") {
                             showAttach = true
-                        } label: {
-                            Label("Attach", systemImage: "paperclip")
-                                .font(.caption.weight(.semibold))
                         }
-                        .foregroundColor(accent)
                     }) {
                         if entry.attachments.isEmpty {
                             Text("An ayah, a bookmarked hadith or a dua, kept with the entry.")
@@ -1228,7 +1316,7 @@ struct JournalEditorSheet: View {
             }
             .applyConditionalListStyle(disableNowPlayingInset: true)
             .compactListSectionSpacing()
-            .navigationTitle(isNew ? "New Entry" : "Edit Entry")
+            .navigationTitle(isNew ? String(localized: "New Entry") : String(localized: "Edit Entry"))
             .navigationBarTitleDisplayMode(.inline)
             .sheetDismissToolbar(onConfirm: {
                 guard !textContainsProfanity(entry.text), !textContainsProfanity(entry.title) else {
@@ -1268,7 +1356,9 @@ struct JournalEditorSheet: View {
 /// Carry something in: an ayah by reference, a bookmarked hadith, or a dua from the app's collections.
 struct JournalAttachSheet: View {
     @Environment(\.appearance) private var appearance
+    #if HAS_QURAN
     @ObservedObject private var quranData = QuranData.shared
+    #endif
     @Environment(\.dismiss) private var dismiss
 
     let onPick: (JournalAttachment) -> Void
@@ -1281,12 +1371,14 @@ struct JournalAttachSheet: View {
 
     private var accent: Color { appearance.accent }
 
+    #if HAS_QURAN
     private var resolvedAyah: (surah: Surah, ayah: Ayah)? {
-        let parts = reference.replacingOccurrences(of: " ", with: "").split(separator: ":").compactMap { Int($0) }
+        let parts = reference.normalizingArabicIndicDigitsToWestern.replacingOccurrences(of: " ", with: "").split(separator: ":").compactMap { Int($0) }
         guard parts.count == 2, let surah = quranData.surah(parts[0]),
               let ayah = quranData.ayah(surah: parts[0], ayah: parts[1]) else { return nil }
         return (surah, ayah)
     }
+    #endif
 
     private static func duaMatches(for raw: String) -> [DuaItem] {
         let query = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1308,7 +1400,8 @@ struct JournalAttachSheet: View {
         SheetNavigationContainer {
             List {
                 Group {
-                    Section(header: Text("AN AYAH"), footer: Text("Type the reference, surah:ayah.").font(.caption2)) {
+                    #if HAS_QURAN
+                    Section(header: Text("AN AYAH"), footer: Text("Type the reference, surah:ayah.")) {
                         TextField("2:255", text: $reference)
                             .keyboardType(.numbersAndPunctuation)
                         if let resolved = resolvedAyah {
@@ -1327,10 +1420,13 @@ struct JournalAttachSheet: View {
                                         .arabicFontDesign(custom: true)
                                         .multilineTextAlignment(.trailing)
                                         .frame(maxWidth: .infinity, alignment: .trailing)
+                                        // Arabic keeps the right edge: in the Arabic interface `.trailing` is the left.
+                                        .environment(\.layoutDirection, .leftToRight)
                                     Text(resolved.ayah.textEnglishSaheeh)
                                         .font(.footnote)
                                         .foregroundStyle(.secondary)
                                         .frame(maxWidth: .infinity, alignment: .leading)
+                                        .leftToRightContent()
                                     Label("Attach this ayah", systemImage: "paperclip")
                                         .font(.caption.weight(.semibold))
                                         .foregroundColor(accent)
@@ -1341,8 +1437,42 @@ struct JournalAttachSheet: View {
                             .buttonStyle(.plain)
                         }
                     }
+                    #endif
 
-                    Section(header: Text("A DUA"), footer: Text("Search the app's dua collections.").font(.caption2)) {
+                    #if HAS_HADITH
+                    let bookmarks = HadithUserData.shared.bookmarks
+                    if !bookmarks.isEmpty {
+                        Section(header: SectionPillHeader(title: String(localized: "BOOKMARKED HADITHS"), count: bookmarks.count)) {
+                            ForEach(bookmarks.prefix(40)) { bookmark in
+                                Button {
+                                    Settings.shared.hapticFeedback()
+                                    onPick(JournalAttachment(
+                                        kind: .hadith, refID: "\(bookmark.slug):\(bookmark.idInBook)",
+                                        title: bookmark.reference, subtitle: bookmark.displayNumber,
+                                        arabic: bookmark.arabicPreview ?? "",
+                                        body: bookmark.englishPreview ?? bookmark.preview))
+                                    dismiss()
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(bookmark.displayReference)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundColor(accent)
+                                        Text(bookmark.englishPreview ?? bookmark.preview)
+                                            .font(.footnote)
+                                            .foregroundColor(.primary)
+                                            .lineLimit(3)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .leftToRightContent()
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    #endif
+
+                    Section(header: Text("A DUA"), footer: Text("Search the app's dua collections.")) {
                         TextField("Search duas", text: $duaQuery)
                         ForEach(duaMatches) { dua in
                             Button {
@@ -1358,11 +1488,14 @@ struct JournalAttachSheet: View {
                                         .multilineTextAlignment(.trailing)
                                         .lineLimit(2)
                                         .frame(maxWidth: .infinity, alignment: .trailing)
+                                        // Arabic keeps the right edge: in the Arabic interface `.trailing` is the left.
+                                        .environment(\.layoutDirection, .leftToRight)
                                     Text(dua.translation)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(2)
                                         .frame(maxWidth: .infinity, alignment: .leading)
+                                        .leftToRightContent()
                                 }
                                 .contentShape(Rectangle())
                             }

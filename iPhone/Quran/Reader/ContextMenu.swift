@@ -6,12 +6,41 @@ import UIKit
 /// The one format every ayah sheet titles itself with: "Surah Name S:A" (or "Surah Name S:A-B" for a sheet
 /// that covers a range, e.g. a tafsir that groups several ayahs). Kept in a single helper so the sheets can
 /// never drift apart again ("Preview", "Qiraah Comparison", ... all used to invent their own).
-func ayahSheetTitle(surahNumber: Int, ayahNumber: Int, endAyah: Int? = nil) -> String {
-    let name = QuranData.shared.surah(surahNumber)?.nameTransliteration ?? "Surah"
+/// `english` keeps the transliteration for a title the on-device model reads (`SummarizeSheet.title`);
+/// a title on screen shows the interface's name (`Surah.displayName`) and the interface's digits.
+func ayahSheetTitle(surahNumber: Int, ayahNumber: Int, endAyah: Int? = nil, english: Bool = false) -> String {
+    let surah = QuranData.shared.surah(surahNumber)
+    let name = (english ? surah?.nameTransliteration : surah?.displayName) ?? String(localized: "Surah")
+    let reference: String
     if let endAyah, endAyah > ayahNumber {
-        return "\(name) \(surahNumber):\(ayahNumber)-\(endAyah)"
+        reference = "\(surahNumber):\(ayahNumber)-\(endAyah)"
+    } else {
+        reference = "\(surahNumber):\(ayahNumber)"
     }
-    return "\(name) \(surahNumber):\(ayahNumber)"
+    return "\(name) \(english ? reference : reference.localizedDigits)"
+}
+
+/// The other language's form of `ayahSheetTitle`, for a reference line that names the ayah both ways
+/// (Abu, 2026-10-26, the ayah actions sheet: the English on one side, "do the same thing in Arabic" on
+/// the other, a spacer between them, as the reader's title pill names a surah): the Arabic name with
+/// Arabic-Indic digits under an English interface, the transliteration with Western digits under an
+/// Arabic one.
+func ayahSheetCounterpartTitle(surahNumber: Int, ayahNumber: Int, endAyah: Int? = nil) -> String? {
+    if AppLanguage.isArabicScript {
+        return ayahSheetTitle(surahNumber: surahNumber, ayahNumber: ayahNumber, endAyah: endAyah, english: true)
+    }
+    guard let surah = QuranData.shared.surah(surahNumber) else { return nil }
+    let reference: String
+    if let endAyah, endAyah > ayahNumber {
+        reference = "\(surahNumber):\(ayahNumber)-\(endAyah)"
+    } else {
+        reference = "\(surahNumber):\(ayahNumber)"
+    }
+    let arabicIndic = String(reference.map { ch -> Character in
+        guard let digit = ch.wholeNumberValue, let scalar = UnicodeScalar(0x0660 + digit) else { return ch }
+        return Character(scalar)
+    })
+    return "\(surah.nameArabic) \(arabicIndic)"
 }
 
 /// The English translation currently being shown, by name - so ayah sheets can mention it consistently.
@@ -228,7 +257,10 @@ func ayahDisplayMenuItems(refs: Set<HighlightedAyahRef>, settings: Settings,
 #endif
 
 struct SurahContextMenu: View {
-    @ObservedObject var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @ObservedObject var quranData = QuranData.shared
     /// Playback state from the coalesced snapshot, actions on the player (Phase 10.4).
     @ObservedObject private var nowPlaying = QuranPlayer.shared.nowPlaying
@@ -315,7 +347,7 @@ struct SurahContextMenu: View {
                 quranPlayer.playSurah(surahNumber: surahID, surahName: surahName)
             } label: {
                 #if os(iOS)
-                ReciterCaptionedMenuLabel(title: "Play Surah", systemImage: "play.fill")
+                ReciterCaptionedMenuLabel(title: String(localized: "Play Surah"), systemImage: "play.fill")
                 #else
                 Label("Play Surah", systemImage: "play.fill")
                 #endif
@@ -517,7 +549,11 @@ final class TafsirStore {
 #endif
 
 struct AyahContextMenuModifier: ViewModifier {
-    @ObservedObject var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     /// NOT @ObservedObject (Phase 10.8): the body only calls `surah(_:)`, an index lookup; observing
     /// re-ran this modifier on every realized search/bookmark/grid row for each QuranData publish.
     private var quranData: QuranData { .shared }
@@ -600,39 +636,116 @@ struct AyahContextMenuModifier: ViewModifier {
     }
 
     #if os(iOS)
+    /// The deeper study of the ayah as one submenu, the reader rows' `studyMenu` item for item: the
+    /// repeated phrases, the two comparisons and the AI summary. See Tafsir stays outside it, the study
+    /// action a reader reaches for most. Nothing when none of them applies.
     @ViewBuilder
-    private var comparisonMenuBlock: some View {
-        if settings.showQiraahDetails && canCompareEnglishText {
+    private var studyMenu: some View {
+        // Similar Ayahs and Mutashabihat read against the Hafs text (the pack's targets and phrases
+        // are Hafs wording), mirroring the tafsir gate. They show whenever the pack is bundled: probing
+        // "does THIS ayah have matches" would parse 4.5 MB of JSON on menu open, so the sheet handles
+        // the no-matches case instead.
+        let similar = settings.isHafsDisplay && SimilarAyahsStore.isBundled
+        let mutashabihat = settings.isHafsDisplay && MutashabihatStore.isBundled
+        let qiraah = settings.showQiraahDetails
+        let translation = canCompareEnglishText
+        let summarize = settings.isHafsDisplay && AyahSummarizeSheet.isOffered
+
+        if similar || mutashabihat || qiraah || translation || summarize {
+            Menu {
+                if similar {
+                    Button {
+                        settings.hapticFeedback()
+                        showSimilarAyahsSheet = true
+                    } label: {
+                        Label("Similar Ayahs", systemImage: "doc.text.magnifyingglass")
+                    }
+                }
+
+                // The repeated phrases (mutashabihat): the same sheet, opened on its phrases tab.
+                if mutashabihat {
+                    Button {
+                        settings.hapticFeedback()
+                        showMutashabihatSheet = true
+                    } label: {
+                        Label("Mutashabihat", systemImage: "text.quote")
+                    }
+                }
+
+                if (similar || mutashabihat) && (qiraah || translation) {
+                    Divider()
+                }
+
+                if qiraah {
+                    Button {
+                        settings.hapticFeedback()
+                        showQiraahComparisonSheet = true
+                    } label: {
+                        Label("Qiraah Comparison", systemImage: "character.book.closed.fill.ar")
+                    }
+                }
+
+                if translation {
+                    Button {
+                        settings.hapticFeedback()
+                        showEnglishComparisonSheet = true
+                    } label: {
+                        Label("Translation Comparison", systemImage: "character.book.closed")
+                    }
+                }
+
+                // The on-device summary of the ayah's tafsirs and translations.
+                if summarize {
+                    Divider()
+
+                    Button {
+                        settings.hapticFeedback()
+                        showSummarizeSheet = true
+                    } label: {
+                        Label("Summarize with AI", systemImage: "text.append")
+                    }
+                }
+            } label: {
+                Label("Study Ayah", systemImage: "books.vertical")
+            }
+        }
+    }
+
+    /// Add Note on its own; once a note is saved, one Note submenu holds Edit and Remove instead of
+    /// two rows (the reader rows' `noteMenuItems`).
+    @ViewBuilder
+    private var noteMenuItems: some View {
+        if currentNote.isEmpty {
+            Button {
+                settings.hapticFeedback()
+                if !isBookmarked {
+                    settings.ensureBookmarkExists(surah: surah, ayah: ayah)
+                }
+                draftNote = currentNote
+                showingNoteSheet = true
+            } label: {
+                Label("Add Note", systemImage: "note.text")
+            }
+        } else {
             Menu {
                 Button {
                     settings.hapticFeedback()
-                    showQiraahComparisonSheet = true
+                    draftNote = currentNote
+                    showingNoteSheet = true
                 } label: {
-                    Label("Qiraah Comparison", systemImage: "character.book.closed.fill.ar")
+                    Label("Edit Note", systemImage: "note.text")
                 }
 
-                Button {
+                Button(role: .destructive) {
                     settings.hapticFeedback()
-                    showEnglishComparisonSheet = true
+                    withAnimation(.easeInOut) {
+                        removeNote()
+                    }
                 } label: {
-                    Label("Translation Comparison", systemImage: "character.book.closed")
+                    Label("Remove Note", systemImage: "minus.circle")
                 }
             } label: {
-                Label("Compare Ayah", systemImage: "rectangle.split.2x1")
-            }
-        } else if settings.showQiraahDetails {
-            Button {
-                settings.hapticFeedback()
-                showQiraahComparisonSheet = true
-            } label: {
-                Label("Qiraah Comparison", systemImage: "character.book.closed.fill.ar")
-            }
-        } else if canCompareEnglishText {
-            Button {
-                settings.hapticFeedback()
-                showEnglishComparisonSheet = true
-            } label: {
-                Label("Translation Comparison", systemImage: "character.book.closed")
+                Label("Note", systemImage: "note.text")
             }
         }
     }
@@ -670,230 +783,175 @@ struct AyahContextMenuModifier: ViewModifier {
 
     @ViewBuilder
     private func menuItems(surahObj: Surah?) -> some View {
-                if ayahOfTheDay {
-                    Button(role: .destructive) {
-                        settings.hapticFeedback()
-                        withAnimation {
-                            // The DAILY day (Fajr rollover by default), the key the card compares
-                            // against: the calendar day hid nothing between midnight and Fajr (A10).
-                            settings.ayahOfTheDayHiddenDate = settings.dailyDayKey()
-                        }
-                    } label: { Label("Hide for Today", systemImage: "eye.slash") }
-
-                    Button(role: .destructive) {
-                        settings.hapticFeedback()
-                        confirmDeleteForever = true
-                    } label: { Label("Delete Forever", systemImage: "trash") }
-
-                    Divider()
-                } else if lastRead {
-                    Button(role: .destructive) {
-                        settings.hapticFeedback()
-                        withAnimation {
-                            settings.lastReadSurah = 0
-                            settings.lastReadAyah = 0
-                        }
-                    } label: { Label("Remove", systemImage: "minus.circle") }
-
-                    Button(role: .destructive) {
-                        settings.hapticFeedback()
-                        confirmDeleteForever = true
-                    } label: { Label("Delete Forever", systemImage: "trash") }
-
-                    Divider()
+        // The reader rows' ⋯ menu block for block (user rule 2026-09-05: every ayah menu offers the same
+        // actions in the same order), minus Apply Settings, whose per-ayah pins only the readers draw,
+        // plus the surah's own actions as a last submenu. Four groups, ten rows at most (Abu,
+        // 2026-10-21: "make sure not too long if need be put menus in menus"; it was twenty-three).
+        if ayahOfTheDay {
+            Button(role: .destructive) {
+                settings.hapticFeedback()
+                withAnimation {
+                    // The DAILY day (Fajr rollover by default), the key the card compares
+                    // against: the calendar day hid nothing between midnight and Fajr (A10).
+                    settings.ayahOfTheDayHiddenDate = settings.dailyDayKey()
                 }
+            } label: { Label("Hide for Today", systemImage: "eye.slash") }
 
-                Button(role: isBookmarked ? .destructive : .cancel) {
-                    settings.hapticFeedback()
-                    toggleBookmarkOrConfirm()
-                } label: {
-                    Label(
-                        isBookmarked ? "Unbookmark Ayah" : "Bookmark Ayah",
-                        systemImage: isBookmarked ? "bookmark.fill" : "bookmark"
-                    )
+            Button(role: .destructive) {
+                settings.hapticFeedback()
+                confirmDeleteForever = true
+            } label: { Label("Delete Forever", systemImage: "trash") }
+
+            Divider()
+        } else if lastRead {
+            // Remove only. Delete Forever used to turn the Show Last Read Ayah switch off, and that
+            // switch left Quran Settings on 2026-10-25: a hide with no way back is no option at all.
+            Button(role: .destructive) {
+                settings.hapticFeedback()
+                withAnimation {
+                    settings.lastReadSurah = 0
+                    settings.lastReadAyah = 0
                 }
+            } label: { Label("Remove", systemImage: "minus.circle") }
 
-                // Directly under the bookmark row, because it IS a bookmark action: picking a color saves
-                // the ayah and paints its bookmark in that color.
+            Divider()
+        }
+
+        Button(role: isBookmarked ? .destructive : .cancel) {
+            settings.hapticFeedback()
+            toggleBookmarkOrConfirm()
+        } label: {
+            Label(
+                isBookmarked ? "Unbookmark Ayah" : "Bookmark Ayah",
+                systemImage: isBookmarked ? "bookmark.fill" : "bookmark"
+            )
+        }
+
+        // Directly under the bookmark row, because it IS a bookmark action: picking a color saves
+        // the ayah and paints its bookmark in that color.
+        Menu {
+            ayahHighlightMenuItems(surah: surah, ayah: ayah, settings: settings)
+        } label: {
+            Label(
+                currentHighlight == nil ? "Highlight" : "Highlight: \(currentHighlight!.title)",
+                systemImage: "highlighter"
+            )
+        }
+
+        noteMenuItems
+
+        Divider()
+
+        if settings.isHafsDisplay {
+            Button {
+                settings.hapticFeedback()
+                showTafsirSheet = true
+            } label: {
+                Label("See Tafsir", systemImage: "text.book.closed")
+            }
+        }
+
+        studyMenu
+
+        if settings.isHafsDisplay {
+            Divider()
+
+            // Play This Ayah on the menu itself, one tap from the hold (Abu, 2026-10-27: "For the menu
+            // long hold ayah replace play ayah with play this ayah"); it was the last row of a Play Ayah
+            // submenu. The rest of the reader rows' playback list stays one submenu below it, who is
+            // reciting first, since no ▶ sits beside a Quran tab row to hold it.
+            Button {
+                settings.hapticFeedback()
+                quranPlayer.playAyah(surahNumber: surah, ayahNumber: ayah)
+            } label: {
+                Label("Play This Ayah", systemImage: "play.circle")
+            }
+
+            Menu {
+                chooseReciterButton
+
+                Divider()
+
                 Menu {
-                    ayahHighlightMenuItems(surah: surah, ayah: ayah, settings: settings)
+                    Text("Repeat Count")
+                        .foregroundStyle(.secondary)
+
+                    ForEach([2, 3, 5, 10, 15, 20], id: \.self) { count in
+                        Button {
+                            settings.hapticFeedback()
+                            quranPlayer.playAyah(surahNumber: surah, ayahNumber: ayah, repeatCount: count)
+                        } label: {
+                            Label("Repeat \(count)×", systemImage: "\(count).circle")
+                        }
+                    }
+
+                    Button {
+                        settings.hapticFeedback()
+                        quranPlayer.playAyah(surahNumber: surah, ayahNumber: ayah, repeatCount: QuranPlayer.infiniteRepeat)
+                    } label: {
+                        Label("Repeat Forever", systemImage: "infinity")
+                    }
                 } label: {
-                    Label(
-                        currentHighlight == nil ? "Highlight" : "Highlight: \(currentHighlight!.title)",
-                        systemImage: "highlighter"
-                    )
+                    Label("Repeat Ayah", systemImage: "repeat")
                 }
 
                 Button {
                     settings.hapticFeedback()
-                    if !isBookmarked {
-                        settings.ensureBookmarkExists(surah: surah, ayah: ayah)
-                    }
-                    draftNote = currentNote
-                    showingNoteSheet = true
+                    showCustomRangeSheet = true
                 } label: {
-                    Label(currentNote.isEmpty ? "Add Note" : "Edit Note", systemImage: "note.text")
+                    Label("Play Custom Range", systemImage: "slider.horizontal.3")
                 }
 
-                if !currentNote.isEmpty {
-                    Button(role: .destructive) {
-                        settings.hapticFeedback()
-                        withAnimation(.easeInOut) {
-                            removeNote()
-                        }
-                    } label: {
-                        Label("Remove Note", systemImage: "minus.circle")
-                    }
-                }
-
-                if settings.isHafsDisplay {
-                    Button {
-                        settings.hapticFeedback()
-                        showTafsirSheet = true
-                    } label: {
-                        Label("See Tafsir", systemImage: "text.book.closed")
-                    }
-                }
-
-                // Similar Ayahs reads against the Hafs text (the pack's targets and phrases are
-                // Hafs wording), mirroring the tafsir gate above. The row shows whenever the pack
-                // is bundled - probing "does THIS ayah have matches" here would parse 4.5 MB of
-                // JSON on menu open, so the sheet handles the no-matches case instead.
-                if settings.isHafsDisplay && SimilarAyahsStore.isBundled {
-                    Button {
-                        settings.hapticFeedback()
-                        showSimilarAyahsSheet = true
-                    } label: {
-                        Label("Similar Ayahs", systemImage: "doc.text.magnifyingglass")
-                    }
-                }
-
-                // The repeated phrases (mutashabihat): the same sheet, opened on its phrases tab.
-                if settings.isHafsDisplay && MutashabihatStore.isBundled {
-                    Button {
-                        settings.hapticFeedback()
-                        showMutashabihatSheet = true
-                    } label: {
-                        Label("Mutashabihat", systemImage: "text.quote")
-                    }
-                }
-
-                comparisonMenuBlock
-
-                // From here down, the reader rows' ellipsis menu block for block (user rule
-                // 2026-09-05: every ayah menu offers the same actions in the same order) - minus
-                // "Apply Settings", whose per-ayah pins only the readers draw.
-                if settings.isHafsDisplay {
-                    Divider()
-
-                    Menu {
-                        chooseReciterButton
-
-                        Divider()
-
-                        ForEach([2, 3, 5, 10, 15, 20], id: \.self) { count in
-                            Button {
-                                settings.hapticFeedback()
-                                quranPlayer.playAyah(surahNumber: surah, ayahNumber: ayah, repeatCount: count)
-                            } label: {
-                                Label("Repeat \(count)×", systemImage: "\(count).circle")
-                            }
-                        }
-
-                        Button {
-                            settings.hapticFeedback()
-                            quranPlayer.playAyah(surahNumber: surah, ayahNumber: ayah, repeatCount: QuranPlayer.infiniteRepeat)
-                        } label: {
-                            Label("Repeat Forever", systemImage: "infinity")
-                        }
-
-                        Button {
-                            settings.hapticFeedback()
-                            showCustomRangeSheet = true
-                        } label: {
-                            Label("Play Custom Range", systemImage: "slider.horizontal.3")
-                        }
-                    } label: {
-                        Label("Repeat Ayah", systemImage: "repeat")
-                    }
-
-                    Menu {
-                        chooseReciterButton
-
-                        Divider()
-
-                        Button {
-                            settings.hapticFeedback()
-                            showCustomRangeSheet = true
-                        } label: {
-                            Label("Play Custom Range", systemImage: "slider.horizontal.3")
-                        }
-
-                        Menu {
-                            ayahPlayFromMenuItems(surah: surah, ayah: ayah, settings: settings,
-                                                  quranPlayer: quranPlayer)
-                        } label: {
-                            Label("Play From Ayah", systemImage: "play.circle.fill")
-                        }
-
-                        Button {
-                            settings.hapticFeedback()
-                            quranPlayer.playAyah(surahNumber: surah, ayahNumber: ayah)
-                        } label: {
-                            Label("Play This Ayah", systemImage: "play.circle")
-                        }
-                    } label: {
-                        Label("Play Ayah", systemImage: "play.circle")
-                    }
-                }
-
-                Divider()
-
-                Button {
-                    settings.hapticFeedback()
-                    showSelectTextSheet = true
+                Menu {
+                    ayahPlayFromMenuItems(surah: surah, ayah: ayah, settings: settings,
+                                          quranPlayer: quranPlayer)
                 } label: {
-                    Label("Select Text", systemImage: "highlighter")
+                    Label("Play From Ayah", systemImage: "play.circle.fill")
                 }
+            } label: {
+                Label("Ayah Playback", systemImage: "music.note.list")
+            }
+        }
 
-                Button {
-                    settings.hapticFeedback()
-                    ShareAyahSheet.copyAyahToPasteboard(surahNumber: surah, ayahNumber: ayah, settings: settings, quranData: quranData)
-                } label: {
-                    Label("Copy Ayah", systemImage: "doc.on.doc")
-                }
+        Divider()
 
-                Button {
-                    settings.hapticFeedback()
-                    showAyahSheet = true
-                } label: {
-                    Label("Share Ayah", systemImage: "square.and.arrow.up")
-                }
+        Button {
+            settings.hapticFeedback()
+            showSelectTextSheet = true
+        } label: {
+            Label("Select Text", systemImage: "highlighter")
+        }
 
-                // The reader rows' last item, here too (one action list for every ayah menu): the
-                // on-device summary of the ayah's tafsirs and translations.
-                if settings.isHafsDisplay, AyahSummarizeSheet.isOffered {
-                    Divider()
+        Button {
+            settings.hapticFeedback()
+            ShareAyahSheet.copyAyahToPasteboard(surahNumber: surah, ayahNumber: ayah, settings: settings, quranData: quranData)
+        } label: {
+            Label("Copy Ayah", systemImage: "doc.on.doc")
+        }
 
-                    Button {
-                        settings.hapticFeedback()
-                        showSummarizeSheet = true
-                    } label: {
-                        Label("Summarize with AI", systemImage: "text.append")
-                    }
-                }
+        Button {
+            settings.hapticFeedback()
+            showAyahSheet = true
+        } label: {
+            Label("Share Ayah", systemImage: "square.and.arrow.up")
+        }
 
-                Divider()
+        // The surah's seven actions behind its name, where they used to run on inline under the ayah's.
+        if let surah = surahObj {
+            Divider()
 
-                if let surah = surahObj {
-                    SurahContextMenu(
-                        surahID: surah.id,
-                        surahName: surah.nameTransliteration,
-                        favoriteSurahs: favoriteSurahs,
-                        searchText: $searchText,
-                        scrollToSurahID: $scrollToSurahID
-                    )
-                }
+            Menu {
+                SurahContextMenu(
+                    surahID: surah.id,
+                    surahName: surah.nameTransliteration,
+                    favoriteSurahs: favoriteSurahs,
+                    searchText: $searchText,
+                    scrollToSurahID: $scrollToSurahID
+                )
+            } label: {
+                Label("Surah \(surah.displayName)", systemImage: "book.closed")
+            }
+        }
     }
     #endif
 
@@ -930,14 +988,15 @@ struct AyahContextMenuModifier: ViewModifier {
                         Image(systemName: "ellipsis.circle")
                             .resizable()
                             .aspectRatio(contentMode: .fit)
-                            .frame(width: 19, height: 19)
+                            .frame(width: 25, height: 25)
                             .foregroundColor(settings.accentColor.color)
                             .conditionalGlassEffect()
-                            .frame(width: 22, height: 22)
+                            .frame(width: 28, height: 28)
                             .contentShape(Rectangle())
                     }
-                    // Lands in the 22pt slot the compact search row reserves at its header's
-                    // trailing edge; the 2pt matches the row's own vertical padding.
+                    // Lands in the 28pt slot the compact search row reserves at its header's
+                    // trailing edge, the HadithRow's full-size pill-and-ellipsis pair (its 28pt
+                    // reference pill sits beside it); the 2pt matches the row's own vertical padding.
                     .padding(.top, 2)
                 }
             }
@@ -1015,7 +1074,7 @@ struct AyahContextMenuModifier: ViewModifier {
             .sheet(isPresented: $showingNoteSheet) {
                 if let surah = surahObj {
                     NoteEditorSheet(
-                        title: "Note for \(surah.nameTransliteration) \(surah.id):\(ayah)",
+                        title: String(localized: "Note for \(surah.displayName) \(surah.id):\(ayah)"),
                         text: $draftNote,
                         onAttemptSave: { text in
                             if isNoteAllowed(text) {
@@ -1041,20 +1100,12 @@ struct AyahContextMenuModifier: ViewModifier {
                 Button("Remove Permanently", role: .destructive) {
                     settings.hapticFeedback()
                     withAnimation {
-                        if ayahOfTheDay {
-                            settings.showAyahOfTheDay = false
-                        } else {
-                            settings.lastReadSurah = 0
-                            settings.lastReadAyah = 0
-                            settings.saveLastReadAyah = false
-                        }
+                        settings.showAyahOfTheDay = false
                     }
                 }
                 Button("Cancel") {}
             } message: {
-                Text(ayahOfTheDay
-                     ? "You can re-enable Ayah of the Day later in Quran Settings."
-                     : "You can re-enable Last Read Ayah later in Quran Settings.")
+                Text("You can re-enable Ayah of the Day later in Quran Settings.")
             }
         #else
         content
@@ -1091,8 +1142,10 @@ extension View {
 }
 
 struct LeftSwipeActions: ViewModifier {
-    @ObservedObject private var settings = Settings.shared
-
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     let surah: Int
     let favoriteSurahs: Set<Int>
     let bookmarkedAyahs: Set<String>?
@@ -1178,7 +1231,9 @@ public extension View {
 }
 
 struct RightSwipeActions: ViewModifier {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     /// NOT @ObservedObject - action-closure use only; see AyahContextMenuModifier's note. This
     /// modifier also sits on every row, so player publishes fanned out across the whole list.
     private var quranPlayer: QuranPlayer { .shared }
@@ -1262,8 +1317,9 @@ public extension View {
 import SwiftUI
 
 struct NoteEditorSheet: View {
-    @ObservedObject var settings = Settings.shared
-
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     let title: String
     @Binding var text: String
     var onAttemptSave: (String) -> Bool
@@ -1280,7 +1336,7 @@ struct NoteEditorSheet: View {
     private var isEmpty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
-        NavigationView {
+        SheetNavigationContainer {
             VStack(spacing: 12) {
                 let cardFill   = Color(UIColor.secondarySystemBackground)
                 let cardStroke = Color.primary.opacity(0.12)
@@ -1386,7 +1442,6 @@ struct NoteEditorSheet: View {
                 }
             }
         }
-        .navigationViewStyle(.stack)
     }
 }
 
@@ -1427,19 +1482,32 @@ extension FocusItem {
     static func surah(_ surah: Surah) -> FocusItem {
         // The name honours Hide Tashkeel / Hide Dots like the list rows and toolbar title do.
         let displayName = Settings.shared.cleanedQuranArabic(surah.nameArabic)
+        let footnote = String(localized: "\(surah.type.capitalized.localizedDisplay) · \(surah.numberOfAyahs) ayahs")
+        // In Arabic the hero already IS the name and there is no English meaning: the caption carries
+        // the type and length alone, and the share text names the surah once.
+        if AppLanguage.isArabicScript {
+            return FocusItem(
+                id: "surah-\(surah.id)",
+                arabic: displayName,
+                title: footnote,
+                secondaryArabic: surah.idArabic,
+                shareLabel: String(localized: "Share Surah"),
+                shareText: String(localized: "Surah \(surah.id): \(surah.displayName)") + "\n" + footnote
+            )
+        }
         return FocusItem(
             id: "surah-\(surah.id)",
             arabic: displayName,
             title: "\(surah.id) · \(surah.nameTransliteration)",
             subtitle: surah.nameEnglish,
-            footnote: "\(surah.type.capitalized) · \(surah.numberOfAyahs) ayahs",
+            footnote: footnote,
             secondaryArabic: surah.idArabic,
-            shareLabel: "Share Surah",
-            shareText: """
+            shareLabel: String(localized: "Share Surah"),
+            shareText: String(localized: """
             Surah \(surah.id) - \(surah.nameTransliteration) (\(displayName))
             \(surah.nameEnglish)
-            \(surah.type.capitalized) · \(surah.numberOfAyahs) ayahs
-            """
+            \(surah.type.capitalized.localizedDisplay) · \(surah.numberOfAyahs) ayahs
+            """)
         )
     }
 }
@@ -1458,7 +1526,10 @@ extension FocusItem {
 /// the text into a sheet of its own gives the selection somewhere to live, and each block also gets a one-tap copy
 /// for when the whole block is what you wanted.
 struct SelectAyahTextSheet: View {
-    @ObservedObject var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @Environment(\.dismiss) private var dismiss
 
     let surah: Surah
@@ -1520,8 +1591,40 @@ struct SelectAyahTextSheet: View {
         return surah.ayahs.first(where: { $0.id == anchorHafsAyah }) ?? ayah
     }
 
+    /// Smart matching finds the tapped words unnumbered in the selected riwayah: its alignment maps
+    /// their Hafs ayah to nothing (the basmalah in the Madani count of al-Fatiha). `QiraahAyahResolver`
+    /// calls that unavailable; `arabicAyah` falling back to the tapped number served that riwayah's
+    /// unrelated ayah instead (Warsh 1:1's al-hamd under the basmalah's translation).
+    private var anchorUnnumberedInSelectedQiraah: Bool {
+        guard smartAyahMatching else { return false }
+        let tag = Settings.Riwayah.canonicalTag(selectedQiraah)
+        guard !tag.isEmpty,
+              let alignment = QiraahComparison.alignment(surahID: surah.id, tag: tag, quranData: QuranData.shared) else { return false }
+        return alignment.riwayahNumberForHafs[anchorHafsAyah] == nil
+    }
+
+    /// The rest of a split ayah: the selected riwayah's ayahs after `arabicAyah` that carry the same
+    /// ONE Hafs ayah (al-Fatiha's last ayah is two in the Madani count), joined after it as
+    /// `QiraahAyahResolver` joins them, so the Arabic block covers the whole translation below it.
+    private var arabicSplitTail: [Ayah] {
+        guard smartAyahMatching else { return [] }
+        let tag = Settings.Riwayah.canonicalTag(selectedQiraah)
+        guard !tag.isEmpty,
+              let alignment = QiraahComparison.alignment(surahID: surah.id, tag: tag, quranData: QuranData.shared) else { return [] }
+        let anchor = anchorHafsAyah
+        var tail: [Ayah] = []
+        var last = arabicAyah.id
+        while alignment.hafsRangeForRiwayah[last + 1] == anchor...anchor,
+              let piece = surah.ayahs.first(where: { $0.id == last + 1 }),
+              piece.existsInQiraah(tag, surahID: surah.id) {
+            tail.append(piece)
+            last += 1
+        }
+        return tail
+    }
+
     private var ayahExistsInSelectedQiraah: Bool {
-        arabicAyah.existsInQiraah(selectedQiraah, surahID: surah.id)
+        !anchorUnnumberedInSelectedQiraah && arabicAyah.existsInQiraah(selectedQiraah, surahID: surah.id)
     }
 
     /// Smart Ayah Matching only matters once the sheet's riwayah has moved away from the one the
@@ -1536,14 +1639,18 @@ struct SelectAyahTextSheet: View {
         // comparison sheets do. Passing `clean: hideTashkeel` would route through textCleanArabic, which
         // reads the READER's global Hide Dots itself - so the sheet's Hide Tashkeel would also strip dots
         // and its Hide Dots toggle couldn't restore them.
-        var text = arabicAyah.displayArabicText(
-            surahId: surah.id,
-            clean: false,
-            removeDots: false,
-            qiraahOverride: selectedQiraah
-        )
+        // Words the selected riwayah does not number are shown in Hafs, as the share sheet shares them
+        // (`unnumberedNotice`), not as that riwayah's ayah of the same number.
+        let unnumbered = anchorUnnumberedInSelectedQiraah
+        let base = unnumbered ? hafsAyah : arabicAyah
+        var text = (unnumbered ? [base] : [base] + arabicSplitTail)
+            .map {
+                $0.displayArabicText(surahId: surah.id, clean: false, removeDots: false,
+                                     qiraahOverride: unnumbered ? Settings.Riwayah.hafsTag : selectedQiraah)
+            }
+            .joined(separator: " ")
         if hideTashkeel {
-            if surah.id == 1 && arabicAyah.id == 1 && Ayah.opensWithTaawwudh(text) {
+            if surah.id == 1 && base.id == 1 && Ayah.opensWithTaawwudh(text) {
                 text = Ayah.bismillahCleanArabic
             } else {
                 text = text.removingArabicDiacriticsAndSigns
@@ -1562,76 +1669,44 @@ struct SelectAyahTextSheet: View {
     private var riwayahFooterText: String {
         if smartAyahMatching {
             if arabicAyah.id != ayah.id {
-                return "Switching the riwayah changes the Arabic text only. Smart Ayah Matching: these words sit at ayah \(arabicAyah.id) in this riwayah (ayah numbering differs between riwayat), so that ayah is shown."
+                return String(localized: "Switching the riwayah changes the Arabic text only. Smart Ayah Matching: these words sit at ayah \(arabicAyah.id) in this riwayah (ayah numbering differs between riwayat), so that ayah is shown.")
             }
-            return "Switching the riwayah changes the Arabic text only. Ayah numbering can differ between riwayat: no ayah is ever missing, but some are joined or split differently. Smart Ayah Matching follows the words, so the matching ayah is shown even where numbering differs."
+            return String(localized: "Switching the riwayah changes the Arabic text only. Ayah numbering can differ between riwayat: no ayah is ever missing, but some are joined or split differently. Smart Ayah Matching follows the words, so the matching ayah is shown even where numbering differs.")
         }
-        return "Switching the riwayah changes the Arabic text only. Ayah numbering can differ between riwayat: no ayah is ever missing, but some are joined or split differently (for example, \"Alif Lam Meem\" and \"Dhalika al-Kitab...\" form a single ayah in most qiraat). With Smart Ayah Matching off, the exact tapped number is shown as-is."
+        return String(localized: "Switching the riwayah changes the Arabic text only. Ayah numbering can differ between riwayat: no ayah is ever missing, but some are joined or split differently (for example, \"Alif Lam Meem\" and \"Dhalika al-Kitab...\" form a single ayah in most qiraat). With Smart Ayah Matching off, the exact tapped number is shown as-is.")
+    }
+
+    /// The share sheet's notice for words the selected riwayah does not count as an ayah (the
+    /// basmalah in the Madani count of al-Fatiha): they are not a neighbouring ayah's words, so the
+    /// "not separate" line would be wrong, and the block below shows them in Hafs.
+    private var unnumberedNotice: String {
+        let riwayah = Settings.Riwayah.option(for: selectedQiraah).displayLabel(omitsDefaultSuffix: true)
+        return String(localized: "\(riwayah) does not count these words as an ayah, so the Hafs text is shown.")
     }
 
     var body: some View {
-        NavigationView {
+        SheetNavigationContainer {
             List {
                 Group {
+                    // The riwayah whose Arabic is being selected stays a row: it picks the content.
+                    // Everything that shapes the text (the face, the two cleanup switches, Smart Ayah
+                    // Matching) is in the toolbar menu, so the text blocks come first (Design
+                    // Grammar 6, the Qiraah Comparison sheet's layout; Abu, 2026-10-27).
                     if settings.showQiraahDetails {
                         Section {
                             ArabicTextRiwayahPicker(selection: $selectedQiraah, useMenuRow: true)
-
-                            // The same words across riwayat (anchored through Hafs, like the comparison
-                            // sheet) vs. whatever verse sits at the raw tapped number. Only shown once the
-                            // picker has moved off the riwayah the ayah was tapped under - on the same
-                            // riwayah the resolution is the identity (same rule as the share sheet).
-                            if selectedQiraahDiffersFromOrigin {
-                                Toggle(isOn: $smartAyahMatching.animation(.easeInOut)) {
-                                    Label("Smart Ayah Matching", systemImage: "wand.and.stars")
-                                }
-                                .font(.subheadline)
-                                .onChange(of: smartAyahMatching) { _ in settings.hapticFeedback() }
-                            }
                         } footer: {
-                            if selectedQiraahDiffersFromOrigin {
+                            if anchorUnnumberedInSelectedQiraah {
+                                Text(unnumberedNotice)
+                            } else if selectedQiraahDiffersFromOrigin {
                                 Text(riwayahFooterText)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
                             }
                         }
                     }
 
-                    Section {
-                        Picker("Arabic Font", selection: $selectedFontName) {
-                            Text("Uthmani").tag(Settings.hafsUthmaniFontName)
-                            Text("Maghribi").tag(Settings.warshUthmaniFontName)
-                            Text("Indopak").tag(Settings.indopakFontName)
-                            // The Hijazi face's three mark styles get an entry each (a menu has the room).
-                            ForEach(Settings.HijaziMarkStyle.allCases) { style in
-                                Text("Hijazi (\(style.label))").tag(style.fontName)
-                            }
-                            Text("Kufi").tag(Settings.kufiFontName)
-                            Text("Basic").tag(Settings.systemArabicFontName)
-                        }
-                        // Six faces no longer fit a segmented control on an iPhone-width sheet (every
-                        // label truncated), so this is a menu row like the riwayah row above it.
-                        .pickerStyle(.menu)
-                        .onChange(of: selectedFontName) { _ in settings.hapticFeedback() }
-
-                        Toggle("Hide Tashkeel (Vowel Diacritics) and Signs", isOn: $hideTashkeel.animation(.easeInOut))
-                            .font(.subheadline)
-                            .onChange(of: hideTashkeel) { _ in settings.hapticFeedback() }
-
-                        // Independent, like the settings page it is seeded from: gating this row
-                        // on the one above made "dots hidden, tashkeel shown" unreachable here too.
-                        Toggle("Hide Arabic Dots", isOn: $hideDots.animation(.easeInOut))
-                            .font(.subheadline)
-                            .onChange(of: hideDots) { _ in settings.hapticFeedback() }
-                    } footer: {
-                        Text("Shapes only the Arabic text below; the reading view keeps its own settings.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    if ayahExistsInSelectedQiraah {
+                    if ayahExistsInSelectedQiraah || anchorUnnumberedInSelectedQiraah {
                         selectableBlock(
-                            title: "ARABIC",
+                            title: String(localized: "ARABIC"),
                             text: arabicText,
                             font: usesCustomArabicFace
                                 ? .custom(arabicFontName, size: settings.fontArabicSize)
@@ -1648,7 +1723,7 @@ struct SelectAyahTextSheet: View {
 
                     if !hafsAyah.textTransliteration.isEmpty {
                         selectableBlock(
-                            title: "TRANSLITERATION",
+                            title: String(localized: "TRANSLITERATION"),
                             text: hafsAyah.textTransliteration,
                             font: .system(size: settings.englishFontSize),
                             isArabic: false
@@ -1685,9 +1760,64 @@ struct SelectAyahTextSheet: View {
             .applyConditionalListStyle()
             .navigationTitle(ayahSheetTitle(surahNumber: surah.id, ayahNumber: ayah.id))
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) { optionsMenu }
+            }
             .sheetDismissToolbar()
         }
-        .navigationViewStyle(.stack)
+    }
+
+    /// What shapes the Arabic block, as the toolbar options menu: the face (six, so a submenu), the
+    /// two cleanup switches, and Smart Ayah Matching once the riwayah has moved off the reader's.
+    /// Shapes only the text in this sheet; the reading view keeps its own settings.
+    private var optionsMenu: some View {
+        Menu {
+            Picker("Arabic Font", selection: $selectedFontName) {
+                Text("Uthmani").tag(Settings.hafsUthmaniFontName)
+                Text("Maghribi").tag(Settings.warshUthmaniFontName)
+                Text("Indopak").tag(Settings.indopakFontName)
+                // The Hijazi face's three mark styles get an entry each (a menu has the room).
+                ForEach(Settings.HijaziMarkStyle.allCases) { style in
+                    Text("Hijazi (\(style.label))").tag(style.fontName)
+                }
+                Text("Kufi").tag(Settings.kufiFontName)
+                Text("Basic").tag(Settings.systemArabicFontName)
+            }
+            .pickerStyle(.menu)
+            .onChange(of: selectedFontName) { _ in settings.hapticFeedback() }
+            Divider()
+            // `.automatic`, not the app's padded switch: inside a menu that style draws double-height
+            // rows with stray checkmarks (see the memory note on menu toggles).
+            Toggle(isOn: $hideTashkeel) {
+                Label("Hide Tashkeel and Signs", systemImage: "textformat")
+                Text("Select the bare lettering")
+            }
+            .toggleStyle(.automatic)
+            // Independent, like the settings page it is seeded from: gating this row on the one
+            // above made "dots hidden, tashkeel shown" unreachable here too.
+            Toggle(isOn: $hideDots) {
+                Label("Hide Dots", systemImage: "circle.dotted")
+                Text("Down to the Uthmani rasm")
+            }
+            .toggleStyle(.automatic)
+            // The same words across riwayat (anchored through Hafs, like the comparison sheet) vs.
+            // whatever verse sits at the raw tapped number. Only shown once the picker has moved
+            // off the riwayah the ayah was tapped under: on the same riwayah the resolution is the
+            // identity (same rule as the share sheet).
+            if settings.showQiraahDetails, selectedQiraahDiffersFromOrigin {
+                Divider()
+                Toggle(isOn: $smartAyahMatching) {
+                    Label("Smart Ayah Matching", systemImage: "wand.and.stars")
+                    Text("Follow the same words where the numbering differs")
+                }
+                .toggleStyle(.automatic)
+            }
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+        }
+        .fixedMenuOrder()
+        .tint(settings.accentColor.color)
+        .accessibilityLabel("Text options")
     }
 
     @ViewBuilder
@@ -1703,6 +1833,8 @@ struct SelectAyahTextSheet: View {
                 isArabic: isArabic,
                 lineSpacing: isArabic ? 8 : 2
             )
+            // The transliteration and the translations read left to right in the Arabic interface.
+            .leftToRightContent(!isArabic)
             .padding(.vertical, 4)
         } header: {
             HStack {

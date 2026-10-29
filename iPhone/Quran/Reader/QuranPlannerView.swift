@@ -240,9 +240,15 @@ enum QuranPlannerMath {
         let startSurahName: String
         let startAyah: Int
         let startPage: Int?
+        let endSurahID: Int
         let endSurahName: String
         let endAyah: Int
         let endPage: Int?
+
+        /// The names on screen and in the reminder, looked up by number so the memoized span never
+        /// holds a stale spelling (the stored names are the transliterations).
+        var startDisplayName: String { Surah.displayName(id: startSurahID, stored: startSurahName) }
+        var endDisplayName: String { Surah.displayName(id: endSurahID, stored: endSurahName) }
     }
 
     private static var spanCache: (khatmRevision: Int, count: Int, span: TodaySpan?)?
@@ -278,6 +284,7 @@ enum QuranPlannerMath {
                 startSurahName: start.surah.nameTransliteration,
                 startAyah: start.ayah.id,
                 startPage: start.ayah.page,
+                endSurahID: last.surah.id,
                 endSurahName: last.surah.nameTransliteration,
                 endAyah: last.ayah.id,
                 endPage: last.ayah.page
@@ -310,9 +317,9 @@ enum QuranPlannerMath {
     }
 
     static func spanLabel(_ span: TodaySpan) -> String {
-        var label = "\(span.startSurahName) \(span.startAyah) to \(span.endSurahName) \(span.endAyah)"
+        var label = String(localized: "\(span.startDisplayName) \(span.startAyah) to \(span.endDisplayName) \(span.endAyah)")
         if let startPage = span.startPage, let endPage = span.endPage {
-            label += startPage == endPage ? " · page \(startPage)" : " · pages \(startPage)-\(endPage)"
+            label += startPage == endPage ? String(localized: " · page \(startPage)") : String(localized: " · pages \(startPage)-\(endPage)")
         }
         return label
     }
@@ -325,6 +332,8 @@ enum QuranPlannerMath {
 /// on toggle/time/goal changes never stacks duplicates.
 enum QuranPlannerReminder {
     static let identifier = "quran-planner-daily"
+    /// The planner's Daily Reminder switch (`QuranPlannerView.reminderEnabled`).
+    static let enabledKey = "quranPlannerReminderEnabled"
     /// 6:00 PM, stored as minutes past midnight (matches the @AppStorage key's Int encoding).
     static let defaultMinutes = 18 * 60
 
@@ -357,9 +366,21 @@ enum QuranPlannerReminder {
             cancel()
             return
         }
+        add(minutes: minutes, body: lines.joined(separator: " "))
+    }
+
+    /// The request as last scheduled (its time and body), kept so Allow Notifications can bring it back
+    /// when it comes on again (`rearmIfKept`, from `Settings.notificationsEnabledDidChange`); the planner
+    /// refreshes the body on its next visit, as it always has.
+    private static let lastScheduledKey = "quranPlannerReminderLast"
+
+    private static func add(minutes: Int, body: String) {
+        UserDefaults.standard.set(["minutes": minutes, "body": body], forKey: lastScheduledKey)
+        // Allow Notifications off: the copy waits, nothing is pending.
+        guard Settings.shared.notificationsEnabled else { return }
         let content = UNMutableNotificationContent()
-        content.title = "Quran Planner"
-        content.body = lines.joined(separator: " ")
+        content.title = String(localized: "Quran Planner")
+        content.body = body
         content.sound = .default
 
         var components = DateComponents()
@@ -372,33 +393,57 @@ enum QuranPlannerReminder {
         )
     }
 
+    /// Re-adds the reminder as it was last scheduled, if one was and it has not been cancelled since.
+    /// The switch decides, not the kept copy: a Reset (which spares the device-only copy) or an iCloud
+    /// restore can turn the switch off without cancelling, and an OFF switch must mean no reminder.
+    static func rearmIfKept() {
+        guard UserDefaults.standard.bool(forKey: enabledKey) else {
+            cancel()
+            return
+        }
+        guard let last = UserDefaults.standard.dictionary(forKey: lastScheduledKey),
+              let minutes = last["minutes"] as? Int, let body = last["body"] as? String else { return }
+        add(minutes: minutes, body: body)
+    }
+
     static func cancel() {
+        // Only when there is a copy: a defaults write republishes Settings, and this runs on every
+        // planner open with the reminder off (and at launch).
+        if UserDefaults.standard.object(forKey: lastScheduledKey) != nil {
+            UserDefaults.standard.removeObject(forKey: lastScheduledKey)
+        }
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [identifier])
+    }
+
+    /// At launch: a reminder still pending (or kept) under a switch that reads off goes (see `rearmIfKept`).
+    static func dropIfSwitchedOff() {
+        guard !UserDefaults.standard.bool(forKey: enabledKey) else { return }
+        cancel()
     }
 
     private static func body(plan: QuranPlan, todayTarget: Int?, pagesEquivalent: Int?) -> String {
         if let target = todayTarget, target > 0 {
-            var line = "Time for today's Quran reading: \(target) ayahs"
-            if let pages = pagesEquivalent { line += " (~\(pages) page\(pages == 1 ? "" : "s"))" }
-            if let end = plan.endDate { line += " to finish by \(mediumDate.string(from: end))." } else { line += "." }
+            var line = String(localized: "Time for today's Quran reading: \(target) ayahs")
+            if let pages = pagesEquivalent { line += pages == 1 ? String(localized: " (~\(pages) page)") : String(localized: " (~\(pages) pages)") }
+            if let end = plan.endDate { line += String(localized: " to finish by \(mediumDate.string(from: end)).") } else { line += "." }
             return line
         }
         if let end = plan.endDate {
-            return "Time for today's Quran reading. Keep your pace to finish by \(mediumDate.string(from: end))."
+            return String(localized: "Time for today's Quran reading. Keep your pace to finish by \(mediumDate.string(from: end)).")
         }
         if let perDay = plan.ayahsPerDay {
-            return "Time for today's Quran reading: \(perDay) ayahs a day at your chosen pace."
+            return String(localized: "Time for today's Quran reading: \(perDay) ayahs a day at your chosen pace.")
         }
-        return "Time for today's Quran reading."
+        return String(localized: "Time for today's Quran reading.")
     }
 
     private static func revisionBody(_ line: RevisionLine) -> String {
         guard line.todayTarget > 0 else {
-            return "Revision: \(line.setLabel) is done for this cycle."
+            return String(localized: "Revision: \(line.setLabel) is done for this cycle.")
         }
-        var text = "Revision: \(line.todayTarget) ayahs"
-        if let pages = line.pages { text += " (~\(pages) page\(pages == 1 ? "" : "s"))" }
-        return text + " of \(line.setLabel) today."
+        var text = String(localized: "Revision: \(line.todayTarget) ayahs")
+        if let pages = line.pages { text += pages == 1 ? String(localized: " (~\(pages) page)") : String(localized: " (~\(pages) pages)") }
+        return text + String(localized: " of \(line.setLabel) today.")
     }
 
     private static let mediumDate: DateFormatter = {
@@ -413,13 +458,16 @@ enum QuranPlannerReminder {
 /// The planner's only entry point: the calendar button in the Quran tab's leading toolbar. Owns the
 /// sheet and - since it is always mounted while the tab is up - the plan's day-rollover lifecycle.
 struct QuranPlannerToolbarButton: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @ObservedObject private var quranData = QuranData.shared
 
     let openReader: (Int, Int) -> Void
     /// Simple Mode: the planner stays mounted (its settle hooks below stamp a finished plan, which is
     /// what the planner DOES, so they must keep running) but draws no button; the Quran tab's More menu
-    /// opens it through `presentRequest` (docs/Simple Mode Guide.md, rule 1).
+    /// opens it through `presentRequest` (Docs/Product/Simple Mode Guide.md, rule 1).
     var hidesButton = false
     var presentRequest: Binding<Bool> = .constant(false)
 
@@ -534,7 +582,12 @@ struct PlannerRing: View {
 // MARK: - Full planner sheet
 
 struct QuranPlannerView: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var adhanSettings = AdhanSettings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @ObservedObject private var quranData = QuranData.shared
     @Environment(\.presentationMode) private var presentationMode
 
@@ -576,7 +629,7 @@ struct QuranPlannerView: View {
     @State private var showingEndRevisionConfirmation = false
 
     // Daily reminder (local to the planner - Settings is owned elsewhere, so plain @AppStorage keys)
-    @AppStorage("quranPlannerReminderEnabled") private var reminderEnabled = false
+    @AppStorage(QuranPlannerReminder.enabledKey) private var reminderEnabled = false
     @AppStorage("quranPlannerReminderMinutes") private var reminderMinutes = QuranPlannerReminder.defaultMinutes
     @State private var showingReminderDeniedAlert = false
 
@@ -605,7 +658,7 @@ struct QuranPlannerView: View {
     }
 
     var body: some View {
-        NavigationView {
+        SheetNavigationContainer {
             List {
                 if !settings.isHafsDisplay {
                     riwayahNotice
@@ -632,7 +685,6 @@ struct QuranPlannerView: View {
             .navigationTitle("Quran Planner")
             .sheetDismissToolbar()
         }
-        .navigationViewStyle(.stack)
         .onAppear {
             settings.settleQuranPlan(totalCompleted: totalCompleted, totalAyahs: totalAyahs)
             settings.settleQuranRevisionPlan(quran: quranData.quran)
@@ -655,7 +707,9 @@ struct QuranPlannerView: View {
             }
             // The notification body is frozen at schedule time; refresh it each visit so "today's
             // target" tracks the plan's self-correcting amount (also cancels if the plan is gone).
-            if reminderEnabled { rescheduleReminder() }
+            // Unconditionally: with the switch off it cancels, which clears a request a Reset or an
+            // iCloud restore turned the switch off under without cancelling.
+            rescheduleReminder()
         }
     }
 
@@ -716,7 +770,7 @@ struct QuranPlannerView: View {
         Section {
             Picker("Goal", selection: $goalMode) {
                 ForEach(GoalMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+                    Text(mode.rawValue.localizedDisplay).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
@@ -724,9 +778,9 @@ struct QuranPlannerView: View {
 
             if goalMode == .byDate {
                 HStack(spacing: 8) {
-                    presetButton("1 Month", days: 30)
-                    presetButton("2 Months", days: 60)
-                    presetButton("3 Months", days: 90)
+                    presetButton(String(localized: "1 Month"), days: 30)
+                    presetButton(String(localized: "2 Months"), days: 60)
+                    presetButton(String(localized: "3 Months"), days: 90)
                 }
                 .padding(.vertical, 2)
                 .listRowSeparator(.hidden)
@@ -742,12 +796,11 @@ struct QuranPlannerView: View {
 
                 let remaining = max(1, totalAyahs - totalCompleted)
                 let perDay = Int((Double(remaining) / Double(QuranPlannerMath.daysLeft(until: targetDate))).rounded(.up))
-                summaryLine("About \(perDay) ayahs (~\(pagesEquivalent(perDay)) pages) a day to finish by \(Self.mediumDate.string(from: targetDate)).")
+                summaryLine(String(localized: "About \(perDay) ayahs (~\(pagesEquivalent(perDay)) pages) a day to finish by \(Self.mediumDate.string(from: targetDate))."))
             } else {
                 Stepper(value: $ayahsPerDay, in: 5...600, step: 5) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("\(ayahsPerDay) ayahs a day")
-                            .font(.subheadline.weight(.semibold))
                             .monospacedDigit()
 
                         Text("about \(pagesEquivalent(ayahsPerDay)) pages")
@@ -759,7 +812,7 @@ struct QuranPlannerView: View {
 
                 let remaining = max(1, totalAyahs - totalCompleted)
                 let days = Int((Double(remaining) / Double(max(1, ayahsPerDay))).rounded(.up))
-                summaryLine("Finishes in about \(days) day\(days == 1 ? "" : "s").")
+                summaryLine(days == 1 ? String(localized: "Finishes in about \(days) day.") : String(localized: "Finishes in about \(days) days."))
             }
         } header: {
             Text("GOAL")
@@ -825,12 +878,10 @@ struct QuranPlannerView: View {
             settings.hapticFeedback()
             targetDate = Calendar.current.date(byAdding: .day, value: days - 1, to: Date()) ?? Date()
         } label: {
-            Text(label)
-                .font(.caption.weight(.semibold))
+            Text(label.localizedDigits)
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.bordered)
-        .tint(accent)
+        .buttonStyle(.accentChip)
     }
 
     private func startPlan() {
@@ -867,7 +918,7 @@ struct QuranPlannerView: View {
         Section {
             Picker("Plan", selection: $plannerTab) {
                 ForEach(PlannerTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
+                    Text(tab.rawValue.localizedDisplay).tag(tab)
                 }
             }
             .pickerStyle(.segmented)
@@ -934,7 +985,7 @@ struct QuranPlannerView: View {
         Section {
             Picker("Revise", selection: $revisionScopeMode) {
                 ForEach(RevisionScopeMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+                    Text(mode.rawValue.localizedDisplay).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
@@ -942,9 +993,9 @@ struct QuranPlannerView: View {
 
             if revisionScopeMode == .juz {
                 HStack(spacing: 8) {
-                    juzPresetButton("Juz 30", from: 30)
-                    juzPresetButton("Juz 29 to 30", from: 29)
-                    juzPresetButton("Juz 28 to 30", from: 28)
+                    juzPresetButton(String(localized: "Juz 30"), from: 30)
+                    juzPresetButton(String(localized: "Juz 29 to 30"), from: 29)
+                    juzPresetButton(String(localized: "Juz 28 to 30"), from: 28)
                 }
                 .padding(.vertical, 2)
                 .listRowSeparator(.hidden)
@@ -972,10 +1023,8 @@ struct QuranPlannerView: View {
                 NavigationLink(destination: RevisionSurahPicker(selection: $revisionSurahs)) {
                     HStack {
                         Label("Choose Surahs", systemImage: "list.bullet")
-                            .font(.subheadline)
                         Spacer()
                         Text(revisionSurahs.isEmpty ? "None" : (revisionSurahs.count == 1 ? "1 surah" : "\(revisionSurahs.count) surahs"))
-                            .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
                 }
@@ -987,7 +1036,6 @@ struct QuranPlannerView: View {
                         revisionSurahs = Set(settings.favoriteSurahs)
                     } label: {
                         Label("Use Favorite Surahs", systemImage: "star.fill")
-                            .font(.subheadline)
                             .foregroundColor(accent)
                     }
                     .listRowSeparator(.hidden)
@@ -995,23 +1043,24 @@ struct QuranPlannerView: View {
             }
 
             if refs.isEmpty {
-                summaryLine("Pick at least one surah to revise.")
+                summaryLine(String(localized: "Pick at least one surah to revise."))
             } else {
-                summaryLine("\(refs.count) ayahs across \(pages) page\(pages == 1 ? "" : "s"): \(QuranRevisionMath.scopeLabel(scope, quran: quranData.quran)).")
+                summaryLine(pages == 1
+                    ? String(localized: "\(refs.count) ayahs across \(pages) page: \(QuranRevisionMath.scopeLabel(scope, quran: quranData.quran)).")
+                    : String(localized: "\(refs.count) ayahs across \(pages) pages: \(QuranRevisionMath.scopeLabel(scope, quran: quranData.quran))."))
             }
         } header: {
             Text("REVISE")
         } footer: {
             Text("Ayahs are counted as revised when you read them in the app, in any mode, or when you mark them here.")
-                .font(.caption)
         }
         .themedListRowBackground()
 
         Section {
             HStack(spacing: 8) {
-                cyclePresetButton("1 Week", days: 7)
-                cyclePresetButton("2 Weeks", days: 14)
-                cyclePresetButton("1 Month", days: 30)
+                cyclePresetButton(String(localized: "1 Week"), days: 7)
+                cyclePresetButton(String(localized: "2 Weeks"), days: 14)
+                cyclePresetButton(String(localized: "1 Month"), days: 30)
             }
             .padding(.vertical, 2)
             .listRowSeparator(.hidden)
@@ -1019,7 +1068,6 @@ struct QuranPlannerView: View {
             Stepper(value: $revisionCycleDays, in: 1...90) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(revisionCycleDays == 1 ? "Every day" : "Every \(revisionCycleDays) days")
-                        .font(.subheadline.weight(.semibold))
                         .monospacedDigit()
 
                     Text("one full pass through the set")
@@ -1030,7 +1078,9 @@ struct QuranPlannerView: View {
             .listRowSeparator(.hidden)
 
             if !refs.isEmpty {
-                summaryLine("About \(perDay) ayahs a day to go through it every \(revisionCycleDays) day\(revisionCycleDays == 1 ? "" : "s").")
+                summaryLine(revisionCycleDays == 1
+                    ? String(localized: "About \(perDay) ayahs a day to go through it every \(revisionCycleDays) day.")
+                    : String(localized: "About \(perDay) ayahs a day to go through it every \(revisionCycleDays) days."))
             }
         } header: {
             Text("CYCLE")
@@ -1076,14 +1126,12 @@ struct QuranPlannerView: View {
             revisionJuzFrom = from
             revisionJuzTo = 30
         } label: {
-            Text(label)
-                .font(.caption.weight(.semibold))
+            Text(label.localizedDigits)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.bordered)
-        .tint(accent)
+        .buttonStyle(.accentChip)
     }
 
     private func cyclePresetButton(_ label: String, days: Int) -> some View {
@@ -1092,11 +1140,9 @@ struct QuranPlannerView: View {
             revisionCycleDays = days
         } label: {
             Text(label)
-                .font(.caption.weight(.semibold))
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.bordered)
-        .tint(accent)
+        .buttonStyle(.accentChip)
     }
 
     private func startRevision() {
@@ -1165,10 +1211,17 @@ struct QuranPlannerView: View {
                                 doneToday: doneToday, leftToday: leftToday, span: span)
     }
 
-    /// Pages a span covers, from its first to its last page.
-    private func pages(of span: QuranPlannerMath.TodaySpan) -> Int? {
-        guard let start = span.startPage, let end = span.endPage else { return nil }
-        return max(1, end - start + 1)
+    /// Distinct mushaf pages of the ayahs today's span names: the next `leftToday` unrevised ayahs of
+    /// the set, the walk `QuranRevisionMath.todaySpan` makes. First page to last overcounted a set with
+    /// gaps (a surah list, or ayahs already revised out of order): the end of Al-Kahf through Al-Mulk
+    /// read as "~259 pages".
+    private func todayPages(_ progress: RevisionProgress) -> Int? {
+        guard progress.span != nil else { return nil }
+        let today = progress.refs.lazy
+            .filter { !settings.isRevisionAyahRevised(surah: $0.surahID, ayah: $0.ayahID) }
+            .prefix(max(1, progress.leftToday))
+        let pages = QuranRevisionMath.pageCount(of: Array(today))
+        return pages > 0 ? pages : nil
     }
 
     @ViewBuilder
@@ -1234,8 +1287,8 @@ struct QuranPlannerView: View {
             if progress.leftToday > 0, let span = progress.span {
                 HStack(spacing: 10) {
                     actionTile(
-                        title: "Continue Revising",
-                        subtitle: "from \(span.startSurahName) \(span.startAyah)",
+                        title: String(localized: "Continue Revising"),
+                        subtitle: String(localized: "from \(span.startDisplayName) \(span.startAyah)"),
                         symbol: "book.fill"
                     ) {
                         pendingRead = QuranPlannerPendingRead(surah: span.startSurahID, ayah: span.startAyah)
@@ -1243,8 +1296,8 @@ struct QuranPlannerView: View {
                     }
 
                     actionTile(
-                        title: "Mark as Revised",
-                        subtitle: "revised from memory",
+                        title: String(localized: "Mark as Revised"),
+                        subtitle: String(localized: "revised from memory"),
                         symbol: "checkmark.circle.fill"
                     ) {
                         withAnimation {
@@ -1266,7 +1319,9 @@ struct QuranPlannerView: View {
                         .font(.subheadline)
                         .foregroundStyle(.orange)
 
-                    Text("This cycle is \(overdue) day\(overdue == 1 ? "" : "s") over. Finish what is left, or adjust the cycle to give it more days.")
+                    Text(overdue == 1
+                         ? String(localized: "This cycle is \(overdue) day over. Finish what is left, or adjust the cycle to give it more days.")
+                         : String(localized: "This cycle is \(overdue) days over. Finish what is left, or adjust the cycle to give it more days."))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1299,7 +1354,7 @@ struct QuranPlannerView: View {
                     .tint(accent)
 
                 let pages = QuranRevisionMath.pageCount(of: progress.refs)
-                Text("\(progress.scopeCount) ayahs · \(pages) page\(pages == 1 ? "" : "s") · every \(plan.cycleDays) day\(plan.cycleDays == 1 ? "" : "s") since \(Self.mediumDate.string(from: plan.startDate))")
+                Text("\(progress.scopeCount) ayahs · \(pages == 1 ? String(localized: "\(pages) page") : String(localized: "\(pages) pages")) · \(plan.cycleDays == 1 ? String(localized: "every \(plan.cycleDays) day") : String(localized: "every \(plan.cycleDays) days")) since \(Self.mediumDate.string(from: plan.startDate))")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -1321,14 +1376,14 @@ struct QuranPlannerView: View {
         let day = min(plan.cycleDay(), plan.cycleDays)
 
         return SummaryTileGrid(columns: 2) {
-            statTile(value: "Day \(day)", unit: "of \(plan.cycleDays)",
-                     label: "Cycle \(plan.cyclesCompleted + 1)", symbol: "arrow.triangle.2.circlepath")
-            statTile(value: "\(daysLeft)", unit: daysLeft == 1 ? "day" : "days",
-                     label: "Days Left", symbol: "calendar")
-            statTile(value: "\(streak)", unit: streak == 1 ? "day" : "days",
-                     label: "Streak", symbol: "flame.fill")
-            statTile(value: "\(plan.cyclesCompleted)", unit: plan.cyclesCompleted == 1 ? "pass" : "passes",
-                     label: "Completed", symbol: "checkmark.seal.fill")
+            statTile(value: String(localized: "Day \(day)"), unit: String(localized: "of \(plan.cycleDays)"),
+                     label: String(localized: "Cycle \(plan.cyclesCompleted + 1)"), symbol: "arrow.triangle.2.circlepath")
+            statTile(value: "\(daysLeft)", unit: daysLeft == 1 ? String(localized: "day") : String(localized: "days"),
+                     label: String(localized: "Days Left"), symbol: "calendar")
+            statTile(value: "\(streak)", unit: streak == 1 ? String(localized: "day") : String(localized: "days"),
+                     label: String(localized: "Streak"), symbol: "flame.fill")
+            statTile(value: "\(plan.cyclesCompleted)", unit: plan.cyclesCompleted == 1 ? String(localized: "pass") : String(localized: "passes"),
+                     label: String(localized: "Completed"), symbol: "checkmark.seal.fill")
         }
     }
 
@@ -1340,7 +1395,6 @@ struct QuranPlannerView: View {
                 withAnimation { editingRevision = true }
             } label: {
                 Label("Adjust Revision", systemImage: "slider.horizontal.3")
-                    .font(.subheadline)
                     .foregroundColor(accent)
             }
 
@@ -1349,7 +1403,6 @@ struct QuranPlannerView: View {
                 showingEndRevisionConfirmation = true
             } label: {
                 Label("End Revision", systemImage: "xmark.circle")
-                    .font(.subheadline)
             }
             .confirmationDialog(
                 "End this revision plan?",
@@ -1366,7 +1419,6 @@ struct QuranPlannerView: View {
             }
         } footer: {
             Text("An ayah of the set counts as revised when you read it in the app, in any mode, or when you mark it here. Once the whole set is done, the next cycle starts from the top.")
-                .font(.caption)
         }
         .themedListRowBackground()
     }
@@ -1435,8 +1487,8 @@ struct QuranPlannerView: View {
             if leftToday > 0, let span {
                 HStack(spacing: 10) {
                     actionTile(
-                        title: "Continue Reading",
-                        subtitle: "from \(span.startSurahName) \(span.startAyah)",
+                        title: String(localized: "Continue Reading"),
+                        subtitle: String(localized: "from \(span.startDisplayName) \(span.startAyah)"),
                         symbol: "book.fill"
                     ) {
                         pendingRead = QuranPlannerPendingRead(surah: span.startSurahID, ayah: span.startAyah)
@@ -1444,8 +1496,8 @@ struct QuranPlannerView: View {
                     }
 
                     actionTile(
-                        title: "Mark as Read",
-                        subtitle: "read outside the app",
+                        title: String(localized: "Mark as Read"),
+                        subtitle: String(localized: "read outside the app"),
                         symbol: "checkmark.circle.fill"
                     ) {
                         withAnimation {
@@ -1498,7 +1550,7 @@ struct QuranPlannerView: View {
 
                 let elapsed = QuranPlannerMath.daysElapsed(since: plan.startDate) + 1
                 let readSinceStart = max(0, totalCompleted - plan.startCompleted)
-                Text("\(readSinceStart) ayahs since \(Self.mediumDate.string(from: plan.startDate)) · \(elapsed) day\(elapsed == 1 ? "" : "s")")
+                Text("\(readSinceStart) ayahs since \(Self.mediumDate.string(from: plan.startDate)) · \(elapsed == 1 ? String(localized: "\(elapsed) day") : String(localized: "\(elapsed) days"))")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -1520,8 +1572,7 @@ struct QuranPlannerView: View {
     /// (this lives in `dashboardSections`), so there is never a reminder without a plan behind it.
     private var reminderSection: some View {
         Section {
-            Toggle("Daily Reminder", isOn: reminderToggleBinding.animation(.easeInOut))
-                .font(.subheadline)
+            SettingsToggle(String(localized: "Daily Reminder"), isOn: reminderToggleBinding)
                 .listRowSeparator(.hidden)
                 // On the toggle, not the Section: a modifier on a Section inside a List is applied to
                 // each of its rows, so one `.alert` became two presentation bridges bound to one Bool,
@@ -1543,6 +1594,17 @@ struct QuranPlannerView: View {
                     Text("Notifications are turned off for this app. Allow them in Settings to get a daily reading reminder.")
                 }
 
+            // On while Allow Notifications is off: the reminder is kept and held (`QuranPlannerReminder.add`)
+            // until that switch comes back on (`rearmIfKept`). The Sunnah Reminders screen's bell.slash
+            // caption, worded for this one reminder.
+            if reminderEnabled && !adhanSettings.notificationsEnabled {
+                Label("Allow Notifications is off in Notification Settings, so this reminder cannot arrive until it is on.", systemImage: "bell.slash")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .listRowSeparator(.hidden)
+            }
+
             if reminderEnabled {
                 DatePicker(
                     "Time",
@@ -1556,7 +1618,6 @@ struct QuranPlannerView: View {
             Text("REMINDER")
         } footer: {
             Text("A daily notification at the chosen time with your reading amount. It re-schedules whenever the goal or time changes, and stops when the plan ends.")
-                .font(.caption)
         }
         .themedListRowBackground()
     }
@@ -1567,14 +1628,21 @@ struct QuranPlannerView: View {
         Binding(
             get: { reminderEnabled },
             set: { enabled in
-                settings.hapticFeedback()
                 guard enabled else {
                     reminderEnabled = false
                     QuranPlannerReminder.cancel()
                     return
                 }
                 Task { @MainActor in
-                    if await settings.requestNotificationAuthorization() {
+                    // With the app's own Allow Notifications off the system is never asked (the request
+                    // reports false before any prompt), so the iOS "Allow them in Settings" dialog named
+                    // the wrong switch. The choice is kept instead, as every reminder keeps it while that
+                    // switch is off: `add` holds the request and `rearmIfKept` adds it when it comes on.
+                    var allowed = true
+                    if settings.notificationsEnabled {
+                        allowed = await settings.requestNotificationAuthorization()
+                    }
+                    if allowed {
                         withAnimation { reminderEnabled = true }
                         rescheduleReminder()
                     } else {
@@ -1623,7 +1691,7 @@ struct QuranPlannerView: View {
             let progress = revisionProgress(plan: plan)
             revisionLine = QuranPlannerReminder.RevisionLine(
                 todayTarget: progress.target,
-                pages: progress.span.flatMap(pages(of:)),
+                pages: todayPages(progress),
                 setLabel: QuranRevisionMath.scopeLabel(plan.scope, quran: quranData.quran)
             )
         }
@@ -1651,34 +1719,34 @@ struct QuranPlannerView: View {
         return SummaryTileGrid(columns: 2) {
             if let end = plan.endDate {
                 let daysLeft = QuranPlannerMath.daysLeft(until: end)
-                statTile(value: "\(daysLeft)", unit: daysLeft == 1 ? "day" : "days",
-                         label: "Days Left", symbol: "calendar")
+                statTile(value: "\(daysLeft)", unit: daysLeft == 1 ? String(localized: "day") : String(localized: "days"),
+                         label: String(localized: "Days Left"), symbol: "calendar")
                 statTile(value: Self.shortDate.string(from: end), unit: "",
-                         label: "Finish By", symbol: "flag.checkered")
+                         label: String(localized: "Finish By"), symbol: "flag.checkered")
             } else if let perDay = plan.ayahsPerDay {
-                statTile(value: "\(perDay)", unit: "ayahs",
-                         label: "Daily Amount", symbol: "book")
+                statTile(value: "\(perDay)", unit: String(localized: "ayahs"),
+                         label: String(localized: "Daily Amount"), symbol: "book")
                 statTile(
                     value: QuranPlannerMath.projectedFinish(plan: plan, remaining: max(0, totalAyahs - totalCompleted))
                         .map { Self.shortDate.string(from: $0) } ?? "-",
                     unit: "",
-                    label: "Projected", symbol: "flag.checkered"
+                    label: String(localized: "Projected"), symbol: "flag.checkered"
                 )
             }
 
-            statTile(value: "\(streak)", unit: streak == 1 ? "day" : "days",
-                     label: "Streak", symbol: "flame.fill")
+            statTile(value: "\(streak)", unit: streak == 1 ? String(localized: "day") : String(localized: "days"),
+                     label: String(localized: "Streak"), symbol: "flame.fill")
 
             if let delta = QuranPlannerMath.paceDelta(plan: plan, totalAyahs: totalAyahs, totalCompleted: totalCompleted) {
                 if delta >= -5 && delta <= 5 {
-                    statTile(value: "On track", unit: "", label: "Pace", symbol: "checkmark.circle.fill")
+                    statTile(value: String(localized: "On track"), unit: "", label: String(localized: "Pace"), symbol: "checkmark.circle.fill")
                 } else if delta > 0 {
-                    statTile(value: "+\(delta)", unit: "ayahs", label: "Ahead", symbol: "hare.fill")
+                    statTile(value: "+\(delta)", unit: String(localized: "ayahs"), label: String(localized: "Ahead"), symbol: "hare.fill")
                 } else {
-                    statTile(value: "\(delta)", unit: "ayahs", label: "Behind", symbol: "tortoise.fill")
+                    statTile(value: "\(delta)", unit: String(localized: "ayahs"), label: String(localized: "Behind"), symbol: "tortoise.fill")
                 }
             } else {
-                statTile(value: "\(doneToday)", unit: "ayahs", label: "Read Today", symbol: "text.book.closed.fill")
+                statTile(value: "\(doneToday)", unit: String(localized: "ayahs"), label: String(localized: "Read Today"), symbol: "text.book.closed.fill")
             }
         }
     }
@@ -1698,7 +1766,7 @@ struct QuranPlannerView: View {
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(value)
+                Text(value.localizedDigits)
                     .font(.title3.weight(.bold).monospacedDigit())
                     .foregroundColor(.primary)
                     .lineLimit(1)
@@ -1777,7 +1845,6 @@ struct QuranPlannerView: View {
                 withAnimation { editingGoal = true }
             } label: {
                 Label("Adjust Goal", systemImage: "slider.horizontal.3")
-                    .font(.subheadline)
                     .foregroundColor(accent)
             }
 
@@ -1786,7 +1853,6 @@ struct QuranPlannerView: View {
                 showingEndPlanConfirmation = true
             } label: {
                 Label("End Plan", systemImage: "xmark.circle")
-                    .font(.subheadline)
             }
             .confirmationDialog(
                 "End this plan?",
@@ -1802,7 +1868,6 @@ struct QuranPlannerView: View {
             }
         } footer: {
             Text("Progress comes from khatm marking: ayahs are marked as you read in the app, and you can review or reset them in Khatm mode on the Quran tab.")
-                .font(.caption)
         }
         .themedListRowBackground()
     }
@@ -1825,7 +1890,9 @@ struct QuranPlannerView: View {
                     .font(.title2.weight(.bold))
 
                 let days = QuranPlannerMath.daysElapsed(since: plan.startDate) + 1
-                Text("Alhamdulillah, you finished the Quran over \(days) day\(days == 1 ? "" : "s"). May Allah accept it and make it a witness for you.")
+                Text(days == 1
+                    ? String(localized: "Alhamdulillah, you finished the Quran over \(days) day. May Allah accept it and make it a witness for you.")
+                    : String(localized: "Alhamdulillah, you finished the Quran over \(days) days. May Allah accept it and make it a witness for you."))
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -1869,11 +1936,9 @@ struct QuranPlannerView: View {
                 reminderAfterPlanChange()
             } label: {
                 Label("End Plan", systemImage: "xmark.circle")
-                    .font(.subheadline)
             }
         } footer: {
             Text("Ending the plan keeps your completed khatm progress.")
-                .font(.caption)
         }
         .themedListRowBackground()
     }

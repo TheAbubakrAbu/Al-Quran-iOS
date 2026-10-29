@@ -12,7 +12,7 @@ import Foundation
 /// The PAGE reader no longer consults it (2026-09-20): `SurahView` hosts every page-mode sheet, so a
 /// page turn dismisses nothing and the recitation can keep turning pages behind an open sheet. The
 /// counter is still driven by the host's `rowSheet` hooks in both modes; only the list scroll reads it.
-/// See `Docs/Page Mode Sheet Ownership.md`.
+/// See `Docs/Quran/Page Mode Sheet Ownership.md`.
 final class AyahSheetPresence: ObservableObject {
     static let shared = AyahSheetPresence()
     private init() {}
@@ -51,7 +51,11 @@ enum RiwayahTextCacheMark {
 struct AyahRow: View, Equatable {
     /// Bumped when an off-main tajweed paint for this row lands (see `arabicTajweedText`).
     @State private var tajweedPaintGeneration = 0
-    @ObservedObject var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     /// NOT @ObservedObject (Phase 10.4): the body never reads a published field of it (the diff lane and
     /// the Copy action call its O(1) lookups), so observing it only re-ran every visible row on each
     /// QuranData publish (the load batch, the verse index, the surah search index), past `.equatable()`.
@@ -175,7 +179,52 @@ struct AyahRow: View, Equatable {
     var openSheet: AyahRowSheetKind? = nil
 
     private func requestSheet(_ kind: AyahRowSheetKind) {
+        switch kind {
+        case .word, .riwayahWord: Self.lastWordCardRequest = Date()
+        default: break
+        }
         onRequestSheet?(kind)
+    }
+
+    /// When a word card was last asked for, from any row: the ayah's own double tap (`ayahDoubleTap`)
+    /// stands down when a word's two taps have just opened one.
+    private static var lastWordCardRequest: Date = .distantPast
+
+    /// High priority makes the sheet open during the hold, before the reading surface's tap ends.
+    /// Apply only to the text and reference pill, so each menu control owns its own gestures.
+    private var actionsHoldGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.45)
+            .onEnded { _ in
+                settings.hapticFeedback()
+                requestSheet(.actions)
+            }
+    }
+
+    /// Two taps on the ayah's text, off any word, play just that ayah (Kalysbek, 2026-10-21: the play
+    /// button's double tap "works sometimes and mostly doesn't" against the menu its single tap opened,
+    /// and the button is "too small for double tap"; Abu: "tapping anywhere that's not a word plays the
+    /// ayah once"). Simultaneous with the row's single tap, so marking an ayah stays instant: the two
+    /// taps mark it and unmark it again, the trade a word's two taps already make (`WordByWordTextView`).
+    /// A word's own two taps fire alongside this one, so the play waits a beat and stands down when a
+    /// word card was just asked for, whichever of the two actions ran first.
+    private var ayahDoubleTap: some Gesture {
+        TapGesture(count: 2)
+            .onEnded {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                    guard Date().timeIntervalSince(Self.lastWordCardRequest) > 0.5 else { return }
+                    settings.hapticFeedback()
+                    quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id)
+                }
+            }
+    }
+
+    /// The double tap plays only in the plain reading state: a search term gives the row's taps to the
+    /// scroll-to-match, multi-select gives them to the checkmark, and ayah audio is Hafs-numbered (the
+    /// play button's own gate).
+    private var playsOnDoubleTap: Bool {
+        !isSelecting
+            && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && settings.isHafsDisplay
     }
 
     private var openWordIndex: Int? {
@@ -316,8 +365,9 @@ struct AyahRow: View, Equatable {
         let qiraahKey = qiraah ?? "Hafs"
         // The dots flag must be in the key: it changes the text `textCleanArabic` returns for the
         // same `clean` bit, and nothing purges this cache when the toggle flips. The beta mark for
-        // the same reason (`RiwayahTextCacheMark`).
-        let key = "\(surah.id):\(ayah.id)|\(clean ? 1 : 0)\(choices.hideDots ? 1 : 0)|\(choices.beginner ? 1 : 0)|\(qiraahKey)"
+        // the same reason (`RiwayahTextCacheMark`), and the hamzat al-wasl notation likewise.
+        let wasl = settings.waslSign(for: qiraah)
+        let key = "\(surah.id):\(ayah.id)|\(clean ? 1 : 0)\(choices.hideDots ? 1 : 0)|\(choices.beginner ? 1 : 0)|\(qiraahKey)|\(wasl.rawValue)"
             + RiwayahTextCacheMark.mark(for: qiraah)
         // The key names the ayah by its surah and number alone, so it is only right while `ayah` really
         // is that surah's ayah. A row handed another surah's ayah files those words under this number for
@@ -330,7 +380,7 @@ struct AyahRow: View, Equatable {
         }
 
         let baseText = ayah.displayArabicText(surahId: surah.id, clean: clean, removeDots: choices.hideDots,
-                                              qiraahOverride: comparisonQiraahOverride)
+                                              qiraahOverride: comparisonQiraahOverride, waslSign: wasl)
         let spaced = choices.beginner ? baseText.beginnerSpaced : baseText
         Self.arabicDisplayCache.setObject(spaced as NSString, forKey: key as NSString)
         return spaced
@@ -346,13 +396,14 @@ struct AyahRow: View, Equatable {
         let qiraah = settings.displayQiraahForArabic
         let qiraahKey = qiraah ?? "Hafs"
         let betaMark = RiwayahTextCacheMark.mark(for: qiraah)
+        let wasl = settings.waslSign(for: qiraah)
         let ayahs = limit.map { Array(surah.ayahs.prefix($0)) } ?? surah.ayahs
 
         for ayah in ayahs where ayah.existsInQiraah(qiraah, surahID: surah.id) {
-            let key = ("\(surah.id):\(ayah.id)|\(clean ? 1 : 0)\(dots ? 1 : 0)|\(beginner ? 1 : 0)|\(qiraahKey)" + betaMark) as NSString
+            let key = ("\(surah.id):\(ayah.id)|\(clean ? 1 : 0)\(dots ? 1 : 0)|\(beginner ? 1 : 0)|\(qiraahKey)|\(wasl.rawValue)" + betaMark) as NSString
             if Self.arabicDisplayCache.object(forKey: key) != nil { continue }
 
-            let baseText = ayah.displayArabicText(surahId: surah.id, clean: clean, removeDots: dots, qiraahOverride: qiraah)
+            let baseText = ayah.displayArabicText(surahId: surah.id, clean: clean, removeDots: dots, qiraahOverride: qiraah, waslSign: wasl)
             let displayText = beginner ? baseText.beginnerSpaced : baseText
             Self.arabicDisplayCache.setObject(displayText as NSString, forKey: key)
         }
@@ -477,6 +528,8 @@ struct AyahRow: View, Equatable {
         .id(tajweedAnimationKey)
         .multilineTextAlignment(.trailing)
         .frame(maxWidth: .infinity, alignment: .trailing)
+        // Arabic keeps the right edge: in the Arabic interface `.trailing` is the left.
+        .environment(\.layoutDirection, .leftToRight)
         .lineLimit(nil)
     }
 
@@ -552,6 +605,13 @@ struct AyahRow: View, Equatable {
         return Int(args[i + 1])
     }()
     private static var debugOpenComparison = ProcessInfo.processInfo.arguments.contains("-openQiraahComparison")
+    /// "-openAyahSecondary <kind>" (share, selectText, tafsir, translations...: `AyahSecondarySheet`'s raw
+    /// values) opens that sheet of the same row, for screenshot runs of the sheets' chrome.
+    private static var debugOpenSecondary: AyahSecondarySheet? = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-openAyahSecondary"), i + 1 < args.count else { return nil }
+        return AyahSecondarySheet(rawValue: args[i + 1])
+    }()
     /// The "s:a" the session was launched at (the "-lastRead" arg) - matched directly because the
     /// live last-read tracking overwrites the defaults as rows scroll past.
     private static let debugTargetAyah: (surah: Int, ayah: Int)? = {
@@ -692,10 +752,14 @@ struct AyahRow: View, Equatable {
                         .arabicFontDesign(custom: usesCustomFace)
                         .foregroundColor(.primary)
                         .frame(maxWidth: .infinity, alignment: .trailing)
+                        // Arabic keeps the right edge: in the Arabic interface `.trailing` is the left.
+                        .environment(\.layoutDirection, .leftToRight)
 
                     muqattaatNamesView(p, font: arabicFont)
                         .arabicFontDesign(custom: usesCustomFace)
                         .frame(maxWidth: .infinity, alignment: .trailing)
+                        // Arabic keeps the right edge: in the Arabic interface `.trailing` is the left.
+                        .environment(\.layoutDirection, .leftToRight)
 
                     Divider()
                         .padding(.vertical, 2)
@@ -703,14 +767,14 @@ struct AyahRow: View, Equatable {
                     // The letter count, plus the elongation - but only the elongation these particular letters
                     // actually carry. Ṭā-Hā has no maddah sign on either name, so it is 2 counts, not 6.
                     HStack(spacing: 8) {
-                        Text("\(p.letters.count) \(p.letters.count == 1 ? "letter" : "letters")")
+                        Text(p.letters.count == 1 ? String(localized: "\(p.letters.count) letter") : String(localized: "\(p.letters.count) letters"))
                             .font(.caption2.weight(.semibold))
                             .foregroundColor(.secondary)
 
                         Spacer()
 
                         if let maddDescription = p.maddDescription {
-                            Text(maddDescription)
+                            Text(maddDescription.localizedDigits)
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
@@ -756,8 +820,8 @@ struct AyahRow: View, Equatable {
     /// signature in `AyahRow.==` already forced correctly) does NOT reset a child's state, so the view
     /// kept the previous orientation's width - 794pt of TextKit layout inside a ~338pt card. Traced:
     /// `updateUIView` was still being handed `width=794` after the interface came back to 402pt. Since
-    /// `WordByWordTextView` sets `clipsToBounds = false` so tashkeel ink is not sheared at the edge,
-    /// that overflow PAINTED outside the row - Arabic and English running off both sides, and a List
+    /// nothing above `WordByWordTextView` clips (and a view's own drawing fills its bounds whatever its
+    /// `clipsToBounds` says), that overflow PAINTED outside the row - Arabic and English running off both sides, and a List
     /// that scrolled sideways. A new identity discards the stale state and the view re-measures.
     private var tajweedAnimationKey: String {
         let categorySignature = settings.tajweedCategoryVisibilitySignature
@@ -806,6 +870,31 @@ struct AyahRow: View, Equatable {
     /// to it, and a future idiom (a wider phone, a different list style) may want it back. The watch
     /// keeps 0 for its own reason: 12pt of a 40mm screen is a line of text.
     private static let readingGutter: CGFloat = 0
+
+    #if os(iOS)
+    /// The air around the header's 28 pt play and ⋯ controls that still counts as a tap on them (Kalysbek,
+    /// 2026-10-21: "the play button is just too small"; Abu: the same height as now, a bigger hit box "as
+    /// long as it doesnt bleed into words"). Up into the row's top inset and out into the list's margin,
+    /// where nothing else answers; between the two only half their 4 pt gap, so neither takes the other's
+    /// taps; and down only the header's own 2 pt of padding, short of the Arabic line under them. The
+    /// control's label wears the slop as padding and the control takes it back as negative padding, so
+    /// the row's layout does not move.
+    private static let playHitSlop = EdgeInsets(top: 8, leading: 4, bottom: 2, trailing: 2)
+    private static let ellipsisHitSlop = EdgeInsets(top: 8, leading: 2, bottom: 2, trailing: 8)
+
+    /// A header control's icon wearing its hit slop (see `playHitSlop`).
+    private func headerControlIcon(_ systemName: String, slop: EdgeInsets) -> some View {
+        Image(systemName: systemName)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(width: 25, height: 25)
+            .foregroundColor(settings.accentColor.color)
+            .conditionalGlassEffect()
+            .frame(width: 28, height: 28)
+            .padding(slop)
+            .contentShape(Rectangle())
+    }
+    #endif
 
     #if os(watchOS)
     /// How far the watch's wash reaches past the text on each side, so a marked ayah reads as a band.
@@ -974,6 +1063,10 @@ struct AyahRow: View, Equatable {
                             }
                         }
 
+                    #if os(iOS)
+                    .highPriorityGesture(actionsHoldGesture, including: isSelecting ? .subviews : .all)
+                    #endif
+
                     Spacer()
 
                     #if os(iOS)
@@ -1005,47 +1098,68 @@ struct AyahRow: View, Equatable {
                     }
 
                     // Simple Mode folds the play menu into the one ayah menu, whose first action is
-                    // Play This Ayah (docs/Simple Mode Guide.md).
-                    if settings.isHafsDisplay, !settings.simpleMode {
-                        Menu {
+                    // Play This Ayah (Docs/Product/Simple Mode Guide.md).
+                    //
+                    // A tap opens the playback MENU, a double tap plays from this ayah to the end of
+                    // the surah, and a hold opens Play Custom Range (Abu, 2026-10-23: "return it as a
+                    // menu... if you double tap it play from here until end of Surah but if you hold
+                    // it open custom range"). The ⋯ beside it has the same tap / double tap / hold
+                    // shape (`ShortcutMenu`), so the pair behaves alike. For two days (2026-10-21) the
+                    // tap played and the hold opened the menu. The one ayah stays the text's double
+                    // tap (`ayahDoubleTap`).
+                    if settings.isHafsDisplay, !settings.hides(.ayahPlayMenu) {
+                        ShortcutMenu(
+                            doubleTap: MenuShortcut(String(localized: "Play From Ayah")) {
+                                settings.hapticFeedback()
+                                quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id,
+                                                     continueRecitation: true, continueScope: .surah)
+                            },
+                            hold: MenuShortcut(String(localized: "Play Custom Range")) {
+                                settings.hapticFeedback()
+                                requestSheet(.secondary(.customRange))
+                            }
+                        ) {
                             Text("Ayah Playback")
                                 .foregroundStyle(.secondary)
 
-                            playbackMenuBlock()
+                            ayahPlaybackItems()
                         } label: {
-                            Image(systemName: "play.circle")
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: 25, height: 25)
-                                .foregroundColor(settings.accentColor.color)
-                                .conditionalGlassEffect()
-                                .frame(width: 28, height: 28)
+                            headerControlIcon("play.circle", slop: Self.playHitSlop)
                         }
+                        .padding(Self.playHitSlop.negated)
+                        .accessibilityLabel("Ayah Playback")
+                        .accessibilityIdentifier("ayahPlayButton")
                     }
 
-                    Menu {
+                    ShortcutMenu(
+                        doubleTap: MenuShortcut(String(localized: "Copy Ayah")) {
+                            settings.hapticFeedback()
+                            ShareAyahSheet.copyAyahToPasteboard(surahNumber: surah.id, ayahNumber: ayah.id,
+                                                              settings: settings, quranData: quranData)
+                        },
+                        hold: MenuShortcut(String(localized: "Share Ayah")) {
+                            settings.hapticFeedback()
+                            requestSheet(.secondary(.share))
+                        }
+                    ) {
                         Text("Ayah Actions")
                             .foregroundStyle(.secondary)
 
-                        // With playback: the play button beside it is the shortcut, but this menu is
-                        // the same list every other ayah menu shows (user rule 2026-09-05: the Quran
-                        // tab's long press, this menu and the page's sheet offer the same actions).
-                        // Simple Mode is the one exception: five actions and More Actions, which
-                        // opens the long-press sheet with all of them (Abu, 2026-10-10).
-                        if settings.simpleMode {
+                        // The same list every other ayah menu shows (user rule 2026-09-05: the Quran
+                        // tab's long press, this menu and the page's sheet offer the same actions),
+                        // minus playback: the ▶ beside it IS the playback menu, so Play Ayah is not
+                        // repeated here (Abu, 2026-10-23: "remove that from three ellipses"). Simple
+                        // Mode is the other exception: five actions and More Actions, which opens the
+                        // long-press sheet with all of them (Abu, 2026-10-10).
+                        if settings.hides(.ayahLongMenu) {
                             simpleMenuBlock(isBookmarked: isBookmarked)
                         } else {
-                            menuBlock(isBookmarked: isBookmarked, includePlaybackOptions: true)
+                            menuBlock(isBookmarked: isBookmarked)
                         }
                     } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: 25, height: 25)
-                            .foregroundColor(settings.accentColor.color)
-                            .conditionalGlassEffect()
-                            .frame(width: 28, height: 28)
+                        headerControlIcon("ellipsis.circle", slop: Self.ellipsisHitSlop)
                     }
+                    .padding(Self.ellipsisHitSlop.negated)
                     .accessibilityLabel("Ayah Actions")
                     .accessibilityIdentifier("ayahActionsMenu")
                     #else
@@ -1090,6 +1204,15 @@ struct AyahRow: View, Equatable {
                 )
                 .padding(.bottom, 2)
                 .fixedSize(horizontal: false, vertical: true)
+                #if os(iOS)
+                // Keep the row's actions hold on the reading surface. Putting it on the whole row
+                // lets SwiftUI's high-priority recognizer steal holds from the play/ellipsis controls.
+                .contentShape(Rectangle())
+                .highPriorityGesture(actionsHoldGesture, including: isSelecting ? .subviews : .all)
+                // The ayah's two-tap play, on the same surface (see `ayahDoubleTap`): not the header,
+                // whose pill and controls answer taps of their own.
+                .simultaneousGesture(ayahDoubleTap, including: playsOnDoubleTap ? .all : .subviews)
+                #endif
             }
         }
         .lineLimit(nil)
@@ -1151,30 +1274,6 @@ struct AyahRow: View, Equatable {
             }
         }
         #if os(iOS)
-        // Long press opens the SAME ayah actions sheet page mode's long press shows (user rule: one
-        // grammar for "act on this ayah" in both modes) - the old .contextMenu is retired. The row's
-        // ellipsis menu keeps the inline menu for discoverability.
-        //
-        // `highPriorityGesture`, not `.onLongPressGesture`: as a plain modifier the press ranked BELOW
-        // the row's own tap, so it had to wait for that tap to fail - and a tap only fails when the
-        // finger LIFTS. The sheet arrived on release, while the same press on a mushaf page (a UIKit
-        // recognizer acting at `.began`) opens it mid-hold; one gesture, two feels (user report).
-        // Higher precedence is SwiftUI's `tap.require(toFail: press)`: the press wins the moment its
-        // 0.45 s is up, with the finger still down, and the tap is the one that gets cancelled.
-        // `LongPressGesture.onEnded` fires at that duration, not at the lift. 0.45 s is what the
-        // boundary-divider presses in this reader already use.
-        //
-        // Masked off while multi-selecting: there a tap on the row IS the interaction, and a winning
-        // press would swallow it. `.subviews` disables only this gesture, so the row keeps its
-        // identity (and its position in the list) when select mode turns on.
-        .highPriorityGesture(
-            LongPressGesture(minimumDuration: 0.45)
-                .onEnded { _ in
-                    settings.hapticFeedback()
-                    requestSheet(.actions)
-                },
-            including: isSelecting ? .subviews : .all
-        )
         // The tap-to-scroll jump, as a swipe too: while searching, swipe the result row to scroll down
         // to that ayah in the full list.
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
@@ -1208,27 +1307,27 @@ struct AyahRow: View, Equatable {
                 quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id, repeatCount: 2)
             }
 
-            Button("Repeat Ayah 3×") {
+            Button(String(localized: "Repeat Ayah 3×").localizedDigits) {
                 settings.hapticFeedback()
                 quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id, repeatCount: 3)
             }
 
-            Button("Repeat Ayah 5×") {
+            Button(String(localized: "Repeat Ayah 5×").localizedDigits) {
                 settings.hapticFeedback()
                 quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id, repeatCount: 5)
             }
 
-            Button("Repeat Ayah 10×") {
+            Button(String(localized: "Repeat Ayah 10×").localizedDigits) {
                 settings.hapticFeedback()
                 quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id, repeatCount: 10)
             }
 
-            Button("Repeat Ayah 15×") {
+            Button(String(localized: "Repeat Ayah 15×").localizedDigits) {
                 settings.hapticFeedback()
                 quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id, repeatCount: 15)
             }
 
-            Button("Repeat Ayah 20×") {
+            Button(String(localized: "Repeat Ayah 20×").localizedDigits) {
                 settings.hapticFeedback()
                 quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id, repeatCount: 20)
             }
@@ -1544,6 +1643,12 @@ struct AyahRow: View, Equatable {
                                 requestSheet(.secondary(.qiraah))
                             }
                         }
+                        if let kind = Self.debugOpenSecondary {
+                            Self.debugOpenSecondary = nil
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                requestSheet(.secondary(kind))
+                            }
+                        }
                     }
                     #endif
 
@@ -1577,6 +1682,9 @@ struct AyahRow: View, Equatable {
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .lineLimit(nil)
+                // English content reads left to right in the Arabic interface too (this and the two
+                // translations below).
+                .leftToRightContent()
                 .quranTestVeiledIfAvailable(testHidesRecitation)
             }
 
@@ -1596,8 +1704,10 @@ struct AyahRow: View, Equatable {
                     )
                     // The translation's name tells two apart; with the default alone on screen, Simple
                     // Mode drops it.
-                    if !settings.simpleMode || showEnglishMustafa {
-                        Text("Saheeh International")
+                    // Verbatim: the caption names the English text it sits under, inside its
+                    // left-to-right block; translated, it read as Arabic hugging the left edge.
+                    if !settings.hides(.translationCaption, unless: showEnglishMustafa) {
+                        Text(verbatim: "Saheeh International")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -1605,6 +1715,7 @@ struct AyahRow: View, Equatable {
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .lineLimit(nil)
+                .leftToRightContent()
                 .quranTestVeiledIfAvailable(testHidesEverything)
             }
 
@@ -1623,14 +1734,15 @@ struct AyahRow: View, Equatable {
                         extraHighlightRanges: Self.offsetSpans(crossMustafa, by: (prefix as NSString).length)
                     )
                     // Always named, Simple Mode or not: it is the translation someone chose over the
-                    // default, so the screen says which one it is (docs/Simple Mode Guide.md, rule 2).
-                    Text("Clear Quran (Mustafa Khattab)")
+                    // default, so the screen says which one it is (Docs/Product/Simple Mode Guide.md, rule 2).
+                    Text(verbatim: "Clear Quran (Mustafa Khattab)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .lineLimit(nil)
+                .leftToRightContent()
                 .quranTestVeiledIfAvailable(testHidesEverything)
             }
         }
@@ -1652,70 +1764,28 @@ struct AyahRow: View, Equatable {
     }
 
     #if os(iOS)
+    /// The ayah's playback actions: the ▶ button's menu, flat (Abu, 2026-10-21: "organize all menus...
+    /// if need be put menus in menus"; since 2026-10-23 the ⋯ menu no longer repeats them as a Play
+    /// Ayah submenu). Play This Ayah sits at the visual bottom, the primary action nearest the thumb, as
+    /// Play Surah does in the surah menus. Play Custom Range appears once: it used to end the Repeat
+    /// submenu as well. Choose Reciter leads, as in the Quran tab's Ayah Playback submenu and the actions
+    /// sheet's reciter row (Abu, 2026-10-25); the host presents the list (`AyahSecondarySheet.reciter`).
     @ViewBuilder
-    private func playbackMenuBlock() -> some View {
-        let repeatOptions = [2, 3, 5, 10, 15, 20]
-
-        Group {
-            Menu {
-                Text("Repeat Count")
-                    .foregroundStyle(.secondary)
-
-                ForEach(repeatOptions, id: \.self) { count in
-                    Button {
-                        settings.hapticFeedback()
-                        quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id, repeatCount: count)
-                    } label: {
-                        Label("Repeat \(count)×", systemImage: "\(count).circle")
-                    }
-                }
-
-                Button {
-                    settings.hapticFeedback()
-                    quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id, repeatCount: QuranPlayer.infiniteRepeat)
-                } label: {
-                    Label("Repeat Forever", systemImage: "infinity")
-                }
-
-                Button {
-                    settings.hapticFeedback()
-                    requestSheet(.secondary(.customRange))
-                } label: {
-                    Label("Play Custom Range", systemImage: "slider.horizontal.3")
-                }
-            } label: {
-                Label("Repeat Ayah", systemImage: "repeat")
-            }
-
-            Button {
-                settings.hapticFeedback()
-                requestSheet(.secondary(.customRange))
-            } label: {
-                Label("Play Custom Range", systemImage: "slider.horizontal.3")
-            }
-
-            Menu {
-                ayahPlayFromMenuItems(surah: surah.id, ayah: ayah.id, settings: settings,
-                                      quranPlayer: quranPlayer)
-            } label: {
-                Label("Play From Ayah", systemImage: "play.circle.fill")
-            }
-
-            Button {
-                settings.hapticFeedback()
-                quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id)
-            } label: {
-                Label("Play This Ayah", systemImage: "play.circle")
-            }
+    private func ayahPlaybackItems() -> some View {
+        Button {
+            settings.hapticFeedback()
+            requestSheet(.secondary(.reciter))
+        } label: {
+            ChooseReciterMenuLabel()
         }
-    }
 
-    @ViewBuilder
-    private func contextPlaybackMenuBlock() -> some View {
-        let repeatOptions = [2, 3, 5, 10, 15, 20]
+        Divider()
 
         Menu {
-            ForEach(repeatOptions, id: \.self) { count in
+            Text("Repeat Count")
+                .foregroundStyle(.secondary)
+
+            ForEach([2, 3, 5, 10, 15, 20], id: \.self) { count in
                 Button {
                     settings.hapticFeedback()
                     quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id, repeatCount: count)
@@ -1730,82 +1800,144 @@ struct AyahRow: View, Equatable {
             } label: {
                 Label("Repeat Forever", systemImage: "infinity")
             }
-
-            Button {
-                settings.hapticFeedback()
-                requestSheet(.secondary(.customRange))
-            } label: {
-                Label("Play Custom Range", systemImage: "slider.horizontal.3")
-            }
         } label: {
             Label("Repeat Ayah", systemImage: "repeat")
         }
 
-        Menu {
-            Button {
-                settings.hapticFeedback()
-                requestSheet(.secondary(.customRange))
-            } label: {
-                Label("Play Custom Range", systemImage: "slider.horizontal.3")
-            }
-
-            Menu {
-                ayahPlayFromMenuItems(surah: surah.id, ayah: ayah.id, settings: settings,
-                                      quranPlayer: quranPlayer)
-            } label: {
-                Label("Play From Ayah", systemImage: "play.circle.fill")
-            }
-
-            Button {
-                settings.hapticFeedback()
-                quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id)
-            } label: {
-                Label("Play This Ayah", systemImage: "play.circle")
-            }
+        Button {
+            settings.hapticFeedback()
+            requestSheet(.secondary(.customRange))
         } label: {
-            Label("Play Ayah", systemImage: "play.circle")
+            Label("Play Custom Range", systemImage: "slider.horizontal.3")
+        }
+
+        Menu {
+            ayahPlayFromMenuItems(surah: surah.id, ayah: ayah.id, settings: settings,
+                                  quranPlayer: quranPlayer)
+        } label: {
+            Label("Play From Ayah", systemImage: "play.circle.fill")
+        }
+
+        Button {
+            settings.hapticFeedback()
+            quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: ayah.id)
+        } label: {
+            Label("Play This Ayah", systemImage: "play.circle")
         }
     }
 
+    /// Add Note on its own; once a note is saved, one Note submenu holds Edit and Remove instead of
+    /// two rows (the ⋯ menu's row budget, 2026-10-21).
     @ViewBuilder
-    private func comparisonMenuBlock(canShowQiraah: Bool, canShowTranslation: Bool) -> some View {
-        if canShowQiraah && canShowTranslation {
+    private func noteMenuItems(isBookmarked: Bool) -> some View {
+        if currentNote.isEmpty {
+            Button {
+                settings.hapticFeedback()
+                if !isBookmarked {
+                    settings.ensureBookmarkExists(surah: surah.id, ayah: ayah.id)
+                }
+                requestSheet(.secondary(.note))
+            } label: {
+                Label("Add Note", systemImage: "note.text")
+            }
+        } else {
             Menu {
                 Button {
                     settings.hapticFeedback()
-                    requestSheet(.secondary(.qiraah))
+                    requestSheet(.secondary(.note))
                 } label: {
-                    Label("Qiraah Comparison", systemImage: "character.book.closed.fill.ar")
+                    Label("Edit Note", systemImage: "note.text")
                 }
 
-                Button {
+                Button(role: .destructive) {
                     settings.hapticFeedback()
-                    requestSheet(.secondary(.translations))
+                    withAnimation(.easeInOut) {
+                        removeNote()
+                    }
                 } label: {
-                    Label("Translation Comparison", systemImage: "character.book.closed")
+                    Label("Remove Note", systemImage: "minus.circle")
                 }
             } label: {
-                Label("Compare Ayah", systemImage: "rectangle.split.2x1")
+                Label("Note", systemImage: "note.text")
             }
-        } else if canShowQiraah {
-            Button {
-                settings.hapticFeedback()
-                requestSheet(.secondary(.qiraah))
+        }
+    }
+
+    /// The deeper study of the ayah as one submenu: the repeated phrases, the two comparisons and
+    /// the AI summary. See Tafsir stays outside it, the study action a reader reaches for most
+    /// (Simple Mode's five). Nothing when none of them applies.
+    @ViewBuilder
+    private func studyMenu(canShowTafsir: Bool) -> some View {
+        // Similar Ayahs and Mutashabihat read against the Hafs text like the tafsir, and show whenever
+        // the pack is bundled (probing THIS ayah would parse 4.5 MB of JSON on menu open; the sheet
+        // handles the no-matches case).
+        let similar = canShowTafsir && SimilarAyahsStore.isBundled
+        let mutashabihat = canShowTafsir && MutashabihatStore.isBundled
+        let qiraah = settings.showQiraahDetails
+        let translation = canCompareEnglishText
+        // Hidden without Apple Intelligence rather than present and dead (the OnDeviceAsk pattern).
+        let summarize = canShowTafsir && AyahSummarizeSheet.isOffered
+
+        if similar || mutashabihat || qiraah || translation || summarize {
+            Menu {
+                if similar {
+                    Button {
+                        settings.hapticFeedback()
+                        requestSheet(.secondary(.similarAyahs))
+                    } label: {
+                        Label("Similar Ayahs", systemImage: "doc.text.magnifyingglass")
+                    }
+                }
+
+                if mutashabihat {
+                    Button {
+                        settings.hapticFeedback()
+                        requestSheet(.secondary(.mutashabihat))
+                    } label: {
+                        Label("Mutashabihat", systemImage: "text.quote")
+                    }
+                }
+
+                if (similar || mutashabihat) && (qiraah || translation) {
+                    Divider()
+                }
+
+                if qiraah {
+                    Button {
+                        settings.hapticFeedback()
+                        requestSheet(.secondary(.qiraah))
+                    } label: {
+                        Label("Qiraah Comparison", systemImage: "character.book.closed.fill.ar")
+                    }
+                }
+
+                if translation {
+                    Button {
+                        settings.hapticFeedback()
+                        requestSheet(.secondary(.translations))
+                    } label: {
+                        Label("Translation Comparison", systemImage: "character.book.closed")
+                    }
+                }
+
+                if summarize {
+                    Divider()
+
+                    Button {
+                        settings.hapticFeedback()
+                        requestSheet(.secondary(.summarize))
+                    } label: {
+                        Label("Summarize with AI", systemImage: "text.append")
+                    }
+                }
             } label: {
-                Label("Qiraah Comparison", systemImage: "character.book.closed.fill.ar")
-            }
-        } else if canShowTranslation {
-            Button {
-                settings.hapticFeedback()
-                requestSheet(.secondary(.translations))
-            } label: {
-                Label("Translation Comparison", systemImage: "character.book.closed")
+                Label("Study Ayah", systemImage: "books.vertical")
             }
         }
     }
     #endif
 
-    /// Simple Mode's ayah menu (docs/Simple Mode Guide.md): the five actions a reader reaches for, then
+    /// Simple Mode's ayah menu (Docs/Product/Simple Mode Guide.md): the five actions a reader reaches for, then
     /// More Actions, which opens the long-press sheet holding every action there is. Each item is the
     /// full menu's own action, so the two can never drift in what a tap does.
     @ViewBuilder
@@ -1885,8 +2017,14 @@ struct AyahRow: View, Equatable {
         #endif
     }
 
+    /// The full ⋯ menu: ten rows at most, in four groups (Abu, 2026-10-21: "organize all menus and
+    /// context menus... make sure not too long if need be put menus in menus"; it was sixteen). Mark
+    /// (bookmark, highlight, note), study (tafsir, the Study Ayah submenu, the per-ayah settings),
+    /// and text (select, copy, share); playback is the ▶ button beside the menu. The Quran tab's ayah
+    /// menu (`AyahContextMenuModifier`) is this list block for block (user rule 2026-09-05), plus the
+    /// surah, Play This Ayah and an Ayah Playback submenu, since no ▶ sits beside a Quran tab row.
     @ViewBuilder
-    private func menuBlock(isBookmarked: Bool, includePlaybackOptions: Bool) -> some View {
+    private func menuBlock(isBookmarked: Bool) -> some View {
         #if os(iOS)
         let canShowTafsir: Bool = {
             if let override = comparisonQiraahOverride {
@@ -1933,26 +2071,9 @@ struct AyahRow: View, Equatable {
                 )
             }
 
-            Button {
-                settings.hapticFeedback()
-                if !isBookmarked {
-                    settings.ensureBookmarkExists(surah: surah.id, ayah: ayah.id)
-                }
-                requestSheet(.secondary(.note))
-            } label: {
-                Label(currentNote.isEmpty ? "Add Note" : "Edit Note", systemImage: "note.text")
-            }
+            noteMenuItems(isBookmarked: isBookmarked)
 
-            if !currentNote.isEmpty {
-                Button(role: .destructive) {
-                    settings.hapticFeedback()
-                    withAnimation(.easeInOut) {
-                        removeNote()
-                    }
-                } label: {
-                    Label("Remove Note", systemImage: "minus.circle")
-                }
-            }
+            Divider()
 
             if canShowTafsir {
                 Button {
@@ -1963,32 +2084,7 @@ struct AyahRow: View, Equatable {
                 }
             }
 
-            // Similar Ayahs reads against the Hafs text like the tafsir, and shows whenever the pack
-            // is bundled (probing THIS ayah would parse 4.5 MB of JSON on menu open; the sheet
-            // handles the no-matches case). The Quran tab's rows offered it and the reader didn't.
-            if canShowTafsir, SimilarAyahsStore.isBundled {
-                Button {
-                    settings.hapticFeedback()
-                    requestSheet(.secondary(.similarAyahs))
-                } label: {
-                    Label("Similar Ayahs", systemImage: "doc.text.magnifyingglass")
-                }
-            }
-
-            // The repeated phrases (mutashabihat): the Similar Ayahs sheet on its phrases tab.
-            if canShowTafsir, MutashabihatStore.isBundled {
-                Button {
-                    settings.hapticFeedback()
-                    requestSheet(.secondary(.mutashabihat))
-                } label: {
-                    Label("Mutashabihat", systemImage: "text.quote")
-                }
-            }
-
-            comparisonMenuBlock(
-                canShowQiraah: settings.showQiraahDetails,
-                canShowTranslation: canCompareEnglishText
-            )
+            studyMenu(canShowTafsir: canShowTafsir)
 
             // Was a per-ayah "Beginner Mode" toggle: now the whole "Apply Settings" menu (Abu,
             // 2026-09-05) - beginner spacing, tajweed, tashkeel, dots, Highlight Allah, word by word,
@@ -2003,11 +2099,6 @@ struct AyahRow: View, Equatable {
             }
 
             Divider()
-
-            if includePlaybackOptions && settings.isHafsDisplay {
-                contextPlaybackMenuBlock()
-                Divider()
-            }
 
             Button {
                 settings.hapticFeedback()
@@ -2028,19 +2119,6 @@ struct AyahRow: View, Equatable {
                 requestSheet(.secondary(.share))
             } label: {
                 Label("Share Ayah", systemImage: "square.and.arrow.up")
-            }
-
-            // The hadith rows' last item, on the ayah too (2026-09-21): the on-device summary of the
-            // ayah's tafsirs and translations. Hidden without Apple Intelligence, the OnDeviceAsk pattern.
-            if canShowTafsir, AyahSummarizeSheet.isOffered {
-                Divider()
-
-                Button {
-                    settings.hapticFeedback()
-                    requestSheet(.secondary(.summarize))
-                } label: {
-                    Label("Summarize with AI", systemImage: "text.append")
-                }
             }
         }
         .lineLimit(nil)
@@ -2084,5 +2162,12 @@ private struct AyahRowPreviewContent: View {
     AlIslamPreviewContainer(embedInNavigation: false) {
         QuranView()
         //AyahRowPreviewContent()
+    }
+}
+
+private extension EdgeInsets {
+    /// The same insets pulled in instead of pushed out.
+    var negated: EdgeInsets {
+        EdgeInsets(top: -top, leading: -leading, bottom: -bottom, trailing: -trailing)
     }
 }

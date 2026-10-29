@@ -19,6 +19,12 @@ import SwiftUI
 //   * the words stay in the call site as a plain string literal, so the Ask AI corpus
 //     (Scripts/build_islam_corpus.py) reads a step or a lead exactly as it read the `Text` it replaced.
 
+extension String {
+    /// Kit text as drawn: a translated page's written-out digits follow the locale (`localizedDigits`),
+    /// while an English article keeps its own ("Quran 2:255"). DISPLAY only.
+    var articleDisplayDigits: String { isMostlyArabicScript ? localizedDigits : self }
+}
+
 // MARK: - Shared ground
 
 /// The card ground every piece here shares with `ScriptureQuoteBody`: the accent falling away corner to
@@ -50,7 +56,7 @@ private struct ArticleEyebrow: View {
         HStack(spacing: 6) {
             Image(systemName: systemImage)
                 .font(.caption.weight(.bold))
-            Text(text)
+            Text(text.articleDisplayDigits)
                 .font(.caption.weight(.bold))
                 .tracking(1.1)
         }
@@ -99,6 +105,161 @@ extension View {
     }
 }
 
+// MARK: - Paragraph
+
+/// A paragraph of article prose the reader can drag-select (Abu, 2026-10-19: "make it where I can select
+/// text in list for pillars and beliefs, how to guides, miracles of quran, etc"). The `Text(verbatim:)`
+/// and `Text(articleMarkdown:)` rows every article page is built from, and the words inside the kit's
+/// cards, all draw through this. On iOS it is a read-only text view (`SelectableAttributedProse`,
+/// Helpers/UI/SelectableText.swift), so any run of a passage can be highlighted and copied rather than
+/// the whole-block "Copy" that is all the List's `.textSelection` can offer. On the watch it is the
+/// `Text` it always was.
+///
+/// The words stay in the call site as the same literal: the corpus builder reads
+/// `ArticleParagraph(verbatim: "...")` and `ArticleParagraph(articleMarkdown: "...")` exactly as it read
+/// the `Text` forms (Scripts/build_islam_corpus.py, TEXT_RE). Markdown prose keeps its **bold** terms.
+/// Islam Settings' Highlight Allah (`Text.islamHighlighted`) is applied exactly where it was before: the
+/// kit's cards drew their verbatim text through `Text.islamText` and still do (`highlightsAllah`); a
+/// page's plain paragraph was a bare `Text(verbatim:)` and stays unpainted.
+struct ArticleParagraph: View {
+    @Environment(\.appearance) private var appearance
+
+    let text: String
+    let markdown: Bool
+    var textStyle: Font.TextStyle = .body
+    var weight: Font.Weight = .regular
+    var secondary: Bool = false
+    /// Verbatim text with the name of Allah painted when the setting is on (markdown never is).
+    var highlightsAllah: Bool = false
+
+    /// Plain prose, drawn as written.
+    init(verbatim text: String, textStyle: Font.TextStyle = .body, weight: Font.Weight = .regular,
+         secondary: Bool = false, highlightsAllah: Bool = false) {
+        self.init(text, markdown: false, textStyle: textStyle, weight: weight, secondary: secondary,
+                  highlightsAllah: highlightsAllah)
+    }
+
+    /// Prose with inline **bold** terms.
+    init(articleMarkdown text: String, textStyle: Font.TextStyle = .body, weight: Font.Weight = .regular,
+         secondary: Bool = false) {
+        self.init(text, markdown: true, textStyle: textStyle, weight: weight, secondary: secondary)
+    }
+
+    /// The kit's own cards, which already know which form they hold; their verbatim text is highlighted.
+    init(_ text: String, markdown: Bool, textStyle: Font.TextStyle = .body, weight: Font.Weight = .regular,
+         secondary: Bool = false, highlightsAllah: Bool = true) {
+        self.text = text
+        self.markdown = markdown
+        self.textStyle = textStyle
+        self.weight = weight
+        self.secondary = secondary
+        self.highlightsAllah = highlightsAllah
+    }
+
+    var body: some View {
+        #if os(iOS)
+        // 4 pt reproduces the `Text` line pitch (measured 2026-10-19 on the Shahadah page: SwiftUI
+        // sets body at 24.0 pt a line and the title3 lead at 28.0 pt; the text view's own line height
+        // is 20.3 / 23.9, so the same 4 pt lands within 0.3 pt of both and page heights do not move).
+        SelectableAttributedProse(
+            attributed: attributed,
+            textStyle: Self.uiTextStyle(textStyle),
+            weight: Self.uiWeight(weight),
+            secondary: secondary,
+            lineSpacing: 4
+        )
+        #else
+        Group {
+            if markdown {
+                Text(articleMarkdown: shown)
+            } else if highlightsAllah {
+                Text.islamText(shown, highlightAllah: appearance.highlightAllahIslam)
+            } else {
+                Text(verbatim: shown)
+            }
+        }
+        .font(Font.system(textStyle).weight(weight))
+        .foregroundColor(secondary ? .secondary : .primary)
+        .lineLimit(nil)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        #endif
+    }
+
+    private var shown: String { text.articleDisplayDigits }
+
+    #if os(iOS)
+    private var attributed: AttributedString {
+        let drawn = shown
+        if markdown { return ArticleMarkdownCache.attributed(drawn) }
+        if highlightsAllah,
+           let painted = Text.islamHighlighted(drawn, highlightAllah: appearance.highlightAllahIslam) {
+            return painted
+        }
+        return AttributedString(drawn)
+    }
+
+    private static func uiTextStyle(_ style: Font.TextStyle) -> UIFont.TextStyle {
+        switch style {
+        case .largeTitle: return .largeTitle
+        case .title: return .title1
+        case .title2: return .title2
+        case .title3: return .title3
+        case .headline: return .headline
+        case .subheadline: return .subheadline
+        case .callout: return .callout
+        case .footnote: return .footnote
+        case .caption: return .caption1
+        case .caption2: return .caption2
+        default: return .body
+        }
+    }
+
+    private static func uiWeight(_ weight: Font.Weight) -> UIFont.Weight {
+        switch weight {
+        case .ultraLight: return .ultraLight
+        case .thin: return .thin
+        case .light: return .light
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        case .black: return .black
+        default: return .regular
+        }
+    }
+    #endif
+}
+
+// MARK: - Arabic
+
+/// A passage of Arabic that is neither an ayah nor a narration: the words of the adhan and the iqamah,
+/// the takbir, the shahadah. Set as a narration's Arabic is in a `ScriptureQuote` (the Islam tab's face,
+/// the accent, trailing, the name of Allah painted when that is on), so every Arabic an article shows
+/// reads as one thing (Abu, 2026-10-26: "Arabic text like that maybe should be written the same way as
+/// Quran and Hadith with the different font and size and color and everything"). Not the mushaf face:
+/// these words are not Quran. The corpus builder reads it as prose (`TEXT_RE` in
+/// Scripts/build_islam_corpus.py), as it read the plain `Text` rows these replaced.
+struct ArticleArabic: View {
+    @Environment(\.appearance) private var appearance
+
+    let text: String
+
+    init(verbatim text: String) { self.text = text }
+
+    var body: some View {
+        Text.islamArabic(text.decomposingAlefMadda, highlightAllah: appearance.highlightAllahIslam)
+            .font(appearance.islamArabicFont(base: 24, relativeTo: .title2))
+            .arabicFontDesign(custom: appearance.islamUsesCustomArabicFace)
+            .lineSpacing(6)
+            .foregroundColor(appearance.accent)
+            .multilineTextAlignment(.trailing)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.vertical, 2)
+    }
+}
+
 // MARK: - Lead
 
 /// The page's opening card: its "In short:" sentence set large, under a small IN SHORT label. Replaces
@@ -110,9 +271,13 @@ struct ArticleLead: View {
 
     let text: String
     var markdown: Bool = false
+    /// The small label over the lead. The Islam tab is not translated yet, so its pages keep the English
+    /// literal; a translated screen (the hadith history) passes its own `String(localized: "IN SHORT")`.
+    var eyebrow: String = "IN SHORT"
 
-    init(_ text: String) {
+    init(_ text: String, eyebrow: String = "IN SHORT") {
         self.text = text
+        self.eyebrow = eyebrow
     }
 
     /// A lead with inline **bold** terms, the way some SUMMARY paragraphs were written.
@@ -134,21 +299,11 @@ struct ArticleLead: View {
     var body: some View {
         let accent = appearance.accent
         VStack(alignment: .leading, spacing: 8) {
-            ArticleEyebrow(text: "IN SHORT", systemImage: "sparkle", accent: accent)
+            ArticleEyebrow(text: eyebrow, systemImage: "sparkle", accent: accent)
 
-            Group {
-                if markdown {
-                    Text(articleMarkdown: display)
-                } else {
-                    Text.islamText(display, highlightAllah: appearance.highlightAllahIslam)
-                }
-            }
-                // A long lead at title size filled the screen; past ~240 characters it reads at body size.
-                .font(display.count > 240 ? .body.weight(.medium) : .title3.weight(.medium))
-                .foregroundColor(.primary)
-                .lineSpacing(2)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
+            // A long lead at title size filled the screen; past ~240 characters it reads at body size.
+            ArticleParagraph(display, markdown: markdown,
+                             textStyle: display.count > 240 ? .body : .title3, weight: .medium)
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 15)
@@ -213,7 +368,8 @@ struct ArticleStep: View {
         let parts = Self.split(source)
         if let number = parts.number {
             HStack(alignment: .top, spacing: 12) {
-                ArticleBadge(text: number, accent: appearance.accent)
+                ArticleBadge(text: source.isMostlyArabicScript ? number.localizedDigits : number,
+                             accent: appearance.accent)
                     .padding(.top, 1)
                     .accessibilityLabel("Step \(number)")
 
@@ -277,17 +433,7 @@ private struct ArticleProse: View {
     let markdown: Bool
 
     var body: some View {
-        Group {
-            if markdown {
-                Text(articleMarkdown: text)
-            } else {
-                Text.islamText(text, highlightAllah: appearance.highlightAllahIslam)
-            }
-        }
-        .font(.body)
-        .lineLimit(nil)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        ArticleParagraph(text, markdown: markdown)
     }
 }
 
@@ -318,18 +464,7 @@ struct ArticleClosing: View {
                 .foregroundColor(accent)
                 .accessibilityHidden(true)
 
-            Group {
-                if markdown {
-                    Text(articleMarkdown: text)
-                } else {
-                    Text.islamText(text, highlightAllah: appearance.highlightAllahIslam)
-                }
-            }
-                .font(.body.weight(.medium))
-                .foregroundColor(.primary)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            ArticleParagraph(text, markdown: markdown, weight: .medium)
         }
         .padding(.vertical, 12)
         .padding(.horizontal, 14)
@@ -380,7 +515,7 @@ struct ArticleCallout: View {
             HStack(spacing: 10) {
                 AccentIconChip(systemImage: systemImage, size: 26)
 
-                Text(title)
+                Text(title.articleDisplayDigits)
                     .font(.subheadline.weight(.bold))
                     .foregroundColor(accent)
                     .fixedSize(horizontal: false, vertical: true)
@@ -472,11 +607,7 @@ struct ArticleEtymologyCard: View {
                 .foregroundColor(.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text.islamText(text, highlightAllah: appearance.highlightAllahIslam)
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
+            ArticleParagraph(verbatim: text, textStyle: .subheadline, secondary: true, highlightsAllah: true)
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 15)
@@ -514,31 +645,49 @@ struct ArticleTermCard: View {
         self.meaning = meaning
     }
 
+    /// A word sits beside its term on one line; a phrase (three words or more, a dua's clause) takes
+    /// its own line under the term, where it can wrap, instead of shrinking and then truncating.
+    private var isPhrase: Bool {
+        arabic.split(whereSeparator: \.isWhitespace).count > 2
+    }
+
     var body: some View {
         let accent = appearance.accent
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .center, spacing: 12) {
-                Text(term)
+            if isPhrase {
+                Text(term.articleDisplayDigits)
                     .font(.headline)
                     .foregroundColor(.primary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Spacer(minLength: 8)
-
                 Text.islamArabic(arabic, highlightAllah: appearance.highlightAllahIslam)
-                    .font(appearance.islamArabicFont(base: 30, relativeTo: .title))
+                    .font(appearance.islamArabicFont(base: 26, relativeTo: .title2))
                     .arabicFontDesign(custom: appearance.islamUsesCustomArabicFace)
                     .foregroundColor(accent)
                     .multilineTextAlignment(.trailing)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(.vertical, 2)
+            } else {
+                HStack(alignment: .center, spacing: 12) {
+                    Text(term.articleDisplayDigits)
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer(minLength: 8)
+
+                    Text.islamArabic(arabic, highlightAllah: appearance.highlightAllahIslam)
+                        .font(appearance.islamArabicFont(base: 30, relativeTo: .title))
+                        .arabicFontDesign(custom: appearance.islamUsesCustomArabicFace)
+                        .foregroundColor(accent)
+                        .multilineTextAlignment(.trailing)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                }
             }
 
-            Text(articleMarkdown: meaning)
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
+            ArticleParagraph(articleMarkdown: meaning, textStyle: .subheadline, secondary: true)
         }
         .padding(.vertical, 11)
         .padding(.horizontal, 14)
@@ -719,7 +868,7 @@ struct ArticleChecklist: View {
     var body: some View {
         let accent = appearance.accent
         VStack(alignment: .leading, spacing: 9) {
-            Text(title)
+            Text(title.articleDisplayDigits)
                 .font(.subheadline.weight(.bold))
                 .foregroundColor(accent)
                 .fixedSize(horizontal: false, vertical: true)
@@ -731,12 +880,7 @@ struct ArticleChecklist: View {
                         .foregroundColor(accent)
                         .accessibilityHidden(true)
 
-                    Text(articleMarkdown: item)
-                        .font(.body)
-                        .foregroundColor(.primary)
-                        .lineLimit(nil)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ArticleParagraph(articleMarkdown: item)
                 }
             }
         }
@@ -810,11 +954,7 @@ struct ArticleVersus: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
-            Text(articleMarkdown: side.caption)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
+            ArticleParagraph(articleMarkdown: side.caption, textStyle: .caption, secondary: true)
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 11)
@@ -921,10 +1061,8 @@ struct HadithGradeLadder: View {
                     .accessibilityElement(children: .combine)
                 }
 
-                Text("Everything short of mutawatir is called ahad. Ahad is a count, not a weakness: most of the Sunnah is ahad and sahih, and it is binding.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                ArticleParagraph(verbatim: "Everything short of mutawatir is called ahad. Ahad is a count, not a weakness: most of the Sunnah is ahad and sahih, and it is binding.",
+                                 textStyle: .caption, secondary: true)
                     .padding(.top, 2)
             }
         }
@@ -958,11 +1096,7 @@ struct HadithGradeLadder: View {
                     .minimumScaleFactor(0.6)
             }
 
-            Text(grade.definition)
-                .font(.subheadline)
-                .foregroundColor(.primary)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
+            ArticleParagraph(verbatim: grade.definition, textStyle: .subheadline)
 
             Text(grade.verdict)
                 .font(.caption.weight(.semibold))
@@ -1083,7 +1217,7 @@ struct ResourceHero<Footer: View>: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 6) {
                 Image(systemName: systemImage)
-                Text(eyebrow)
+                Text(eyebrow.articleDisplayDigits)
                     .tracking(1.3)
                     .lineLimit(2)
                     // A single word wider than the card cannot wrap: at the largest accessibility
@@ -1098,18 +1232,22 @@ struct ResourceHero<Footer: View>: View {
                 if let arabic, !arabic.isEmpty {
                     headlineWithArabic(arabic, accent: accent)
                 } else {
+                    // Often an ayah's English translation (scripture stays English): it keeps the left
+                    // edge and its own direction even on a translated page.
                     headlineText
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .leftToRightContent(!headline.isMostlyArabicScript)
                 }
 
                 if let source {
-                    Text(source)
+                    Text(source.articleDisplayDigits)
                         .font(.caption.weight(.semibold))
                         .foregroundColor(accent)
                 }
             }
 
             if !message.isEmpty {
-                Text(message)
+                Text(message.articleDisplayDigits)
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1166,16 +1304,18 @@ struct ResourceHeroStats: View {
                 statChip(stat, accent: appearance.accent)
             }
         }
+        // Simple Mode drops the figures: a hero is a welcome, not a dashboard (spec rule 8).
+        .hiddenInSimple(.heroStats)
     }
 
     private func statChip(_ stat: ResourceHeroStat, accent: Color) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(stat.value)
+            Text(stat.value.localizedDigits)
                 .font(.system(.title3, design: .rounded).weight(.bold))
                 .foregroundColor(accent)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-            Text(stat.label)
+            Text(stat.label.articleDisplayDigits)
                 .font(.caption2)
                 .foregroundColor(.secondary)
                 .lineLimit(1)

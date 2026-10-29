@@ -16,8 +16,7 @@ import SwiftUI
 /// verifier had checked; Abu, 2026-09-25: "there's barely any in there! the real source had way
 /// more". The wording is this app's own; the hadith text is the shelf's.
 struct PropheciesView: View {
-    @ObservedObject private var settings = Settings.shared
-
+    private let settings = Settings.shared
     @State private var searchText = ""
     @State private var openDoor: SignsAboutDoor?
     @State private var barsCollapsed = false
@@ -58,6 +57,9 @@ struct PropheciesView: View {
             case companions = "The Companions and his household"
             case ummah = "The ummah after him"
             case endTimes = "Signs before the Hour"
+            /// The major signs he foretold that have not yet come (2026-10-26): believed as part of faith
+            /// in the Last Day, kept out of the strongest list because they are not yet fulfilled.
+            case toCome = "Still to come"
 
             var id: String { rawValue }
             var systemImage: String {
@@ -67,6 +69,7 @@ struct PropheciesView: View {
                 case .companions: return "person.2"
                 case .ummah:      return "building.columns"
                 case .endTimes:   return "hourglass"
+                case .toCome:     return "hourglass.bottomhalf.filled"
                 }
             }
         }
@@ -124,7 +127,7 @@ struct PropheciesView: View {
                         systemImage: "checkmark.seal.fill",
                         headline: "Nor does he speak from [his own] inclination. It is not but a revelation revealed.",
                         source: "Quran 53:3\u{2013}4",
-                        message: "He foretold things no one could have known, and he said them in front of people who wrote them down and lived to see them happen. This library gathers \(Self.entries.count) of them, each with what the Quran or the narration says and what history did with it. Every hadith is quoted from this app's own collections and is sahih or hasan; anything our copies grade weak was left out.",
+                        message: "He foretold things no one could have known, and he said them in front of people who wrote them down and lived to see them happen. This library gathers \(Self.entries.count) of them, each with what the Quran or the narration says and what history did with it, and closes with the signs he said are still to come. Every hadith is quoted from this app's own collections and is sahih or hasan; where the graders differ, the citation names the grader followed.",
                         stats: [
                             ResourceHeroStat("\(Self.entries.count)", "prophecies"),
                             ResourceHeroStat("\(grouped.count)", "groups"),
@@ -181,7 +184,7 @@ struct PropheciesView: View {
         }
         // NO `article:` here: that adds the per-page "Search this article" bar, and this screen
         // is an INDEX with its own library search below - two stacked search bars.
-        .selectableArticleList()
+        .englishArticle().selectableArticleList()
         .aboutSignsDestination($openDoor)
         #if DEBUG
         // `-prophecy <id>`: push that article on appear - a tap cannot be driven headlessly.
@@ -220,6 +223,14 @@ struct PropheciesView: View {
 /// One prophecy: what was said, the narration itself, and what happened.
 struct ProphecyArticleView: View {
     let entry: PropheciesView.Entry
+    /// The page's sections as its search bar scans them: the corpus has no row for a generated page.
+    /// Folded once here, not per body pass.
+    private let searchArticle: IslamArticle
+
+    init(entry: PropheciesView.Entry) {
+        self.entry = entry
+        searchArticle = .generated(id: "Prophecy-\(entry.id)", title: entry.title, sections: entry.sections)
+    }
 
     var body: some View {
         List {
@@ -228,7 +239,7 @@ struct ProphecyArticleView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "Prophecy-\(entry.id)")
+        .englishArticle().selectableArticleList(article: searchArticle.id, fallback: searchArticle)
         .navigationTitle(entry.title)
         .navigationBarTitleDisplayMode(.inline)
     }

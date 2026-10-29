@@ -11,6 +11,10 @@ extension Settings {
     enum QuranSortMode: String, CaseIterable, Identifiable {
         case surah
         case juz
+        /// Each surah once, under the juz it opens in, every juz a header (Abu, 2026-10-27: "add a
+        /// simple juz mode thats similar to tarteel's version"). `.juz` lists every surah a juz runs
+        /// through, with the ayah it starts or ends at.
+        case simpleJuz
         case revelation
         case khatm
         case page
@@ -25,17 +29,18 @@ extension Settings {
 
         var title: String {
             switch self {
-            case .surah: return "Surah"
-            case .ayahs: return "Ayah Count"
-            case .juz: return "Juz"
-            case .page: return "Page Count"
-            case .pages: return "Pages"
-            case .revelation: return "Revelation"
-            case .khatm: return "Khatm"
-            case .sajdah: return "Sajdahs"
-            case .muqattaat: return "Broken Letters"
-            case .words: return "Words"
-            case .letters: return "Letters"
+            case .surah: return String(localized: "Surah")
+            case .ayahs: return String(localized: "Ayah Count")
+            case .juz: return String(localized: "Juz")
+            case .simpleJuz: return String(localized: "Simple Juz")
+            case .page: return String(localized: "Page Count")
+            case .pages: return String(localized: "Pages")
+            case .revelation: return String(localized: "Revelation")
+            case .khatm: return String(localized: "Khatm")
+            case .sajdah: return String(localized: "Sajdahs")
+            case .muqattaat: return String(localized: "Broken Letters")
+            case .words: return String(localized: "Words")
+            case .letters: return String(localized: "Letters")
             }
         }
 
@@ -44,6 +49,7 @@ extension Settings {
             case .surah: return "list.number"
             case .ayahs: return "number"
             case .juz: return "square.grid.3x3"
+            case .simpleJuz: return "list.bullet.rectangle"
             case .page: return "doc.text"
             case .pages: return "doc.text.fill"
             case .revelation: return "sparkles"
@@ -65,17 +71,17 @@ extension Settings {
 
         var title: String {
             switch self {
-            case .surahOrder: return "Surah"
-            case .ascending: return "Asc"
-            case .descending: return "Desc"
+            case .surahOrder: return String(localized: "Surah")
+            case .ascending: return String(localized: "Asc")
+            case .descending: return String(localized: "Desc")
             }
         }
 
         var accessibilityTitle: String {
             switch self {
-            case .surahOrder: return "Surah order"
-            case .ascending: return "Ascending"
-            case .descending: return "Descending"
+            case .surahOrder: return String(localized: "Surah order")
+            case .ascending: return String(localized: "Ascending")
+            case .descending: return String(localized: "Descending")
             }
         }
     }
@@ -98,7 +104,22 @@ extension Settings {
 
             /// "d. 180 AH" - secondary text under the rawi's name in the qiraah menus.
             var narratorDetail: String? {
-                narratorDiedAH.map { "d. \($0) AH" }
+                narratorDiedAH.map { String(localized: "d. \($0) AH") }
+            }
+
+            /// The riwayah's name as the reader sees it. The Arabic interface shows the Arabic name
+            /// (Hafs with a translated "(default)"); English shows `label`, which stays the stored and
+            /// matched value either way. `omitsDefaultSuffix` drops the "(default)" in both languages.
+            func displayLabel(omitsDefaultSuffix: Bool = false) -> String {
+                let isDefault = tag == Riwayah.hafsTag
+                if AppLanguage.isArabicScript {
+                    guard isDefault, !omitsDefaultSuffix else { return arabic }
+                    return "\(arabic) \(String(localized: "(default)"))"
+                }
+                if omitsDefaultSuffix, label.hasSuffix(" (default)") {
+                    return String(label.dropLast(" (default)".count))
+                }
+                return label
             }
         }
 
@@ -108,6 +129,10 @@ extension Settings {
             let options: [Option]
 
             var id: String { teacher }
+
+            /// Every riwayah of this teacher is a beta text (the twelve machine-extracted ones): the
+            /// riwayah menus keep these six teachers behind one Beta Riwayat door.
+            var isBeta: Bool { options.allSatisfy(\.beta) }
         }
 
         static let hafsTag = ""
@@ -177,7 +202,7 @@ extension Settings {
         /// "Kufa, d. 127 AH" - the qiraah submenus' secondary line for an imam.
         static func teacherDetail(_ teacher: String) -> String? {
             guard let city = teacherCity[teacher], let died = teacherDiedAH[teacher] else { return nil }
-            return "\(city), d. \(died) AH"
+            return String(localized: "\(city.localizedDisplay), d. \(died) AH")
         }
 
         static let hafsArabic = "حَفص عَن عَاصِم"
@@ -472,6 +497,7 @@ extension Settings {
             showEnglishMustafa ? "1" : "0",
             displayQiraah,
             arabicScriptStyleRaw,
+            waslSignRaw,
             fontArabic,
             useFontArabic ? "1" : "0",
             "\(fontArabicSize)",
@@ -755,11 +781,11 @@ extension Settings {
     /// Four lines at `.caption` on a phone - checked, not guessed. The one Arabic sample is a bare
     /// ص: the composed اَ۬ cluster this describes does NOT survive being dropped into a Latin
     /// caption (it shapes as garbage in the system face), which is why the marks are named in words.
-    static let waslNotationNote = """
+    static let waslNotationNote = String(localized: """
         Hamzatul wasl, the silent alef a joined reading slides over, is marked two ways: a small \
         circle over a bare alef in Nafi, Abu Amr, Abu Jafar and Yaqub; a ص on the alef in Asim, \
         Ibn Kathir, Ibn Amir, Hamzah, al-Kisai and Khalaf al-Ashir.
-        """
+        """)
 
     /// Which Uthmani script the Quran draws in. `.madani` is the default - the script all but
     /// one reader has ever seen. `.automatic` follows the riwayah's own notation family (the
@@ -777,9 +803,9 @@ extension Settings {
 
         var label: String {
             switch self {
-            case .automatic: return "Automatic"
-            case .madani: return "Madani"
-            case .maghribi: return "Maghribi"
+            case .automatic: return String(localized: "Automatic")
+            case .madani: return String(localized: "Madani")
+            case .maghribi: return String(localized: "Maghribi")
             }
         }
 
@@ -788,11 +814,11 @@ extension Settings {
         /// captions describe the scripts on their own terms.
         func detail(namingRiwayat: Bool) -> String {
             switch self {
-            case .automatic: return "Each riwayah in the script its printed mushaf uses."
+            case .automatic: return String(localized: "Each riwayah in the script its printed mushaf uses.")
             case .madani:
-                return namingRiwayat ? "The Madinah mushaf script (Hafs an Asim)." : "The Madinah mushaf script."
+                return namingRiwayat ? String(localized: "The Madinah mushaf script (Hafs an Asim).") : String(localized: "The Madinah mushaf script.")
             case .maghribi:
-                return namingRiwayat ? "The North African mushaf script (Warsh an Nafi)." : "The North African mushaf script."
+                return namingRiwayat ? String(localized: "The North African mushaf script (Warsh an Nafi).") : String(localized: "The North African mushaf script.")
             }
         }
 
@@ -1019,7 +1045,7 @@ extension Settings {
 
         if persistImmediately {
             persistKhatmProgressNow()
-            objectWillChange.send()
+            settingWillChange("khatmCompletedAyahsData")
         }
     }
 
@@ -1073,7 +1099,7 @@ extension Settings {
             self.persistKhatmProgressNow()
             if self.khatmProgressRefreshPending {
                 self.khatmProgressRefreshPending = false
-                self.objectWillChange.send()
+                self.settingWillChange("khatmCompletedAyahsData")
             }
         }
     }
@@ -1088,7 +1114,7 @@ extension Settings {
         persistKhatmProgressNow()
         if khatmProgressRefreshPending {
             khatmProgressRefreshPending = false
-            objectWillChange.send()
+            settingWillChange("khatmCompletedAyahsData")
         }
     }
 
@@ -1141,7 +1167,7 @@ extension Settings {
         revisionSaveTask = nil
         revisionRefreshPending = false
         persistRevisionProgressNow()
-        objectWillChange.send()
+        settingWillChange("quranRevisionRevisedData")
     }
 
     /// Lands a debounced revision mark before the app is backgrounded (`flushAllPendingWrites`).
@@ -1152,7 +1178,7 @@ extension Settings {
         persistRevisionProgressNow()
         if revisionRefreshPending {
             revisionRefreshPending = false
-            objectWillChange.send()
+            settingWillChange("quranRevisionRevisedData")
         }
     }
 
@@ -1173,7 +1199,7 @@ extension Settings {
         ActivityLog.shared.record(.read)
         khatmCompletedAyahIntCache.insert(Self.khatmIntKey(surah: surah, ayah: ayah))
         khatmCompletedSurahCountsCache[surah, default: 0] += 1
-        if immediate { objectWillChange.send() }
+        if immediate { settingWillChange("khatmCompletedAyahsData") }
         scheduleKhatmProgressSaveAndRefresh(refresh: !immediate)
     }
 
@@ -1190,7 +1216,7 @@ extension Settings {
         khatmCompletedAyahIntCache.subtract(surah.ayahs.map { Self.khatmIntKey(surah: surah.id, ayah: $0.id) })
         khatmCompletedSurahCountsCache[surah.id] = nil
         persistKhatmProgressNow()
-        objectWillChange.send()
+        settingWillChange("khatmCompletedAyahsData")
     }
 
     func resetAllKhatmProgress() {
@@ -1199,7 +1225,7 @@ extension Settings {
         khatmCompletedAyahIntCache.removeAll(keepingCapacity: true)
         khatmCompletedSurahCountsCache.removeAll(keepingCapacity: true)
         persistKhatmProgressNow()
-        objectWillChange.send()
+        settingWillChange("khatmCompletedAyahsData")
     }
 
     func khatmTotalCompleted(in surahs: [Surah]) -> Int {
@@ -1405,7 +1431,7 @@ extension Settings {
 // MARK: - Quran logic moved out of Settings.swift
 //
 // Behavior that operates on Quran data lives here so Settings.swift holds (mostly) just the stored
-// settings. Only the @AppStorage/@Published *storage* must stay in the main class - Swift forbids stored
+// settings. Only the @Setting/@Published *storage* must stay in the main class - Swift forbids stored
 // property wrappers in extensions - but methods and `static` caches are free to live here.
 extension Settings {
 
@@ -1737,7 +1763,7 @@ extension Settings {
             snapshot.lastListened = nil
             if let listened = lastListenedSurah {
                 snapshot.lastListened = QuranWidgetSnapshot.ListenCard(
-                    name: listened.surahName,
+                    name: listened.displaySurahName,
                     reciter: listened.reciter.displayNameForNowPlaying,
                     current: listened.currentDuration,
                     full: listened.fullDuration
@@ -1960,7 +1986,7 @@ extension Settings {
         let arabic = ayah.displayArabicText(surahId: surah.id, clean: cleanArabicText)
         return QuranWidgetSnapshot.AyahCard(
             arabic: arabic,
-            reference: "Surah \(surah.id):\(ayah.id) • \(surah.nameTransliteration)",
+            reference: String(localized: "Surah \(surah.id):\(ayah.id) • \(surah.displayName)"),
             english: ayah.textEnglishSaheeh,
             fontName: fontArabic,
             colorRuns: quranWidgetTajweedRuns(surah: surah, ayah: ayah, displayText: arabic),

@@ -2,7 +2,12 @@
 import SwiftUI
 import PDFKit
 
-/// The printed mushaf as bundled PDFs - one per riwayah, from the Islamweb mushaf series.
+/// The printed mushaf as bundled PDFs - one per riwayah, two for Hafs. Nineteen are the Islamweb
+/// mushaf series. Hafs has `MushafHafsPDFEdition`: the app's own facsimile (`Scripts/mushaf-pdf/`,
+/// the default: the app's KFGQPC text set in its Uthmani face on the Madinah 1421H 15-line page
+/// layout, inside a vector teal-and-gold frame, so the file stays font-based at 1.3 MB packed where
+/// every ornate edition found online stores its text as outlines and packs to 80 MB or more) and
+/// the Islamweb Hafs volume the app shipped before 4.6.6.
 ///
 /// Every one of the 20 files is exactly **604 pages**, laid out on the Madani page division: PDF page N is
 /// mushaf page N, page 1 is al-Fatihah and page 604 closes with an-Nas. That makes the mapping from the app's
@@ -18,9 +23,9 @@ enum MushafPDFLibrary {
     /// Two files from the original Islamweb set are deliberately NOT bundled: a second, image-based rendering
     /// of Ibn Jammaz (identical text, heavier border, 49 MB against 4.3 MB) and Warsh via tariq al-Asbahani,
     /// which is a genuinely different transmission with no riwayah slot in the app's twenty.
-    static func fileName(for tag: String) -> String? {
+    static func fileName(for tag: String, hafsEdition: MushafHafsPDFEdition = .alIslam) -> String? {
         switch Settings.Riwayah.canonicalTag(tag) {
-        case Settings.Riwayah.hafsTag:     return "01-asim-hafs"
+        case Settings.Riwayah.hafsTag:     return hafsEdition.fileName
         case Settings.Riwayah.shubah:      return "01-asim-shubah"
         case Settings.Riwayah.warsh:       return "02-nafi-warsh"
         case Settings.Riwayah.qaloon:      return "02-nafi-qalun"
@@ -51,8 +56,18 @@ enum MushafPDFLibrary {
     /// They ship as `.pdf.xz`, not `.pdf`: the files are pure vector with per-stream Flate, and re-doing the
     /// whole file as ONE solid xz stream is a third of the size, fully lossless (66 MB -> 22 MB across the
     /// set). A plain `.pdf` alongside still wins for that riwayah, so a quick drop-in needs no compression.
-    static func bundledURL(for tag: String) -> (url: URL, isCompressed: Bool)? {
-        guard let name = fileName(for: tag) else { return nil }
+    static func bundledURL(for tag: String, hafsEdition: MushafHafsPDFEdition = .alIslam) -> (url: URL, isCompressed: Bool)? {
+        guard let name = fileName(for: tag, hafsEdition: hafsEdition) else { return nil }
+        if let found = bundledURL(named: name) { return found }
+        // A Hafs edition this build does not carry (a choice synced from another device, or a file
+        // left out of the bundle) falls back to the app's own edition, never to nothing.
+        if hafsEdition != .alIslam, Settings.Riwayah.canonicalTag(tag) == Settings.Riwayah.hafsTag {
+            return bundledURL(named: MushafHafsPDFEdition.alIslam.fileName)
+        }
+        return nil
+    }
+
+    private static func bundledURL(named name: String) -> (url: URL, isCompressed: Bool)? {
         if let plain = Bundle.main.url(forResource: name, withExtension: "pdf", subdirectory: "Mushaf PDFs")
             ?? Bundle.main.url(forResource: name, withExtension: "pdf", subdirectory: "Mushaf") {
             return (plain, false)
@@ -67,6 +82,12 @@ enum MushafPDFLibrary {
     /// partial set of files degrades to "no PDF for this riwayah" instead of a blank reader.
     static func isAvailable(for tag: String) -> Bool { bundledURL(for: tag) != nil }
 
+    /// The Hafs editions this build carries, in `MushafHafsPDFEdition` order. The page menu's Edition
+    /// picker lists exactly these and hides itself when only the default is bundled. A bundle never
+    /// changes at run time, so this is looked up once.
+    static let bundledHafsEditions: [MushafHafsPDFEdition] =
+        MushafHafsPDFEdition.allCases.filter { bundledURL(named: $0.fileName) != nil }
+
     /// Per-edition content window (PDF points, origin bottom-left) holding just the Quran text: the
     /// islamweb header/logo, the legend strip, the URL footer and the decorative side borders all fall
     /// OUTSIDE it. Measured offline, per file, by rendering sample pages and walking inward from each
@@ -79,7 +100,10 @@ enum MushafPDFLibrary {
     /// as "no spacing" on screen - user feedback, then dialed down a touch from 24pt); top and
     /// bottom cut to just past the furniture ink.
     private static let contentWindows: [String: CGRect] = [
-        "01-asim-hafs":              CGRect(x: 68.0, y: 65.0, width: 456.0, height: 696.0),
+        // The app's own Hafs facsimile has no furniture to cut: the frame IS the content, so the window
+        // is the whole page and the ink-hug below only trims the paper margin around the frame.
+        "01-asim-hafs":              CGRect(x: 0.0, y: 0.0, width: 450.0, height: 722.0),
+        "01-asim-hafs-islamweb":     CGRect(x: 68.0, y: 65.0, width: 456.0, height: 696.0),
         "01-asim-shubah":            CGRect(x: 63.0, y: 127.0, width: 468.0, height: 627.0),
         "02-nafi-qalun":             CGRect(x: 67.91, y: 65.0, width: 456.4, height: 697.0),
         "02-nafi-warsh":             CGRect(x: 67.91, y: 143.0, width: 455.4, height: 602.0),
@@ -112,25 +136,40 @@ enum MushafPDFLibrary {
     /// of the `.pdf.xz` into Caches. Extracting (not decompressing per open) keeps `PDFDocument` on its
     /// lazy file-mapped path - RAM stays at catalog-and-xref scale, not the whole 20+ MB file - and the
     /// system may evict the cache copy under disk pressure; it just re-extracts on next open.
-    private static func readableURL(for tag: String) -> URL? {
-        guard let (bundled, isCompressed) = bundledURL(for: tag) else { return nil }
+    private static func readableURL(for tag: String, hafsEdition: MushafHafsPDFEdition) -> URL? {
+        guard let (bundled, isCompressed) = bundledURL(for: tag, hafsEdition: hafsEdition) else { return nil }
         guard isCompressed else { return bundled }
 
         let name = bundled.deletingPathExtension().lastPathComponent   // "01-asim-hafs.pdf"
-        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let fm = FileManager.default
+        let root = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MushafPDF", isDirectory: true)
+        // The extraction lives under a folder STAMPED with the bundled file's byte count, so an app
+        // update that ships a different edition (the Hafs volume was replaced in 4.6.6) never serves
+        // the previous build's extraction - the plain `MushafPDF/<name>.pdf` of older builds did, for as
+        // long as the system left it alone. The file keeps its bare name inside, which is what
+        // `contentWindow(for:)` keys on. Other stamps of the same edition are swept on extraction.
+        let stamp = (try? fm.attributesOfItem(atPath: bundled.path)[.size] as? NSNumber)?.intValue ?? 0
+        let cacheDir = root.appendingPathComponent("v\(stamp)", isDirectory: true)
         let extracted = cacheDir.appendingPathComponent(name)
-        if FileManager.default.fileExists(atPath: extracted.path) { return extracted }
+        if fm.fileExists(atPath: extracted.path) { return extracted }
 
         guard let compressed = try? Data(contentsOf: bundled),
               let raw = SolidPack.xzDecompress(compressed) else { return nil }
         do {
-            try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+            try fm.createDirectory(at: cacheDir, withIntermediateDirectories: true)
             try raw.write(to: extracted, options: .atomic)
-            return extracted
         } catch {
             return nil
         }
+        // Sweep this edition's stale copies (the unstamped file of older builds, other stamps).
+        try? fm.removeItem(at: root.appendingPathComponent(name))
+        if let dirs = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
+            for dir in dirs where dir.lastPathComponent.hasPrefix("v") && dir.lastPathComponent != cacheDir.lastPathComponent {
+                try? fm.removeItem(at: dir.appendingPathComponent(name))
+            }
+        }
+        return extracted
     }
 
     /// Parsed documents, most-recently-used last. Opening a 604-page PDF costs enough to be felt as a pause
@@ -140,16 +179,23 @@ enum MushafPDFLibrary {
     @MainActor private static var cache: [(tag: String, document: PDFDocument)] = []
     private static let cacheLimit = 3
 
+    /// The cache key: the bundled file's name, so the three Hafs editions are three entries, and a
+    /// Hafs edition that fell back to the default shares the default's entry.
+    private static func cacheKey(for tag: String, hafsEdition: MushafHafsPDFEdition) -> String? {
+        bundledURL(for: tag, hafsEdition: hafsEdition)?.url.lastPathComponent
+    }
+
     @MainActor
-    static func document(for tag: String) -> PDFDocument? {
-        let key = Settings.Riwayah.canonicalTag(tag)
+    static func document(for tag: String, hafsEdition: MushafHafsPDFEdition = .alIslam) -> PDFDocument? {
+        guard let key = cacheKey(for: tag, hafsEdition: hafsEdition) else { return nil }
         if let hit = cache.firstIndex(where: { $0.tag == key }) {
             // Refresh on use so eviction sheds the least-recently-READ entry, not the first one loaded.
             let entry = cache.remove(at: hit)
             cache.append(entry)
             return entry.document
         }
-        guard let url = readableURL(for: tag), let document = PDFDocument(url: url) else { return nil }
+        guard let url = readableURL(for: tag, hafsEdition: hafsEdition),
+              let document = PDFDocument(url: url) else { return nil }
         insert(document, for: key)
         return document
     }
@@ -159,14 +205,14 @@ enum MushafPDFLibrary {
     /// now shows a spinner page for that beat instead of hanging on it. The parse itself
     /// (`PDFDocument(url:)`) stays on main: it is lazy and cheap, catalog and xref only.
     @MainActor
-    static func loadDocument(for tag: String) async -> PDFDocument? {
-        let key = Settings.Riwayah.canonicalTag(tag)
+    static func loadDocument(for tag: String, hafsEdition: MushafHafsPDFEdition = .alIslam) async -> PDFDocument? {
+        guard let key = cacheKey(for: tag, hafsEdition: hafsEdition) else { return nil }
         if let hit = cache.firstIndex(where: { $0.tag == key }) {
             let entry = cache.remove(at: hit)
             cache.append(entry)
             return entry.document
         }
-        let url = await Task.detached(priority: .userInitiated) { readableURL(for: tag) }.value
+        let url = await Task.detached(priority: .userInitiated) { readableURL(for: tag, hafsEdition: hafsEdition) }.value
         guard let url, let document = PDFDocument(url: url) else { return nil }
         // Someone else may have finished first while the extraction ran.
         if let hit = cache.first(where: { $0.tag == key }) { return hit.document }
@@ -197,6 +243,36 @@ private final class FitFlooredPDFView: PDFView {
     /// three scales on every layout pass of every mounted page (up to 13) for nothing.
     private var pinnedSize: CGSize = .zero
     private var pinnedDocument: ObjectIdentifier?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil else { return }
+        // A tick later: PDFKit makes its document view first responder from this very entry into
+        // the window, and the hosting view's focus bridge must not be driven from inside it.
+        DispatchQueue.main.async { [weak self] in self?.releaseFirstResponder() }
+    }
+
+    /// PDFKit's document view takes first responder as it enters the window and keeps it. UIKit
+    /// resigns a first responder inside a collection view in the middle of any batch update that
+    /// moves its cell (`_resignOrRebaseFirstResponderViewWithIndexPathMapping`), and PDFKit's resign
+    /// hands first responder straight on - through `_UIHostingView._didChange(toFirstResponder:)`,
+    /// inside SwiftUI's own update of the pager (`UIKitPagingView.updateUIView`): the view graph
+    /// cycled and the main thread never came back. Measured 2026-10-25: a far Choose Surah turn over
+    /// the facsimile mounted the target's ring, the title said al-Hadid, the page stayed on
+    /// al-Mujadilah, 100% CPU for good (Abu: "it will go to mujadilah"). Nothing here needs the
+    /// responder: paging is the pager's, the arrow keys are the reader's, the find interaction is off.
+    func releaseFirstResponder() {
+        guard let responder = Self.firstResponder(in: self) else { return }
+        responder.resignFirstResponder()
+    }
+
+    private static func firstResponder(in view: UIView) -> UIView? {
+        if view.isFirstResponder { return view }
+        for subview in view.subviews {
+            if let found = firstResponder(in: subview) { return found }
+        }
+        return nil
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -279,7 +355,7 @@ private struct MushafPDFPageView: UIViewRepresentable {
         let document = PDFDocument()
         if let copy = page.copy() as? PDFPage {
             // Trim the page furniture (islamweb header, legend strip, side borders) off the display:
-            // the edition window cuts it away. Applied to the COPY - the source document's pages stay
+            // the edition window cuts it away (the app's own Hafs volume has none; its window is the page). Applied to the COPY - the source document's pages stay
             // untouched. The size guard keeps a malformed intersection (odd drop-in file) from
             // collapsing the page to a sliver.
             if let window = cropWindow {
@@ -302,6 +378,8 @@ private struct MushafPDFPageView: UIViewRepresentable {
             view.autoScales = true
             view.setNeedsLayout()
             view.layoutIfNeeded()
+            // The new document view took first responder as it was laid into the window.
+            (view as? FitFlooredPDFView)?.releaseFirstResponder()
         }
     }
 
@@ -396,6 +474,31 @@ private struct MushafPDFPageView: UIViewRepresentable {
     }
 }
 
+/// The reader's guard before it changes the pager's mounted set over the facsimile: no PDFKit view may
+/// hold first responder when the pager's batch update runs (see `FitFlooredPDFView.releaseFirstResponder`).
+/// Called outside SwiftUI's update, right before the write that changes the set.
+enum MushafFacsimileFocus {
+    static func release() {
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+        for window in windows {
+            guard let responder = firstResponder(in: window) else { continue }
+            if NSStringFromClass(type(of: responder)).contains("PDF") {
+                responder.resignFirstResponder()
+            }
+        }
+    }
+
+    private static func firstResponder(in view: UIView) -> UIView? {
+        if view.isFirstResponder { return view }
+        for subview in view.subviews {
+            if let found = firstResponder(in: subview) { return found }
+        }
+        return nil
+    }
+}
+
 /// One mushaf page drawn from the facsimile, sized and positioned exactly like the composed page it replaces.
 ///
 /// This is a **page body**, not a reader. It slots into `SurahPageReader`'s pager in place of
@@ -417,7 +520,9 @@ struct MushafPDFPageBody: View {
     /// traps outright when the object is missing. That killed the app from
     /// `ToolbarPlacementEnvironment.updateValue` while paging the printed mushaf
     /// (2026-10-06, iPhone-2026-10-06-214850.ips and -215046.ips, EXC_BREAKPOINT on thread 0).
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
     @Environment(\.colorScheme) private var colorScheme
 
     private var appearance: MushafPDFAppearance {

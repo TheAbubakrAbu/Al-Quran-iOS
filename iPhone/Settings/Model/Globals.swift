@@ -178,6 +178,29 @@ enum TypedAmount {
     }
 }
 
+// MARK: - Lists inside a sentence
+
+/// How a list of phrases joins inside a sentence: "a and b" or "a or b".
+enum SentenceListType {
+    case and, or
+}
+
+extension Array where Element == String {
+    /// These phrases as one list inside a sentence. In English the list reads exactly as the sentence
+    /// always wrote it (`english`: some lists are commas only, some end on "and" with no serial comma).
+    /// In Arabic it takes the language's own list format ("أ وب وج"), never Arabic phrases strung on a
+    /// Latin ", ". The formatter isolates only a phrase in another script ("Apple Watch"), so a list of
+    /// Arabic phrases comes back as plain Arabic text.
+    func sentenceList(_ type: SentenceListType = .and, english: ([String]) -> String) -> String {
+        guard AppLanguage.isArabicScript else { return english(self) }
+        let locale = Locale(identifier: AppLanguage.code)
+        switch type {
+        case .and: return formatted(.list(type: .and).locale(locale))
+        case .or: return formatted(.list(type: .or).locale(locale))
+        }
+    }
+}
+
 // MARK: - The dotless rasm
 
 /// The ONE table behind Hide Arabic Dots: the string transform (`String.removingArabicDots`) and the
@@ -221,6 +244,9 @@ enum ArabicRasm {
 enum AppIdentifiers {
     static let appFullName = "Al-Quran | Beginner Quran"
     static let appName = "Al-Quran"
+    /// The app's name as the interface shows it: القرآن in Arabic, "Al-Quran" in English. For display only
+    /// (`appName` is the identifier, the asset name and the file-name prefix).
+    static var displayName: String { appName.localizedDisplay }
     
     static let mainColor = AccentColor.green
     static let mainColorString = "green"
@@ -230,6 +256,11 @@ enum AppIdentifiers {
 
     /// Main iOS bundle ID and OSLog subsystem prefix (matches `PRODUCT_BUNDLE_IDENTIFIER` for the app target).
     static let bundleIdentifier = "com.Quran.Elmallah.Beginner-Quran"
+
+    /// The app's App Store id (the number in its store URL): the review links and the update dialog
+    /// (AppUpdateCheck.swift) open the store page by it.
+    static let appStoreID = "6449729655"
+    static var appStoreURL: URL { URL(string: "https://apps.apple.com/app/id\(appStoreID)")! }
 
     static let backgroundFetchPrayerTimesTaskIdentifier = "\(bundleIdentifier).fetchPrayerTimes"
     /// The overnight BGProcessingTask twin of the refresh above. Processing tasks get the system's
@@ -444,7 +475,21 @@ enum AccentColor: String, CaseIterable, Identifiable {
     case red, orange, yellow, green, blue, indigo, cyan, teal, mint, purple, pink, brown, custom
 
     var displayName: String {
-        rawValue.capitalized
+        switch self {
+        case .red: return String(localized: "Red")
+        case .orange: return String(localized: "Orange")
+        case .yellow: return String(localized: "Yellow")
+        case .green: return String(localized: "Green")
+        case .blue: return String(localized: "Blue")
+        case .indigo: return String(localized: "Indigo")
+        case .cyan: return String(localized: "Cyan")
+        case .teal: return String(localized: "Teal")
+        case .mint: return String(localized: "Mint")
+        case .purple: return String(localized: "Purple")
+        case .pink: return String(localized: "Pink")
+        case .brown: return String(localized: "Brown")
+        case .custom: return String(localized: "Custom")
+        }
     }
 
     /// The accent as the app paints it: text, icons, controls and tints alike, ~1,000 call sites.
@@ -935,6 +980,104 @@ extension Font {
     }
 }
 
+// MARK: - Quranic marks inside other text
+
+/// Arabic that carries the mushaf's own marks (the wasl alef ٱ, the Uthmani sukoon, the small high and
+/// low signs, the imalah dot, the open tanween) inside English prose or a label. The system face has no
+/// proper glyphs for most of them and drew the wasl alef as a Latin-looking "Î" on Riwayat on the Page
+/// (Abu, 2026-10-27: "why not use Arabic text?"), so a run carrying one is set in the Hafs Uthmani face
+/// the app's Quran is drawn in, a little larger because that face draws small for its point size.
+/// Plain Arabic (a term like جُمُعَة) keeps the system face, which draws it well.
+enum QuranicInline {
+    static let scale: CGFloat = 1.3
+
+    static func isQuranicMark(_ value: UInt32) -> Bool {
+        switch value {
+        case 0x0671, 0x0657, 0x065C, 0x065E, 0x06D6...0x06ED, 0x08F0...0x08FF: return true
+        default: return false
+        }
+    }
+
+    private static func isArabic(_ value: UInt32) -> Bool {
+        switch value {
+        case 0x0600...0x06FF, 0x0750...0x077F, 0x08A0...0x08FF, 0xFB50...0xFDFF, 0xFE70...0xFEFF: return true
+        default: return false
+        }
+    }
+
+    /// The UTF-16 ranges of the Arabic runs in `text` that carry a Quranic mark. Words joined by a single
+    /// space are one run, so a phrase is set in one face.
+    static func ranges(in text: String) -> [NSRange] {
+        guard text.unicodeScalars.contains(where: { isQuranicMark($0.value) }) else { return [] }
+        let scalars = Array(text.unicodeScalars)
+        var result: [NSRange] = []
+        var offset = 0
+        var i = 0
+        while i < scalars.count {
+            guard isArabic(scalars[i].value) else {
+                offset += scalars[i].utf16.count
+                i += 1
+                continue
+            }
+            let start = offset
+            var marked = false
+            while i < scalars.count {
+                let value = scalars[i].value
+                if isArabic(value) {
+                    marked = marked || isQuranicMark(value)
+                } else if !(value == 0x20 && i + 1 < scalars.count && isArabic(scalars[i + 1].value)) {
+                    break
+                }
+                offset += scalars[i].utf16.count
+                i += 1
+            }
+            if marked { result.append(NSRange(location: start, length: offset - start)) }
+        }
+        return result
+    }
+
+    #if canImport(UIKit)
+    /// The same over a UIKit string: each Quranic run takes the Uthmani face at its own size times `scale`.
+    /// (Holding the lines to the text's own height to close the gap the taller face opens made TextKit
+    /// overlap the lines, 2026-10-27; the slightly taller line is the lesser cost.)
+    static func apply(to string: NSMutableAttributedString) {
+        for range in ranges(in: string.string) {
+            let size = (string.attribute(.font, at: range.location, effectiveRange: nil) as? UIFont)?.pointSize ?? 17
+            guard let face = UIFont(name: Settings.hafsUthmaniFontName, size: size * scale) else { continue }
+            string.addAttribute(.font, value: face, range: range)
+        }
+    }
+    #endif
+}
+
+extension Text {
+    /// `text` as written, with any Arabic run that carries Quranic marks set in the Uthmani face
+    /// (`QuranicInline`); `size` is the point size of the text around it. Built by concatenating
+    /// segments, each with its own font: font runs in an `AttributedString` were not drawn (2026-10-27).
+    init(quranicInline text: String, size: CGFloat, relativeTo style: Font.TextStyle = .body) {
+        let found = QuranicInline.ranges(in: text)
+        guard !found.isEmpty else {
+            self.init(verbatim: text)
+            return
+        }
+        let string = text as NSString
+        let face = Font.custom(Settings.hafsUthmaniFontName, size: size * QuranicInline.scale, relativeTo: style)
+        var result = Text(verbatim: "")
+        var cursor = 0
+        for range in found {
+            if range.location > cursor {
+                result = result + Text(verbatim: string.substring(with: NSRange(location: cursor, length: range.location - cursor)))
+            }
+            result = result + Text(verbatim: string.substring(with: range)).font(face)
+            cursor = range.location + range.length
+        }
+        if cursor < string.length {
+            result = result + Text(verbatim: string.substring(from: cursor))
+        }
+        self = result
+    }
+}
+
 #if canImport(UIKit)
 extension UIFont {
     /// The rounded system face. The `fontDesign` environment only reaches SwiftUI text, so the UIKit-drawn surfaces
@@ -1001,18 +1144,18 @@ struct HijriMonth: Identifiable {
 }
 
 let hijriMonths: [HijriMonth] = [
-    HijriMonth(number: 1,  english: "Muharram",       arabic: "مُحَرَّم",        isSacred: true,  note: "A sacred month. The Day of Ashura falls on the 10th."),
-    HijriMonth(number: 2,  english: "Safar",          arabic: "صَفَر",           isSacred: false, note: "No worship is tied to this month, and there is no bad omen in it."),
-    HijriMonth(number: 3,  english: "Rabi al-Awwal",  arabic: "رَبِيع الأَوَّل",  isSacred: false, note: "The month the Prophet ﷺ migrated to Madinah."),
-    HijriMonth(number: 4,  english: "Rabi al-Thani",  arabic: "رَبِيع الثَّانِي", isSacred: false, note: "The second of the two Rabi months."),
-    HijriMonth(number: 5,  english: "Jumada al-Ula",  arabic: "جُمَادَى الأُولَى", isSacred: false, note: "The first of the two Jumada months."),
-    HijriMonth(number: 6,  english: "Jumada al-Thani", arabic: "جُمَادَى الآخِرَة", isSacred: false, note: "The second of the two Jumada months."),
-    HijriMonth(number: 7,  english: "Rajab",          arabic: "رَجَب",           isSacred: true,  note: "A sacred month, standing alone between the others."),
-    HijriMonth(number: 8,  english: "Sha'ban",        arabic: "شَعبَان",         isSacred: false, note: "The Prophet ﷺ fasted more in Sha'ban than in any month but Ramadan."),
-    HijriMonth(number: 9,  english: "Ramadan",        arabic: "رَمَضَان",        isSacred: false, note: "The month of the obligatory fast, and the month the Quran was sent down."),
-    HijriMonth(number: 10, english: "Shawwal",        arabic: "شَوَّال",         isSacred: false, note: "Eid al-Fitr is on the 1st, followed by the six recommended fasts."),
-    HijriMonth(number: 11, english: "Dhul Qi'dah",    arabic: "ذُو القَعدَة",     isSacred: true,  note: "A sacred month, and one of the months of Hajj."),
-    HijriMonth(number: 12, english: "Dhul Hijjah",    arabic: "ذُو الحِجَّة",     isSacred: true,  note: "A sacred month. Hajj is performed, and Eid al-Adha is on the 10th."),
+    HijriMonth(number: 1,  english: "Muharram",       arabic: "مُحَرَّم",        isSacred: true,  note: String(localized: "A sacred month. The Day of Ashura falls on the 10th.")),
+    HijriMonth(number: 2,  english: "Safar",          arabic: "صَفَر",           isSacred: false, note: String(localized: "No worship is tied to this month, and there is no bad omen in it.")),
+    HijriMonth(number: 3,  english: "Rabi al-Awwal",  arabic: "رَبِيع الأَوَّل",  isSacred: false, note: String(localized: "The month the Prophet ﷺ migrated to Madinah.")),
+    HijriMonth(number: 4,  english: "Rabi al-Thani",  arabic: "رَبِيع الثَّانِي", isSacred: false, note: String(localized: "The second of the two Rabi months.")),
+    HijriMonth(number: 5,  english: "Jumada al-Ula",  arabic: "جُمَادَى الأُولَى", isSacred: false, note: String(localized: "The first of the two Jumada months.")),
+    HijriMonth(number: 6,  english: "Jumada al-Thani", arabic: "جُمَادَى الآخِرَة", isSacred: false, note: String(localized: "The second of the two Jumada months.")),
+    HijriMonth(number: 7,  english: "Rajab",          arabic: "رَجَب",           isSacred: true,  note: String(localized: "A sacred month, standing alone between the others.")),
+    HijriMonth(number: 8,  english: "Sha'ban",        arabic: "شَعبَان",         isSacred: false, note: String(localized: "The Prophet ﷺ fasted more in Sha'ban than in any month but Ramadan.")),
+    HijriMonth(number: 9,  english: "Ramadan",        arabic: "رَمَضَان",        isSacred: false, note: String(localized: "The month of the obligatory fast, and the month the Quran was sent down.")),
+    HijriMonth(number: 10, english: "Shawwal",        arabic: "شَوَّال",         isSacred: false, note: String(localized: "Eid al-Fitr is on the 1st, followed by the six recommended fasts.")),
+    HijriMonth(number: 11, english: "Dhul Qi'dah",    arabic: "ذُو القَعدَة",     isSacred: true,  note: String(localized: "A sacred month, and one of the months of Hajj.")),
+    HijriMonth(number: 12, english: "Dhul Hijjah",    arabic: "ذُو الحِجَّة",     isSacred: true,  note: String(localized: "A sacred month. Hajj is performed, and Eid al-Adha is on the 10th.")),
 ]
 
 func arabicNumberString(from number: Int) -> String {
@@ -1749,11 +1892,11 @@ enum MushafPageLanguage: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .arabic:          return "Arabic"
-        case .pdf:             return "Printed Mushaf (PDF)"
-        case .transliteration: return "Transliteration (English)"
-        case .clearQuran:      return "The Clear Quran (English)"
-        case .saheeh:          return "Saheeh International (English)"
+        case .arabic:          return String(localized: "Arabic")
+        case .pdf:             return String(localized: "Printed Mushaf")
+        case .transliteration: return String(localized: "Transliteration (English)")
+        case .clearQuran:      return String(localized: "The Clear Quran (English)")
+        case .saheeh:          return String(localized: "Saheeh International (English)")
         }
     }
 }
@@ -1770,9 +1913,9 @@ enum MushafPDFAppearance: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .auto:  return "Automatic"
-        case .light: return "Light"
-        case .night: return "Night"
+        case .auto:  return String(localized: "Automatic")
+        case .light: return String(localized: "appearance.light", defaultValue: "Light")
+        case .night: return String(localized: "Dark")
         }
     }
 
@@ -1787,6 +1930,42 @@ enum MushafPDFAppearance: String, CaseIterable, Identifiable {
     /// Whether the invert applies, given whether the surrounding appearance is dark.
     func isNight(inDarkScheme dark: Bool) -> Bool {
         self == .night || (self == .auto && dark)
+    }
+}
+
+/// Which Hafs facsimile the printed mushaf shows. Hafs alone has more than one edition bundled (every
+/// other riwayah has its one Islamweb volume): the app's own typesetting on the Madinah page layout
+/// (the default) and the Islamweb volume the app shipped before 4.6.6. A scanned Madinah print was
+/// tried too (2026-10-20) and dropped: scanned pages are 96 dpi JPEGs, 32 MB even as JPEG 2000,
+/// against a 3 MB ceiling. Raw values are persisted in `Settings.mushafHafsPDFEdition`; an edition
+/// whose file is not in the bundle hides itself from the picker and the reader falls back to the
+/// default (`MushafPDFLibrary.bundledURL`).
+enum MushafHafsPDFEdition: String, CaseIterable, Identifiable {
+    case alIslam = "alislam"
+    case islamweb
+
+    var id: String { rawValue }
+
+    /// File base name in `Resources/Mushaf PDFs` (see `MushafPDFLibrary.fileName`).
+    var fileName: String {
+        switch self {
+        case .alIslam:  return "01-asim-hafs"
+        case .islamweb: return "01-asim-hafs-islamweb"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .alIslam:  return "Al-Islam"
+        case .islamweb: return "Islamweb"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .alIslam:  return "book.closed"
+        case .islamweb: return "globe"
+        }
     }
 }
 
@@ -2285,5 +2464,125 @@ enum SearchRank {
         return items.indices
             .sorted { scores[$0] != scores[$1] ? scores[$0] > scores[$1] : $0 < $1 }
             .map { items[$0] }
+    }
+}
+
+// MARK: - Stored settings (2026-10-21, Performance Guide section 18)
+
+/// What a `@Setting` asks of the object it lives on: a word BEFORE the value moves, with the defaults
+/// key, so the object can publish once and route the change to whoever owns that key.
+protocol SettingsHost: AnyObject {
+    func settingWillChange(_ key: String)
+}
+
+/// The value shapes a `@Setting` holds: exactly what `@AppStorage` held in this model (Bool, Int,
+/// Double, String, Data, an optional String), read and written through the same `UserDefaults`
+/// calls, so every key keeps its stored form and a `defaults read` shows the same thing.
+protocol SettingStorable: Equatable {
+    /// The stored value, or nil when the key is absent (the wrapper then answers its default).
+    static func readSetting(_ defaults: UserDefaults, key: String) -> Self?
+    func writeSetting(_ defaults: UserDefaults, key: String)
+}
+
+extension Bool: SettingStorable {
+    static func readSetting(_ defaults: UserDefaults, key: String) -> Bool? { defaults.object(forKey: key) as? Bool }
+    func writeSetting(_ defaults: UserDefaults, key: String) { defaults.set(self, forKey: key) }
+}
+
+extension Int: SettingStorable {
+    static func readSetting(_ defaults: UserDefaults, key: String) -> Int? { defaults.object(forKey: key) as? Int }
+    func writeSetting(_ defaults: UserDefaults, key: String) { defaults.set(self, forKey: key) }
+}
+
+extension Double: SettingStorable {
+    static func readSetting(_ defaults: UserDefaults, key: String) -> Double? { defaults.object(forKey: key) as? Double }
+    func writeSetting(_ defaults: UserDefaults, key: String) { defaults.set(self, forKey: key) }
+}
+
+extension String: SettingStorable {
+    static func readSetting(_ defaults: UserDefaults, key: String) -> String? { defaults.object(forKey: key) as? String }
+    func writeSetting(_ defaults: UserDefaults, key: String) { defaults.set(self, forKey: key) }
+}
+
+extension Data: SettingStorable {
+    static func readSetting(_ defaults: UserDefaults, key: String) -> Data? { defaults.object(forKey: key) as? Data }
+    func writeSetting(_ defaults: UserDefaults, key: String) { defaults.set(self, forKey: key) }
+}
+
+extension Optional: SettingStorable where Wrapped: SettingStorable {
+    /// Always `.some`: an absent key IS the value (nil), never a fall-through to a default.
+    static func readSetting(_ defaults: UserDefaults, key: String) -> Wrapped?? {
+        .some(Wrapped.readSetting(defaults, key: key))
+    }
+
+    func writeSetting(_ defaults: UserDefaults, key: String) {
+        if let value = self {
+            value.writeSetting(defaults, key: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
+    }
+}
+
+/// A user setting stored in standard defaults under `key`, on a `SettingsHost` class.
+///
+/// The replacement for `@AppStorage` inside `Settings`. The SwiftUI wrapper, hosted by an
+/// `ObservableObject`, published that object on its own set, again when its defaults observer
+/// echoed the write, and once more for ANY defaults write in the process (a store saving its own
+/// key republished every view observing `Settings`), and it published for a write of the value
+/// already stored. Measured 2026-10-21 (`UnitTests/SettingPublishTests`): three to four publishes per
+/// changed write, two per unchanged one, one per foreign key.
+///
+/// This wrapper reads the store through (a raw write by a restore or a `-seedBool` shows at the next
+/// read), writes the same key the same way, and tells the host ONCE, before the write, only when the
+/// value changes. The host publishes and routes; the wrapper never echoes.
+/// The key behind a `@Setting`, readable through a `Mirror` of the host: the slice test walks every
+/// stored setting this way and fails on one that no slice owns.
+protocol SettingKeyed {
+    var settingKey: String { get }
+}
+
+@propertyWrapper
+struct Setting<Value: SettingStorable>: SettingKeyed {
+    let key: String
+    let defaultValue: Value
+
+    var settingKey: String { key }
+
+    init(wrappedValue: Value, _ key: String) {
+        self.key = key
+        self.defaultValue = wrappedValue
+    }
+
+    /// `@Setting("key") var x: String?`: the default is nil, as `@AppStorage` had it.
+    init(_ key: String) where Value: ExpressibleByNilLiteral {
+        self.init(wrappedValue: nil, key)
+    }
+
+    @available(*, unavailable, message: "@Setting lives on a stored property of a SettingsHost class")
+    var wrappedValue: Value {
+        get { fatalError("@Setting is read through its host") }
+        set { fatalError("@Setting is written through its host") }
+    }
+
+    static subscript<Host: SettingsHost>(
+        _enclosingInstance host: Host,
+        wrapped _: ReferenceWritableKeyPath<Host, Value>,
+        storage storageKeyPath: ReferenceWritableKeyPath<Host, Self>
+    ) -> Value {
+        get {
+            let wrapper = host[keyPath: storageKeyPath]
+            return Value.readSetting(.standard, key: wrapper.key) ?? wrapper.defaultValue
+        }
+        set {
+            let wrapper = host[keyPath: storageKeyPath]
+            let current = Value.readSetting(.standard, key: wrapper.key) ?? wrapper.defaultValue
+            if current != newValue {
+                host.settingWillChange(wrapper.key)
+            }
+            // Written even when equal: the first write of a default value lands the key in the
+            // store, exactly as the SwiftUI wrapper did.
+            newValue.writeSetting(.standard, key: wrapper.key)
+        }
     }
 }

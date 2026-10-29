@@ -61,6 +61,9 @@ enum OpenScreen: String, Hashable, CaseIterable {
     case letterFamily
     case letterFamilies
     case soundAlikes
+    /// The alphabet's grammar pages, by id ("pronouns", "noun", "verb", "harf", and "basics" for Basic
+    /// Grammar): each one's foot links to the others.
+    case arabicGrammar
     /// A lesson of the tajweed course (by lesson id: "qalqalah", "mudood-chart"...). A lesson shows its
     /// letters as tiles and its letter families as rows, and a letter's or a family's page links back
     /// to the lesson that explains its rule.
@@ -71,6 +74,8 @@ enum OpenScreen: String, Hashable, CaseIterable {
     case miraclesLibrary
     case propheciesLibrary
     case prophetMiraclesLibrary
+    /// The Sunnahs of the Prophet index (2026-10-26): the Sunnah pillar article doors into it.
+    case sunnahLibrary
     /// Proving Islam's index: its chapters door into the pillar articles, and those articles door
     /// back into the index.
     case provingIslamLibrary
@@ -78,30 +83,32 @@ enum OpenScreen: String, Hashable, CaseIterable {
     /// What a disabled row says in place of its caption, when the row itself does not supply one.
     var alreadyHereCaption: String {
         switch self {
-        case .hijriCalendar:    return "You are in the Hijri Calendar"
-        case .hijriConverter:   return "You are in the Hijri Converter"
-        case .hijriArticle:     return "You are reading this article"
-        case .qiraatArticle:    return "You are reading this article"
-        case .qiraahMaster:     return "You are on this reading's page"
-        case .riwayahNarrator:  return "You are on this riwayah's page"
-        case .qiraatExplorer:   return "You are in the Qiraat Explorer"
-        case .qiraatIsnadIndex: return "You are in the chains index"
-        case .tajweedArticle:      return "You are reading this article"
-        case .tajweedFoundations:  return "You are in Tajweed Foundations"
-        case .tajweedCourse:       return "You are in the Tajweed Course"
-        case .hadeethEncCategory:  return "You are in this topic"
-        case .hadeethEncHadith:    return "You are reading this hadith"
-        case .miracleCategory:     return "You are in this category"
-        case .arabicLetter:        return "You are on this letter's page"
-        case .letterFamily:        return "You are on this family's page"
-        case .letterFamilies:      return "You are in Letter Families"
-        case .soundAlikes:         return "You are in Sound-Alike Letters"
-        case .tajweedLesson:       return "You came here from this lesson"
-        case .islamArticle:           return "You came here from this article"
-        case .miraclesLibrary:        return "You came here from Miracles of the Quran"
-        case .propheciesLibrary:      return "You came here from Prophecies of the Prophet"
-        case .prophetMiraclesLibrary: return "You came here from Miracles of the Prophets"
-        case .provingIslamLibrary:    return "You came here from Proving Islam"
+        case .hijriCalendar:    return String(localized: "You are in the Hijri Calendar")
+        case .hijriConverter:   return String(localized: "You are in the Hijri Converter")
+        case .hijriArticle:     return String(localized: "You are reading this article")
+        case .qiraatArticle:    return String(localized: "You are reading this article")
+        case .qiraahMaster:     return String(localized: "You are on this reading's page")
+        case .riwayahNarrator:  return String(localized: "You are on this riwayah's page")
+        case .qiraatExplorer:   return String(localized: "You are in the Qiraat Explorer")
+        case .qiraatIsnadIndex: return String(localized: "You are in the chains index")
+        case .tajweedArticle:      return String(localized: "You are reading this article")
+        case .tajweedFoundations:  return String(localized: "You are in Tajweed Foundations")
+        case .tajweedCourse:       return String(localized: "You are in the Tajweed Course")
+        case .hadeethEncCategory:  return String(localized: "You are in this topic")
+        case .hadeethEncHadith:    return String(localized: "You are reading this hadith")
+        case .miracleCategory:     return String(localized: "You are in this category")
+        case .arabicLetter:        return String(localized: "You are on this letter's page")
+        case .letterFamily:        return String(localized: "You are on this family's page")
+        case .letterFamilies:      return String(localized: "You are in Letter Families")
+        case .soundAlikes:         return String(localized: "You are in Sound-Alike Letters")
+        case .arabicGrammar:       return String(localized: "You came here from this page")
+        case .tajweedLesson:       return String(localized: "You came here from this lesson")
+        case .islamArticle:           return String(localized: "You came here from this article")
+        case .miraclesLibrary:        return String(localized: "You came here from Miracles of the Quran")
+        case .propheciesLibrary:      return String(localized: "You came here from Prophecies of the Prophet")
+        case .prophetMiraclesLibrary: return String(localized: "You came here from Miracles of the Prophets")
+        case .sunnahLibrary:          return String(localized: "You came here from Sunnahs of the Prophet")
+        case .provingIslamLibrary:    return String(localized: "You came here from Proving Islam")
         }
     }
 }

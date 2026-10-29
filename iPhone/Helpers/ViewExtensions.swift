@@ -232,7 +232,14 @@ final class RootAppearance: ObservableObject {
         firstLaunch = settings.firstLaunch
         needsAboutYou = Self.needsAboutYou(settings)
         needsCloudOffer = Self.needsCloudOffer(settings)
-        cancellable = settings.objectWillChange.sink { [weak self] _ in self?.scheduleRefresh() }
+        // Re-snapshot when a slice that feeds the snapshot publishes (the chrome, the system flags,
+        // the reading faces and sizes): never for a prayer change, a tracker mark or a bookmark, which
+        // used to re-run this through the whole-object publish (Performance Guide, section 18).
+        let feeds: [any SettingsSlice] = [
+            AppearanceSettings.shared, SystemSettings.shared, QuranDisplay.shared,
+            HadithSettings.shared, IslamSettings.shared,
+        ]
+        cancellable = Publishers.MergeMany(feeds.map(\.willChange)).sink { [weak self] _ in self?.scheduleRefresh() }
         ObjectPublishCounter.attach(self, label: "RootAppearance")
     }
 
@@ -735,16 +742,56 @@ extension View {
 /// Traveling Mode or Prayer Calculation) push through `navigationDestination(isPresented:)`, which
 /// only a `NavigationStack` honours; a legacy `NavigationLink(isActive:)` that is already true when a
 /// `NavigationView` mounts never pushes at all (2026-09-05, seen on iOS 26).
+///
+/// It also carries the sheet's Now Playing bar. A safe-area inset applied OUTSIDE a `NavigationStack` /
+/// `NavigationView` never reaches the scroll view inside it, so the bar the sheet host
+/// (`SheetPresentationModifier`) drew around the container floated over the content: the ayah actions
+/// sheet scrolled its last row of topic chips under the player with no way to bring it out (Abu,
+/// 2026-10-28: "when I scroll down in a sheet it doesn't seem to be a safe area inset, it seems to cut off
+/// stuff"; the tafsir sheet only looked fine because its search bar happens to sit at the foot of its own
+/// stack). So the root screen draws the bar as its OWN bottom bar (`sheetNowPlayingBar()`), the way every
+/// list already does, and claims it, so the host draws none.
 struct SheetNavigationContainer<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         if #available(iOS 16.0, *) {
-            NavigationStack { content() }
+            NavigationStack { content().sheetNowPlayingBar() }
         } else {
-            NavigationView { content() }
+            NavigationView { content().sheetNowPlayingBar() }
                 .navigationViewStyle(.stack)
         }
+    }
+}
+
+extension View {
+    /// The Now Playing bar as this screen's own bottom bar while it sits in a sheet: for a sheet's root
+    /// screen (`SheetNavigationContainer` applies it) and for every non-list screen PUSHED inside a sheet,
+    /// which the root's bar never reaches either (each pushed screen is its own safe-area world). Lists
+    /// carry the same bar through `applyConditionalListStyle`. Inert outside a sheet, so a screen that is
+    /// pushed on a tab as well as in a sheet takes it unconditionally.
+    func sheetNowPlayingBar() -> some View {
+        modifier(SheetNowPlayingBar())
+    }
+}
+
+/// See `sheetNowPlayingBar()`. Draws the bar (a `safeAreaBar` on iOS 26: the content ends above it and
+/// fades under it) unless something inside already does (a list, or a nested screen with this modifier),
+/// and reports it through `NowPlayingBarProvidedKey`, which stands the sheet host's own copy down.
+private struct SheetNowPlayingBar: ViewModifier {
+    @Environment(\.nowPlayingInSheet) private var inSheet
+    @ObservedObject private var playback = PlaybackVisibility.shared
+    @State private var innerDrawsNowPlaying = false
+
+    func body(content: Content) -> some View {
+        content
+            .onPreferenceChange(NowPlayingBarProvidedKey.self) { innerDrawsNowPlaying = $0 }
+            .adaptiveSafeArea(edge: .bottom) {
+                if inSheet, !innerDrawsNowPlaying, playback.showsNowPlaying, let bar = playback.barContent {
+                    NowPlayingBarStack(bar: bar, shown: playback.showsNowPlaying)
+                }
+            }
+            .preference(key: NowPlayingBarProvidedKey.self, value: inSheet)
     }
 }
 #endif
@@ -782,6 +829,44 @@ struct AdaptiveSafeArea<InsetContent: View>: ViewModifier {
         #endif
     }
 }
+
+#if os(iOS)
+/// A list's Now Playing inset: a `safeAreaBar` in a sheet (see `nowPlayingInSheet`), the plain inset
+/// on a tab screen. `inSheet` never changes for a mounted list, so the branch never swaps under it.
+struct NowPlayingListInset<Bar: View>: ViewModifier {
+    let inSheet: Bool
+    @ViewBuilder let bar: () -> Bar
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if inSheet {
+            content.adaptiveSafeArea(edge: .bottom) { bar() }
+        } else {
+            content.safeAreaInset(edge: .bottom) { bar() }
+        }
+    }
+}
+
+/// The Now Playing bar as every bottom inset lays it out: the player, its side margins, the cushion
+/// under it and a ground that takes touches. One copy for the lists (`ConditionalListStyle`), the sheet
+/// host (`SheetPresentationModifier`) and the sheet screens (`sheetNowPlayingBar()`), so the three
+/// never drift apart.
+struct NowPlayingBarStack: View {
+    let bar: () -> AnyView
+    /// The visibility the bar animates on.
+    let shown: Bool
+
+    var body: some View {
+        VStack(spacing: SafeAreaInsetVStackSpacing.standard) {
+            bar()
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, BottomBarCushion.standard)
+        .background(Color.white.opacity(0.00001))
+        .animation(.easeInOut, value: shown)
+    }
+}
+#endif
 
 extension View {
     func adaptiveSafeArea<InsetContent: View>(
@@ -822,9 +907,14 @@ extension View {
     /// it puts the page's own search bar at the foot (`ArticleSearchChrome`), which finds the page's
     /// sections and scrolls to them. Pages outside the catalog (the tajweed topics, the qiraat
     /// biographies) have no searchable text and leave it nil.
-    func selectableArticleList(article: String? = nil, disableNowPlayingInset: Bool = false,
-                               topContentMargin: CGFloat = 0) -> some View {
-        modifier(SelectableArticleList(article: article, disableNowPlayingInset: disableNowPlayingInset,
+    ///
+    /// `fallback` is a generated page's own sections (`IslamArticle.generated`) for an `article` id the
+    /// corpus does not carry (a prophecy, a prophet's sign): the bar scans those instead, and a hit
+    /// scrolls to the same `ArticleHeader` heading.
+    func selectableArticleList(article: String? = nil, fallback: IslamArticle? = nil,
+                               disableNowPlayingInset: Bool = false, topContentMargin: CGFloat = 0) -> some View {
+        modifier(SelectableArticleList(article: article, fallback: fallback,
+                                       disableNowPlayingInset: disableNowPlayingInset,
                                        topContentMargin: topContentMargin))
     }
 
@@ -935,14 +1025,21 @@ enum SafeAreaInsetVStackSpacing {
 /// housing. Portrait and the iPad/Mac are untouched: `enabled` is only ever true for a compact
 /// height, and the modifier is structurally constant in both states so the List is never rebuilt
 /// (flipping between two branches here would reset its scroll position, Quality Guide G3).
+///
+/// `keepsTrailing` leaves the trailing gutter alone, for a list with a `JumpIndexRail` there: the
+/// rail stays inside the safe area (the sensor housing can be on that side), so the rows must too,
+/// or the rail lands on their trailing buttons (2026-10-27, the Quran tab's juz rail on the JUZ n
+/// headers' info and shuffle buttons).
 private struct ReaderLandscapeWidth: ViewModifier {
     let enabled: Bool
+    let keepsTrailing: Bool
 
     func body(content: Content) -> some View {
         if #available(iOS 17.0, *) {
+            let edges: Edge.Set = keepsTrailing ? .leading : .horizontal
             content
-                .ignoresSafeArea(enabled ? .container : [], edges: .horizontal)
-                .safeAreaPadding(enabled ? .horizontal : [])
+                .ignoresSafeArea(enabled ? .container : [], edges: edges)
+                .safeAreaPadding(enabled ? edges : [])
         } else {
             content
         }
@@ -952,11 +1049,12 @@ private struct ReaderLandscapeWidth: ViewModifier {
 
 extension View {
     /// Gives a reading list its full width back on a phone in landscape - see `ReaderLandscapeWidth`.
-    /// Pass `verticalSizeClass == .compact`; it is inert everywhere else.
+    /// Pass `verticalSizeClass == .compact`; it is inert everywhere else. `keepsTrailing`: the
+    /// trailing side keeps its safe area, for a side index there.
     @ViewBuilder
-    func readerLandscapeWidth(_ enabled: Bool) -> some View {
+    func readerLandscapeWidth(_ enabled: Bool, keepsTrailing: Bool = false) -> some View {
         #if os(iOS)
-        modifier(ReaderLandscapeWidth(enabled: enabled))
+        modifier(ReaderLandscapeWidth(enabled: enabled, keepsTrailing: keepsTrailing))
         #else
         self
         #endif
@@ -1018,6 +1116,35 @@ final class PlaybackVisibility: ObservableObject {
     func update(showsBar: Bool) {
         guard showsBar != showsNowPlaying else { return }
         showsNowPlaying = showsBar
+    }
+}
+
+/// True wherever a `ConditionalListStyle` list sits, or a sheet screen that draws its own bar
+/// (`sheetNowPlayingBar()`, which every `SheetNavigationContainer` root has): that screen manages the Now
+/// Playing bar itself (shows it, or was told not to), so a sheet host (`SheetPresentationModifier`) adds
+/// none of its own.
+/// The bar reaches the sheets built on a `ScrollView` (the ayah actions sheet, the tafsir and word
+/// cards, Share Ayah) through the host instead (Abu, 2026-10-26: "put now playing view in hold down
+/// ayah sheet, put it in every sheet").
+struct NowPlayingBarProvidedKey: PreferenceKey {
+    static var defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+/// True inside a sheet's content (`SheetPresentationModifier` sets it). A list there draws its Now
+/// Playing bar as a `safeAreaBar` on iOS 26 (`adaptiveSafeArea`), the way the sheet host draws its
+/// own: under a plain `safeAreaInset` the bar's ground is clear, so a sheet's text scrolled on behind
+/// and around the player in full ink (Abu, 2026-10-28: "when I scroll down in a sheet it doesn't
+/// seem to be a safe area inset, it seems to cut off stuff"). The bar fades the content under it
+/// instead, the scroll edge every other bar in the app has. Tab screens keep their inset as it is.
+private struct NowPlayingInSheetKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var nowPlayingInSheet: Bool {
+        get { self[NowPlayingInSheetKey.self] }
+        set { self[NowPlayingInSheetKey.self] = newValue }
     }
 }
 
@@ -1332,6 +1459,9 @@ private struct ReadingColumnMargins: ViewModifier {
 
 struct ConditionalListStyle: ViewModifier {
     @Environment(\.appearance) private var appearance
+    #if os(iOS)
+    @Environment(\.nowPlayingInSheet) private var inSheet
+    #endif
     @ObservedObject private var playback = PlaybackVisibility.shared
 
     let disableNowPlayingInset: Bool
@@ -1375,19 +1505,20 @@ struct ConditionalListStyle: ViewModifier {
         // presentation contexts and don't inherit the root's preferredColorScheme - also adopt the theme.
         .preferredColorScheme(appearance.colorScheme)
         #if os(iOS)
-        .safeAreaInset(edge: .bottom) {
-            if !disableNowPlayingInset && shouldShowNowPlaying, let bar = playback.barContent {
-                VStack(spacing: SafeAreaInsetVStackSpacing.standard) {
-                    bar()
-                }
-                .padding(.horizontal, 24)
-                .padding(.bottom, BottomBarCushion.standard)
-                .background(Color.white.opacity(0.00001))
-                .animation(.easeInOut, value: shouldShowNowPlaying)
-            }
-        }
+        // This list manages the bar (shown, or deliberately not): a sheet around it adds none.
+        .preference(key: NowPlayingBarProvidedKey.self, value: true)
+        .modifier(NowPlayingListInset(inSheet: inSheet) { nowPlayingBar })
         #endif
     }
+
+    #if os(iOS)
+    @ViewBuilder
+    private var nowPlayingBar: some View {
+        if !disableNowPlayingInset && shouldShowNowPlaying, let bar = playback.barContent {
+            NowPlayingBarStack(bar: bar, shown: shouldShowNowPlaying)
+        }
+    }
+    #endif
 
     #if os(iOS)
     // Single, structurally-constant modifier chain (only the VALUES change with the theme). Switching to/from
@@ -1443,15 +1574,26 @@ private struct SelectableArticleList: ViewModifier {
     @StateObject private var handle = ArticleScrollHandle()
 
     let article: String?
+    /// The page's own sections when the corpus has no article for `article` (see `ArticleSearchChrome`).
+    let fallback: IslamArticle?
     let disableNowPlayingInset: Bool
     let topContentMargin: CGFloat
+
+    private var opensOnSection: Bool { !(scrollTarget ?? "").isEmpty }
+
+    /// Hidden while a landing runs, and from the first frame of a page opened on a section until its
+    /// landing is done, so the reader sees the page once, on the heading (see `ArticleScroll`).
+    private var veiled: Bool { handle.isLanding || (opensOnSection && !handle.hasLanded) }
 
     func body(content: Content) -> some View {
         ScrollViewReader { proxy in
             styled(content, proxy: proxy)
                 .environment(\.articleScrollHandle, handle)
                 .onAppear {
-                    guard let scrollTarget, !scrollTarget.isEmpty else { return }
+                    // Once per page: `onAppear` runs again on the way back from a page this one pushed
+                    // and on a tab switch, and the reader has moved on from the section by then.
+                    guard let scrollTarget, !scrollTarget.isEmpty, !handle.openingLandingRequested else { return }
+                    handle.openingLandingRequested = true
                     ArticleScroll.land(on: scrollTarget, proxy: proxy, after: 0.45, handle: handle)
                 }
         }
@@ -1464,13 +1606,22 @@ private struct SelectableArticleList: ViewModifier {
             // The search chrome applies `articleListStyle` itself, around the page AND its results.
             content.modifier(ArticleSearchChrome(articleID: article, proxy: proxy, handle: handle,
                                                  disableNowPlayingInset: disableNowPlayingInset,
-                                                 topContentMargin: topContentMargin))
+                                                 topContentMargin: topContentMargin, veiled: veiled,
+                                                 fallback: fallback))
         } else {
-            content.articleListStyle(disableNowPlayingInset: disableNowPlayingInset, topContentMargin: topContentMargin)
+            veiledPage(content)
+                .articleListStyle(disableNowPlayingInset: disableNowPlayingInset, topContentMargin: topContentMargin)
         }
         #else
-        content.articleListStyle(disableNowPlayingInset: disableNowPlayingInset, topContentMargin: topContentMargin)
+        veiledPage(content)
+            .articleListStyle(disableNowPlayingInset: disableNowPlayingInset, topContentMargin: topContentMargin)
         #endif
+    }
+
+    private func veiledPage(_ content: Content) -> some View {
+        content
+            .opacity(veiled ? 0 : 1)
+            .animation(.easeOut(duration: 0.2), value: veiled)
     }
 }
 
@@ -1659,8 +1810,9 @@ struct DismissKeyboardOnScrollModifier: ViewModifier {
 /// 2026-09-19: "so cluttered and ugly and confusing"). Nothing is deleted: each section keeps a
 /// one-line caption and puts the full text behind this button, which opens it as a sheet.
 struct ExplainerButton: View {
-    @ObservedObject private var settings = Settings.shared
-
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     let title: String
     let body_: String
     /// A short line that stays visible under the section, when one is worth having.
@@ -1671,7 +1823,7 @@ struct ExplainerButton: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let caption {
-                Text(caption)
+                Text(caption.localizedDigits)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1684,7 +1836,7 @@ struct ExplainerButton: View {
                 HStack(spacing: 5) {
                     Image(systemName: "info.circle")
                         .font(.caption2.weight(.semibold))
-                    Text(title)
+                    Text(title.localizedDigits)
                         .font(.caption.weight(.semibold))
                 }
                 .foregroundColor(settings.accentColor.accent1)
@@ -1696,7 +1848,7 @@ struct ExplainerButton: View {
             SheetNavigationContainer {
                 List {
                     Section {
-                        Text(body_)
+                        Text(body_.localizedDigits)
                             .font(.subheadline)
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.vertical, 2)
@@ -1714,8 +1866,8 @@ struct ExplainerButton: View {
 
 /// The big answer a calculator exists to produce, at the TOP of its screen.
 struct CalculatorResultCard<Detail: View>: View {
-    @ObservedObject private var settings = Settings.shared
-
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
     let title: String
     let value: String
     /// Shown under the number: the working, or why there is nothing to pay.
@@ -1750,7 +1902,7 @@ struct CalculatorResultCard<Detail: View>: View {
 /// renders as a title with a smaller grey line under it - the shape Apple's own menus use. See
 /// `ReciterCaptionedMenuLabel` for the one form that works.
 struct ChooseReciterMenuLabel: View {
-    var title: String = "Choose Reciter"
+    var title: String = String(localized: "Choose Reciter")
 
     var body: some View {
         ReciterCaptionedMenuLabel(title: title, systemImage: "headphones")
@@ -1772,8 +1924,8 @@ struct ReciterCaptionedMenuLabel: View {
     // because nothing in the reader had re-rendered in between (Abu, 2026-09-21, reproduced with idb:
     // the store said Saud Al-Shuraim, the reopened menu said Saad Al-Ghamdi). Subscribing here lets
     // the reciter write re-run this label, and SwiftUI carries that into the menu's items.
-    @ObservedObject private var settings = Settings.shared
-
+    private let settings = Settings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
     init(title: String, systemImage: String) {
         self.title = title
         self.systemImage = systemImage
@@ -1794,7 +1946,7 @@ struct ReciterCaptionedMenuLabel: View {
 /// and the page reader; now also used by the per-ayah menu, whose Play/Repeat submenus grew their own
 /// "Choose Reciter" entry (Abu, 2026-09-19).
 struct ReciterPickerSheet: ViewModifier {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
     @Binding var isPresented: Bool
 
     func body(content: Content) -> some View {
@@ -1884,6 +2036,104 @@ struct GridTileMenu<Label: View, Menu: View>: View {
     }
 }
 
+/// A menu with optional, explicitly named shortcuts. Single tap always opens the original menu.
+/// VoiceOver keeps native menu activation; shortcuts are also exposed as named accessibility actions.
+///
+/// THE COST OF A DOUBLE TAP. With `doubleTap` set, the single tap cannot fire until the double-tap
+/// recognizer has failed, so every plain tap opens the menu one double-tap interval late (about a third
+/// of a second: `GridTileHoldLayer` wires `tap.require(toFail: doubleTap)`, and UIKit's interval is not
+/// tunable). A `hold` alone costs a tap nothing: the hold fails the moment the finger lifts early. So a
+/// control whose first job is to open its menu takes a hold shortcut, not a double tap (the tabs' ⋯ menus
+/// since 2026-10-26, when the wait read as lag beside the Adhan tab's shortcut-free menu); a double tap
+/// belongs on a control whose shortcut is the common action and whose menu is the rarer tap (the ayah
+/// and hadith ▶ and ⋯ buttons), where the wait is the price of that shortcut.
+struct MenuShortcut {
+    let title: String
+    let action: () -> Void
+
+    init(_ title: String, action: @escaping () -> Void) {
+        self.title = title
+        self.action = action
+    }
+}
+
+struct ShortcutMenu<Content: View, Label: View>: View {
+    var doubleTap: MenuShortcut? = nil
+    var hold: MenuShortcut? = nil
+    /// The square the label fills while the shortcut layer draws it, for a toolbar item: that item is
+    /// not a button, so its glass takes the label's size plus the bar's 4 pt a side (36 makes the 44 pt
+    /// circle the gear beside it wears; 44 made a 52 x 44 ellipse, measured 2026-10-18). Never on the
+    /// native menu, whose toolbar button already sizes its glass: a 44 pt label inside it stretched the
+    /// Adhan tab's circle the same way.
+    var shortcutLabelSize: CGFloat? = nil
+    @ViewBuilder let content: () -> Content
+    @ViewBuilder let label: () -> Label
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverOn
+    @StateObject private var availability = GridTileMenuHold()
+    @State private var isPressed = false
+    @State private var menuRequest = 0
+
+    private var hint: String {
+        var parts = [String(localized: "Tap for menu.")]
+        if let doubleTap { parts.append(String(localized: "Double tap to \(doubleTap.title.lowercased()).")) }
+        if let hold { parts.append(String(localized: "Hold to \(hold.title.lowercased()).")) }
+        return parts.joined(separator: " ")
+    }
+
+    var body: some View {
+        control
+            .accessibilityHint(voiceOverOn ? String(localized: "Actions are also available in the menu.") : hint)
+            .modifier(MenuShortcutAccessibilityAction(shortcut: doubleTap))
+            .modifier(MenuShortcutAccessibilityAction(shortcut: hold))
+    }
+
+    @ViewBuilder private var control: some View {
+        if #available(iOS 17.4, *), !voiceOverOn, !availability.isUnavailable,
+           doubleTap != nil || hold != nil {
+            label()
+                .frame(width: shortcutLabelSize, height: shortcutLabelSize)
+                .contentShape(Rectangle())
+                // A native menu tints its label; this one is drawn outside any button, so it says so
+                // (the ⋯ of every tab with a shortcut came out white beside the Adhan tab's accent one).
+                .foregroundStyle(.tint)
+                .opacity(isPressed ? 0.55 : 1)
+                .background(
+                    SwiftUI.Menu { content() } label: { Color.clear }
+                        .fixedMenuOrder()
+                        .menuIndicator(.hidden)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                )
+                .overlay(
+                    GridTileHoldLayer(isEnabled: isEnabled, isPressed: $isPressed, onTap: {},
+                                      tapOpensMenu: true, onDoubleTap: doubleTap?.action,
+                                      onHold: hold?.action, menuRequest: menuRequest,
+                                      onUnavailable: { availability.markUnavailable() })
+                )
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { menuRequest += 1 }
+        } else {
+            SwiftUI.Menu { content() } label: { label() }
+                .fixedMenuOrder()
+        }
+    }
+}
+
+private struct MenuShortcutAccessibilityAction: ViewModifier {
+    let shortcut: MenuShortcut?
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if let shortcut {
+            content.accessibilityAction(named: Text(shortcut.title), shortcut.action)
+        } else {
+            content
+        }
+    }
+}
+
 /// The fast hold's one tunable and its kill switch. See `GridTileMenu`.
 final class GridTileMenuHold: ObservableObject {
     static let shared = GridTileMenuHold()
@@ -1915,6 +2165,11 @@ private struct GridTileHoldLayer: UIViewRepresentable {
     let isEnabled: Bool
     @Binding var isPressed: Bool
     let onTap: () -> Void
+    var tapOpensMenu = false
+    var onDoubleTap: (() -> Void)? = nil
+    var onHold: (() -> Void)? = nil
+    var menuRequest = 0
+    var onUnavailable: () -> Void = { GridTileMenuHold.shared.markUnavailable() }
 
     func makeUIView(context: Context) -> HoldView {
         let view = HoldView()
@@ -1924,15 +2179,30 @@ private struct GridTileHoldLayer: UIViewRepresentable {
     }
 
     func updateUIView(_ view: HoldView, context: Context) {
+        view.onUnavailable = onUnavailable
+        view.tapOpensMenu = tapOpensMenu
+        view.onDoubleTap = onDoubleTap
+        view.onHold = onHold
+        view.doubleTapRecognizer?.isEnabled = onDoubleTap != nil
         view.onTap = onTap
+        if view.menuRequest != menuRequest {
+            view.menuRequest = menuRequest
+            DispatchQueue.main.async { [weak view] in view?.openMenu() }
+        }
         view.isUserInteractionEnabled = isEnabled
         view.onPressChange = { pressed in
             if isPressed != pressed { isPressed = pressed }
         }
     }
 
-    final class HoldView: UIView, UIContextMenuInteractionDelegate {
+    final class HoldView: UIView, UIContextMenuInteractionDelegate, UIGestureRecognizerDelegate {
         var onTap: () -> Void = {}
+        var tapOpensMenu = false
+        var onDoubleTap: (() -> Void)?
+        var onHold: (() -> Void)?
+        var menuRequest = 0
+        var onUnavailable: () -> Void = {}
+        weak var doubleTapRecognizer: UITapGestureRecognizer?
         var onPressChange: (Bool) -> Void = { _ in }
         private weak var holdRecognizer: UILongPressGestureRecognizer?
         /// When the menu last opened here, by any route. Two routes answering one press (the fast hold,
@@ -1943,12 +2213,20 @@ private struct GridTileHoldLayer: UIViewRepresentable {
         func install() {
             let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
             hold.minimumPressDuration = GridTileMenuHold.duration
+            hold.delegate = self
             addGestureRecognizer(hold)
             holdRecognizer = hold
 
-            // Waiting on the hold costs a tap nothing: the hold fails the moment the finger lifts early.
+            let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapped))
+            doubleTap.numberOfTapsRequired = 2
+            doubleTap.require(toFail: hold)
+            addGestureRecognizer(doubleTap)
+            doubleTapRecognizer = doubleTap
+
+            // The single tap waits for the double tap only on controls offering that shortcut.
             let tap = UITapGestureRecognizer(target: self, action: #selector(tapped))
             tap.require(toFail: hold)
+            tap.require(toFail: doubleTap)
             addGestureRecognizer(tap)
 
             // Never after a hold: on the iPadOS 26.5 simulator this recognizer also took a finger held
@@ -1964,6 +2242,18 @@ private struct GridTileHoldLayer: UIViewRepresentable {
             if UIDevice.current.userInterfaceIdiom == .pad {
                 addInteraction(UIContextMenuInteraction(delegate: self))
             }
+        }
+
+        // SwiftUI installs a row's context menu on its UIKit cell, even when the modifier is on
+        // just the text. That recognizer must wait for a control's sheet shortcut. Panning stays
+        // independent so scrolling still cancels a hold as soon as the finger moves.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard onHold != nil, gestureRecognizer === holdRecognizer,
+                  let owner = otherGestureRecognizer.view, owner !== self,
+                  isDescendant(of: owner), !(otherGestureRecognizer is UIPanGestureRecognizer) else { return false }
+            return otherGestureRecognizer is UILongPressGestureRecognizer
+                || owner.interactions.contains { $0 is UIContextMenuInteraction }
         }
 
         /// A right click: the anchor's own menu at the pointer when its button exposes one, else the
@@ -1984,21 +2274,33 @@ private struct GridTileHoldLayer: UIViewRepresentable {
             return nil
         }
 
-        @objc private func tapped() { onTap() }
+        @objc private func tapped() {
+            if tapOpensMenu { openMenu() } else { onTap() }
+        }
+
+        @objc private func doubleTapped() { onDoubleTap?() }
 
         @objc private func secondaryClicked() {
             if !openedJustNow { openMenu() }
         }
 
         @objc private func held(_ recognizer: UILongPressGestureRecognizer) {
-            if recognizer.state == .began { openMenu() }
+            guard recognizer.state == .began else { return }
+            onPressChange(false)
+            if let onHold {
+                // Suppress a later pointer context-menu callback for the same physical hold.
+                openedAt = Date()
+                onHold()
+            } else {
+                openMenu()
+            }
         }
 
-        private func openMenu() {
+        func openMenu() {
             openedAt = Date()
             onPressChange(false)
             guard #available(iOS 17.4, *), let button = anchorButton() else {
-                GridTileMenuHold.shared.markUnavailable()
+                onUnavailable()
                 return
             }
             // The system's hold buzzes as its menu opens; a programmatic open is silent without this.
@@ -2017,9 +2319,16 @@ private struct GridTileHoldLayer: UIViewRepresentable {
                 if let control = view as? UIControl, control.showsMenuAsPrimaryAction,
                    control.contextMenuInteraction != nil {
                     let theirs = control.convert(control.bounds, to: nil)
-                    let distance = abs(theirs.midX - mine.midX) + abs(theirs.midY - mine.midY)
-                        + abs(theirs.width - mine.width) + abs(theirs.height - mine.height)
-                    if distance < 4, distance < (best?.distance ?? .greatestFiniteMagnitude) {
+                    let centerDistance = abs(theirs.midX - mine.midX) + abs(theirs.midY - mine.midY)
+                    let sizeDistance = abs(theirs.width - mine.width) + abs(theirs.height - mine.height)
+                    let distance = centerDistance + sizeDistance
+                    // Toolbars inset the native menu button (e.g. 48×36 around a 44×44 label).
+                    // Match its center while allowing those insets, without accepting a neighboring
+                    // control. Grid tiles retain their original exact-frame match.
+                    let matches = tapOpensMenu
+                        ? centerDistance < 4 && sizeDistance < 40
+                        : distance < 4
+                    if matches, distance < (best?.distance ?? .greatestFiniteMagnitude) {
                         best = (control, distance)
                     }
                 }
@@ -2150,23 +2459,63 @@ struct HeaderLineLayout: Layout {
 /// so the laziness bought nothing. Here, with no `#if`, because the Adhan and Islam grids use it too
 /// and Al-Adhan compiles none of the Quran folder.
 ///
-/// The most tiles one List row's `SummaryTileGrid` holds where a grid can grow without bound (bookmarks):
-/// the rest go in further rows, so the List keeps virtualizing. A multiple of every column count (1, 2,
-/// 3, 4, 6), so only the last row is ever short.
-let tileGridChunk = 24
+/// The grid rows one List row holds where a grid is long (bookmarks, the 99 Names, the 604 pages):
+/// `tileGridChunk(columns:)` tiles per List row, the rest in further rows, so the List keeps
+/// virtualizing. ONE row, down from the 24 tiles of 2026-10-09: scrolling the pages sort in grid
+/// mode spent 70% of its main-thread time re-laying out the visible chunk cells, and a cell of 24
+/// ayah tiles - each with glass, a hold layer and a menu - is what every scroll frame re-laid out
+/// (Abu, 2026-10-22: "604 items and it gets really laggy"). Measured over the same six swipes on
+/// the simulator: 4349 ms of main thread with 24 tiles a row, 3644 with three rows a List row,
+/// 3424 with one, against 3078 for the plain list; the 183 ms and 110 ms hitches at the old chunk
+/// boundaries are gone. The chunk follows the column count so a row is never short; a rotation that
+/// changes the columns re-identifies the rows, which the grid rebuilds anyway (checked live).
+let tileGridRowsPerChunk = 1
+
+/// Tiles per List row of a chunked grid with `columns` columns (see `tileGridRowsPerChunk`).
+func tileGridChunk(columns: Int) -> Int { max(1, columns) * tileGridRowsPerChunk }
+
+/// A List row's default leading / trailing content inset on iOS 26 (measured: the tiles of a
+/// default-inset row start 16 pt inside the section card, in both list styles). Restated by the rows
+/// that must set `listRowInsets` themselves, since the modifier takes all four edges at once.
+let listRowDefaultInset: CGFloat = 16
+
+/// A List row's default top / bottom content inset on iOS 26 (30 pt measured between two default
+/// rows' content on the iPhone, 15 a side). See `listRowDefaultInset`.
+let listRowDefaultVerticalInset: CGFloat = 15
+
+/// The air the Quran grids keep above their first row and below their last, in place of the vertical
+/// insets their rows give up: the default inset plus the 4 pt the grid always had there.
+let tileGridOuterInset: CGFloat = listRowDefaultVerticalInset + 4
 
 extension View {
-    /// One List row of a grid chunked by `tileGridChunk`, starting at tile `start` of `count`: no
-    /// separator, the grid's 4 pt padding at its outer edges, and -10 pt where two chunks meet, which
-    /// takes back the List's own row insets there (measured: 30 pt between the rows' tiles, 10 inside
-    /// a row), so the rows read as one grid.
+    /// One List row of a grid chunked by `chunk` tiles (`tileGridChunk(columns:)`), starting at tile
+    /// `start` of `count`: no separator, and the grid's own row gap (`spacing`) drawn INSIDE the row
+    /// where two chunks meet, with the row's vertical insets at zero so the List adds nothing of its
+    /// own there. `horizontalInset` is the tiles' distance from the cell's edges (the List's default,
+    /// unless the grid used to pad out of it) and `outerInset` the air above the first row and below
+    /// the last, in place of the vertical insets the rows give up.
+    ///
+    /// It used to take the List's inter-row spacing back with -10 pt of padding on each side of the
+    /// seam (30 pt measured on the iPhone, 10 wanted). That made the tiles overflow their cells by
+    /// 10 pt, and the seam was only right while the List really did add 30: on the Mac it added
+    /// nothing, the two rows' glass tiles overlapped by 20 pt, and Liquid Glass drew the overlap as a
+    /// bright band across the tiles above every seam (Abu, 2026-10-22, tiles 23/24). A tile now never
+    /// leaves its cell, so a List that spaces its rows differently can at most widen the seam, never
+    /// collide two glass shapes. The horizontal insets are the List's default (`listRowDefaultInset`)
+    /// restated, because `listRowInsets` takes all four edges at once.
     @ViewBuilder
-    func tileGridChunkRow(start: Int, count: Int) -> some View {
+    func tileGridChunkRow(start: Int, count: Int, chunk: Int, spacing: CGFloat = 10,
+                          horizontalInset: CGFloat = listRowDefaultInset,
+                          outerInset: CGFloat = tileGridOuterInset) -> some View {
+        let first = start == 0
+        let last = start + chunk >= count
         let padded = self
-            .padding(.top, start == 0 ? 4 : -10)
-            .padding(.bottom, start + tileGridChunk >= count ? 4 : -10)
+            .padding(.top, first ? outerInset : 0)
+            .padding(.bottom, last ? outerInset : spacing)
         #if os(iOS)
-        padded.listRowSeparator(.hidden)
+        padded
+            .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
+            .listRowSeparator(.hidden)
         #else
         padded
         #endif
@@ -2245,26 +2594,51 @@ struct EqualColumnsLayout: Layout {
         return subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
     }
 
-    private func rowHeights(_ width: CGFloat, perRow: Int, _ subviews: Subviews) -> [CGFloat] {
-        stride(from: 0, to: subviews.count, by: perRow).map { start in
+    /// The measured row heights per column width. `sizeThatFits` and then `placeSubviews` both need
+    /// them, and each used to re-measure every tile (shaping its Arabic text through CoreText) on
+    /// its own. The cache spares the placement pass; a List's self-sizing measurement still arrives
+    /// with a fresh cache, so that pass measures once per cell. SwiftUI empties the cache
+    /// (`updateCache`) whenever the subviews change, a tile changing size included.
+    struct Cache {
+        var heightsByWidth: [CGFloat: [CGFloat]] = [:]
+        var perRow = 0
+        var count = 0
+    }
+
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+
+    func updateCache(_ cache: inout Cache, subviews: Subviews) { cache = Cache() }
+
+    private func rowHeights(_ width: CGFloat, perRow: Int, _ subviews: Subviews, cache: inout Cache) -> [CGFloat] {
+        let key = (width * 2).rounded() / 2
+        if cache.perRow == perRow, cache.count == subviews.count, let heights = cache.heightsByWidth[key] {
+            return heights
+        }
+        let heights: [CGFloat] = stride(from: 0, to: subviews.count, by: perRow).map { start in
             subviews[start..<min(start + perRow, subviews.count)]
                 .map { $0.sizeThatFits(ProposedViewSize(width: width, height: nil)).height }
                 .max() ?? 0
         }
+        if cache.perRow != perRow || cache.count != subviews.count {
+            cache = Cache(perRow: perRow, count: subviews.count)
+        }
+        if cache.heightsByWidth.count >= 8 { cache.heightsByWidth.removeAll() }
+        cache.heightsByWidth[key] = heights
+        return heights
     }
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         let count = columnCount(proposal.width)
         let width = columnWidth(proposal.width, count: count, subviews)
-        let heights = rowHeights(width, perRow: count, subviews)
+        let heights = rowHeights(width, perRow: count, subviews, cache: &cache)
         let total = heights.reduce(0, +) + spacing * CGFloat(max(heights.count - 1, 0))
         return CGSize(width: width * CGFloat(count) + gap * CGFloat(count - 1), height: total)
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
         let count = columnCount(bounds.width)
         let width = columnWidth(bounds.width, count: count, subviews)
-        let heights = rowHeights(width, perRow: count, subviews)
+        let heights = rowHeights(width, perRow: count, subviews, cache: &cache)
         let top = alignment == .top
         var y = bounds.minY
         for (row, height) in heights.enumerated() {
@@ -2470,42 +2844,39 @@ private struct SidebarCellProbe: UIViewRepresentable {
 #endif
 
 /// The corner star of `gridFavoriteStar`. A view of its own so it can watch Simple Mode itself: in
-/// Simple Mode a tile that is not a favorite draws no star (docs/Simple Mode Guide.md; every tile's
+/// Simple Mode a tile that is not a favorite draws no star (`SimpleTrim.outlineStar`; every tile's
 /// press-and-hold menu still offers Favorite), and an Equatable tile around it may not redraw when the
-/// switch flips, where this view does.
+/// switch flips, where this view does (`hiddenInSimple` owns the observation).
 private struct GridFavoriteStar: View {
     let isFavorite: Bool
     let accent: Color
     let accessibilityName: String
     let onToggle: () -> Void
 
-    @AppStorage("simpleMode") private var simpleMode = false
-
     var body: some View {
-        if isFavorite || !simpleMode {
-            Image(systemName: isFavorite ? "star.fill" : "star")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(isFavorite ? accent : .secondary)
-                // The tap target is a 30pt square CENTERED ON THE GLYPH, sized before the corner
-                // positioning, not after. The old shape came after the 10/11pt paddings and then
-                // inflated by another 10 (`inset(by: -10)`), hit-testing a ~40pt+ zone anchored at the
-                // corner: on a small grid tile, tapping anywhere on the right side toggled the star
-                // instead of opening the tile.
-                .frame(width: 30, height: 30)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    Settings.shared.hapticFeedback()
-                    withAnimation(.easeInOut) {
-                        onToggle()
-                    }
+        Image(systemName: isFavorite ? "star.fill" : "star")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(isFavorite ? accent : .secondary)
+            // The tap target is a 30pt square CENTERED ON THE GLYPH, sized before the corner
+            // positioning, not after. The old shape came after the 10/11pt paddings and then
+            // inflated by another 10 (`inset(by: -10)`), hit-testing a ~40pt+ zone anchored at the
+            // corner: on a small grid tile, tapping anywhere on the right side toggled the star
+            // instead of opening the tile.
+            .frame(width: 30, height: 30)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                Settings.shared.hapticFeedback()
+                withAnimation(.easeInOut) {
+                    onToggle()
                 }
-                .padding(.top, 1)
-                .padding(.trailing, 2)
-                .accessibilityLabel(isFavorite ? "Unfavorite \(accessibilityName)" : "Favorite \(accessibilityName)")
-                // A tap-gesture image: VoiceOver announced it as an image, not something to press.
-                .accessibilityRemoveTraits(.isImage)
-                .accessibilityAddTraits(.isButton)
-        }
+            }
+            .padding(.top, 1)
+            .padding(.trailing, 2)
+            .accessibilityLabel(isFavorite ? String(localized: "Unfavorite \(accessibilityName)") : String(localized: "Favorite \(accessibilityName)"))
+            // A tap-gesture image: VoiceOver announced it as an image, not something to press.
+            .accessibilityRemoveTraits(.isImage)
+            .accessibilityAddTraits(.isButton)
+            .hiddenInSimple(.outlineStar, unless: isFavorite)
     }
 }
 
@@ -2534,8 +2905,10 @@ private struct GridSelectionRing: ViewModifier {
 /// 99 Names, Arabic Alphabet). One control, one setting - every screen that shows standard Arabic
 /// text offers the same choice: Uthmani, IndoPak, Hijazi, Kufi, or the system font.
 struct IslamArabicFontPicker: View {
-    @ObservedObject private var settings = Settings.shared
-
+    private let settings = Settings.shared
+    @ObservedObject private var islamSettings = IslamSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     var body: some View {
         Picker("Arabic Font", selection: Binding(
             get: { settings.islamArabicFace },
@@ -2567,22 +2940,27 @@ extension Color {
 // MARK: - Section header accessories (count pill / collapse / shuffle)
 
 /// The small numeric badge the Quran tab's section headers wear - caption-semibold, monospaced digits,
-/// on glass. One view so every counted section in the app shows the identical pill.
+/// on glass. One view so every counted section in the app shows the identical pill. Counts are details
+/// (Simple Mode spec rule 8), so the pill hides itself in Simple Mode and every caller is covered; the
+/// rule's exceptions do not use this view.
 struct CountPill: View {
     @Environment(\.appearance) private var appearance
 
     let count: Int
     /// "5+" style - set when the count is a floor from an early-exited search, not an exact total.
     var overflow: Bool = false
+    /// A read-out in place of the number ("12 of 40", "Page 2 • 7 Ayahs"), in the same pill.
+    var countText: String? = nil
 
     var body: some View {
-        Text("\(count)\(overflow ? "+" : "")")
+        Text(countText?.localizedDigits ?? "\(count)\(overflow ? "+" : "")")
             .font(.caption.weight(.semibold))
             .monospacedDigit()
             .foregroundStyle(appearance.accent)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .conditionalGlassEffect()
+            .hiddenInSimple(.sectionCounts)
     }
 }
 
@@ -2590,10 +2968,28 @@ struct CountPill: View {
 /// the right an optional shuffle button, the count pill, and an optional collapse chevron. Pass
 /// `isExpanded` to make the section collapsible (the same chevron.circle control Favorite Surahs and
 /// Bookmarked Ayahs use) and `onShuffle` for sections where jumping to a random item makes sense.
+extension String {
+    /// Interface text set CENTERED (a tile's title or read-out), as a right-to-left line in a right-to-left
+    /// interface. SwiftUI takes a line's direction from its first strong letter, not from the layout
+    /// direction, so an Arabic caption that opens on a Latin name ("iCloud ...") laid out left to right.
+    /// A RIGHT-TO-LEFT MARK in front settles it; unchanged left to right. Interface text only: English
+    /// content (a book title, a translation) keeps its own direction.
+    var interfaceParagraph: String {
+        AppLanguage.isRightToLeft && !isEmpty ? "\u{200F}" + self : self
+    }
+}
+
 /// A small accent-gradient icon chip - the iOS Settings app's row-icon grammar, tinted the app's
 /// way. Shared by the Settings hub, settings search results, and the Islam tab's resource rows.
 struct AccentIconChip: View {
     @Environment(\.appearance) private var appearance
+    @Environment(\.locale) private var locale
+
+    /// Symbols that draw LATIN letters on purpose (the English Text pages, an English reading choice).
+    /// SwiftUI draws a localized symbol in the interface's script, so under Arabic "textformat" drew
+    /// "أ" and an English Text row read as a second Arabic Text row. An English locale keeps their Latin
+    /// face in both languages; Arabic rows name their own variant ("textformat.ar").
+    static let latinScriptSymbols: Set<String> = ["textformat", "textformat.abc"]
 
     let systemImage: String
     var tint: Color? = nil
@@ -2611,6 +3007,7 @@ struct AccentIconChip: View {
         // since dimming the second half would read as a smudge rather than as a second colour.
         let colors: [Color] = secondaryTint.map { [tint, $0] } ?? [tint.opacity(0.95), tint.opacity(0.65)]
         Image(systemName: systemImage)
+            .environment(\.locale, Self.latinScriptSymbols.contains(systemImage) ? Locale(identifier: "en") : locale)
             // Scales with the chip (~footnote at the default 29pt), so mini chips stay balanced.
             .font(.system(size: size * 0.45, weight: .semibold))
             .foregroundColor(.white)
@@ -2659,7 +3056,11 @@ struct SectionIconHeader: View {
     let title: String
     /// nil draws the bare title: `SectionPillHeader` without an icon.
     let icon: String?
-    /// Accent the title as well as the icon (the favorites style); false keeps the header gray.
+    /// Accent the title AND its icon; false keeps both the header's gray. The rule (Abu, 2026-10-18,
+    /// "make it consistent which ones are and which ones aren't"): a section that is YOURS is accent
+    /// (Your Summary, Favorites, Bookmarks, Saved Reflections, notes, Last Read, Khatm Progress, the
+    /// Prayer Tracker, Start Here, Need a Hand?); a catalog, a setting or a search result is gray. The
+    /// icon follows its title ("it looks weird with colored sf symbols and non colored text").
     var accentTitle = false
 
     init(_ title: String, icon: String?, accentTitle: Bool = false) {
@@ -2671,11 +3072,19 @@ struct SectionIconHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             if let icon {
-                Image(systemName: icon)
-                    .foregroundStyle(appearance.accent)
-                    // Decoration beside the title: VoiceOver read the symbol's own name as a heading
-                    // of its own ("Question Mark In A Filled Circle", "Bookmark") before the title.
-                    .accessibilityHidden(true)
+                // Unstyled when the title is: it then takes whatever the header gives its title
+                // (`.foreground` resolved to black, not the header's gray).
+                Group {
+                    if accentTitle {
+                        Image(systemName: icon)
+                            .foregroundStyle(appearance.accent)
+                    } else {
+                        Image(systemName: icon)
+                    }
+                }
+                // Decoration beside the title: VoiceOver read the symbol's own name as a heading
+                // of its own ("Question Mark In A Filled Circle", "Bookmark") before the title.
+                .accessibilityHidden(true)
             }
 
             // The heading trait said explicitly: a List hands it to the header's FIRST element, which
@@ -2699,7 +3108,8 @@ struct SectionPillHeader: View {
     let title: String
     let count: Int
     var icon: String? = nil
-    /// Accent the icon + title (the Quran favorites style); false keeps the standard header gray.
+    /// Accent the icon + title, for a section that is yours (`SectionIconHeader.accentTitle`'s rule);
+    /// false keeps both the standard header gray.
     var accentTitle: Bool = false
     var isExpanded: Binding<Bool>? = nil
     var onShuffle: (() -> Void)? = nil
@@ -2712,11 +3122,8 @@ struct SectionPillHeader: View {
     /// folded: the arrow folds it, the trash removes it (Abu, 2026-10-10: "when a tips tab is
     /// collapsed have a button to trash remove it"). The owner confirms before removing anything.
     var onRemove: (() -> Void)? = nil
-
-    /// Simple Mode keeps a header to its title and its arrow: the count, search and shuffle step aside
-    /// (docs/Simple Mode Guide.md, rule 3). The one key is observed here rather than read off
-    /// `Settings.shared`, so a header redraws when the switch flips without observing every setting.
-    @AppStorage("simpleMode") private var simpleMode = false
+    /// A read-out in the count's pill instead of the number (`CountPill.countText`).
+    var countText: String? = nil
 
     /// The count pill's rendered height (caption line height + 2 x 4pt padding) - the shuffle circle
     /// matches it so the two controls read as one family.
@@ -2749,12 +3156,11 @@ struct SectionPillHeader: View {
         // The trailing cluster's ONE ordering rule, app-wide: the count pill sits at the far LEFT
         // of the cluster (it is information, not a control), then the buttons: search, shuffle, trash,
         // then the expand chevron. SurahsHeader lays out the same way; a header that hand-rolls its
-        // cluster must follow this order too. Simple Mode drops the count, search and shuffle.
-        if !simpleMode {
-            CountPill(count: count, overflow: overflow)
-        }
+        // cluster must follow this order too. Simple Mode drops the count, search and shuffle (each
+        // hides itself; the trash and the chevron stay).
+        CountPill(count: count, overflow: overflow, countText: countText)
 
-        if let onSearch, !simpleMode {
+        if let onSearch {
             Image(systemName: "magnifyingglass")
                 .font(.caption2.weight(.semibold))
                 .foregroundColor(appearance.accent)
@@ -2767,9 +3173,10 @@ struct SectionPillHeader: View {
                 .accessibilityLabel("Search \(title.lowercased())")
                 .accessibilityRemoveTraits(.isImage)
                 .accessibilityAddTraits(.isButton)
+                .hiddenInSimple(.sectionSearch)
         }
 
-        if let onShuffle, !simpleMode {
+        if let onShuffle {
             // A circle exactly as tall as the count pill (caption line + its 4pt vertical padding),
             // and as wide as it is tall.
             Image(systemName: "shuffle")
@@ -2785,15 +3192,35 @@ struct SectionPillHeader: View {
                 // Tap-gesture images: without these VoiceOver said "image" and offered no action.
                 .accessibilityRemoveTraits(.isImage)
                 .accessibilityAddTraits(.isButton)
+                .hiddenInSimple(.sectionShuffles)
         }
 
+        if let isExpanded {
+            SectionFoldControls(title: title, isExpanded: isExpanded, onRemove: onRemove)
+        }
+    }
+}
+
+/// The end of a collapsible header's trailing cluster: the trash while the section is folded (when
+/// the section can be removed at all), then the fold arrow. `SectionPillHeader` draws it after its
+/// count and buttons; a header with a read-out of its own (the prayer tracker's streak) puts it in a
+/// `SectionHeaderLine`'s controls, so every foldable section folds and removes the same way.
+struct SectionFoldControls: View {
+    @Environment(\.appearance) private var appearance
+
+    let title: String
+    let isExpanded: Binding<Bool>
+    /// Puts the whole section away. The owner confirms before removing anything.
+    var onRemove: (() -> Void)? = nil
+
+    var body: some View {
         // Only while folded: an open section's cards are still in use, and the arrow is the way to put
         // them out of sight. The shuffle's circle, so the cluster reads as one family.
-        if let onRemove, isExpanded?.wrappedValue == false {
+        if let onRemove, !isExpanded.wrappedValue {
             Image(systemName: "trash")
                 .font(.caption2.weight(.semibold))
                 .foregroundColor(appearance.accent)
-                .frame(width: Self.pillHeight, height: Self.pillHeight)
+                .frame(width: SectionPillHeader.pillHeight, height: SectionPillHeader.pillHeight)
                 .conditionalGlassEffect(circle: true)
                 .onTapGesture {
                     Settings.shared.hapticFeedback()
@@ -2804,19 +3231,153 @@ struct SectionPillHeader: View {
                 .accessibilityAddTraits(.isButton)
         }
 
-        if let isExpanded {
-            Image(systemName: isExpanded.wrappedValue ? "chevron.down.circle" : "chevron.up.circle")
-                .foregroundColor(appearance.accent)
-                .padding(4)
-                .conditionalGlassEffect()
-                .onTapGesture {
-                    Settings.shared.hapticFeedback()
-                    withAnimation { isExpanded.wrappedValue.toggle() }
-                }
-                .accessibilityLabel(isExpanded.wrappedValue ? "Collapse \(title.lowercased())" : "Expand \(title.lowercased())")
-                .accessibilityRemoveTraits(.isImage)
-                .accessibilityAddTraits(.isButton)
+        Image(systemName: isExpanded.wrappedValue ? "chevron.down.circle" : "chevron.up.circle")
+            .foregroundColor(appearance.accent)
+            .padding(4)
+            .conditionalGlassEffect()
+            .onTapGesture {
+                Settings.shared.hapticFeedback()
+                withAnimation { isExpanded.wrappedValue.toggle() }
+            }
+            .accessibilityLabel(isExpanded.wrappedValue ? String(localized: "Collapse \(title.lowercased())") : String(localized: "Expand \(title.lowercased())"))
+            .accessibilityRemoveTraits(.isImage)
+            .accessibilityAddTraits(.isButton)
+    }
+}
+
+// MARK: - Section header line, header actions, chips and badges
+
+/// A section header that carries its own controls, in the one grammar every such header follows
+/// (2026-10-26 consistency pass): `SectionIconHeader` for the title (icon optional, accent only for a
+/// section that is yours) and the controls at the trailing edge, the two dropping onto separate
+/// lines where they do not fit (`AdaptiveSectionHeader`). `SectionPillHeader` is this header with
+/// the count pill and its buttons built in; this is the open form for a header with a control of its
+/// own (Clear All, Attach, Listen All, a count as text, a favorite star). It replaced the hand-rolled
+/// `HStack { Text; Spacer; Button }` headers, which each spaced and sized themselves a little
+/// differently.
+struct SectionHeaderLine<Controls: View>: View {
+    let title: String
+    var icon: String? = nil
+    var accentTitle = false
+    /// Stack the controls under the title without measuring (the accessibility text sizes, where a
+    /// Today pill beside "YOUR SUMMARY" had room only for "YOUR / SUM- / MARY").
+    var forceStacked = false
+    @ViewBuilder let controls: () -> Controls
+
+    init(_ title: String, icon: String? = nil, accentTitle: Bool = false, forceStacked: Bool = false,
+         @ViewBuilder controls: @escaping () -> Controls) {
+        self.title = title
+        self.icon = icon
+        self.accentTitle = accentTitle
+        self.forceStacked = forceStacked
+        self.controls = controls
+    }
+
+    var body: some View {
+        #if os(iOS)
+        AdaptiveSectionHeader(forceStacked: forceStacked) {
+            SectionIconHeader(title, icon: icon, accentTitle: accentTitle)
+        } controls: {
+            controls()
         }
+        #else
+        HStack(spacing: 8) {
+            SectionIconHeader(title, icon: icon, accentTitle: accentTitle)
+
+            Spacer()
+
+            controls()
+        }
+        #endif
+    }
+}
+
+/// A header's trailing text action ("Clear All", "Attach", "Put Out All"): caption-semibold accent
+/// text with an optional symbol, in title case (the Health app's "Edit" beside a header), with the
+/// haptic built in. Three headers each drew this by hand before the 2026-10-26 pass.
+struct SectionHeaderAction: View {
+    @Environment(\.appearance) private var appearance
+
+    let title: String
+    var systemImage: String? = nil
+    let action: () -> Void
+
+    init(_ title: String, systemImage: String? = nil, action: @escaping () -> Void) {
+        self.title = title
+        self.systemImage = systemImage
+        self.action = action
+    }
+
+    var body: some View {
+        Button {
+            Settings.shared.hapticFeedback()
+            action()
+        } label: {
+            Group {
+                if let systemImage {
+                    Label(title, systemImage: systemImage)
+                } else {
+                    Text(title)
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundColor(appearance.accent)
+            // A List uppercases its header; the action reads as a button, in title case.
+            .textCase(nil)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// The BETA capsule beside a riwayah whose text is still beta, on the comparison surfaces only (user
+/// rule: "say beta for the riwayah in qiraah comparison"). One view, so the comparison sheet and the
+/// Qiraat Explorer draw the identical badge.
+struct BetaBadge: View {
+    var body: some View {
+        Text("BETA")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.orange.opacity(0.15), in: Capsule())
+            .accessibilityLabel("Beta")
+    }
+}
+
+/// The small tinted-capsule button that sits INSIDE a row or a card (Hear Hafs, a goal preset, Hear
+/// It): caption-semibold accent text on the accent at 12%, or white on the accent when `filled` (an
+/// active state such as "Stop"). Header accessories are glass pills (`CountPill`, the shuffle); this
+/// is the in-row family, with one radius, one padding and one tint strength for all of them. Before
+/// the 2026-10-26 pass these were a mix of `.bordered` buttons and hand-drawn capsules at 0.08,
+/// 0.12, 0.14 and 0.15.
+struct AccentChipButtonStyle: ButtonStyle {
+    @Environment(\.appearance) private var appearance
+    @Environment(\.isEnabled) private var isEnabled
+
+    var filled = false
+    /// The chip's own colour where it is not the accent (a tajweed rule's colour).
+    var tint: Color? = nil
+
+    func makeBody(configuration: Configuration) -> some View {
+        let tint = tint ?? appearance.accent
+        configuration.label
+            .font(.caption.weight(.semibold))
+            .foregroundColor(filled ? .white : tint)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(filled ? tint : tint.opacity(0.12)))
+            .contentShape(Capsule())
+            .opacity(configuration.isPressed ? 0.6 : (isEnabled ? 1 : 0.5))
+    }
+}
+
+extension ButtonStyle where Self == AccentChipButtonStyle {
+    /// `.buttonStyle(.accentChip)`: the in-row chip.
+    static var accentChip: AccentChipButtonStyle { AccentChipButtonStyle() }
+
+    /// The chip in its filled (active) form, or in a colour of its own.
+    static func accentChip(filled: Bool = false, tint: Color? = nil) -> AccentChipButtonStyle {
+        AccentChipButtonStyle(filled: filled, tint: tint)
     }
 }
 

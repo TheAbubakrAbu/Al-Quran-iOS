@@ -52,6 +52,7 @@ struct GuidesView: View {
                 }
                 .themedListRowBackground()
             }
+            .englishArticle()
             .applyConditionalListStyle()
             .autoOpenArticle(openArticle, home: .guides)
             .pushDestination(isPresented: Binding(
@@ -81,6 +82,7 @@ struct GuidesView: View {
             IslamArticleIndexSections(groups: IslamArticleCatalog.guidesGroups)
                 .themedListRowBackground()
         }
+        .englishArticle()
         .applyConditionalListStyle()
         .navigationTitle("How-To Guides")
         #endif
@@ -135,6 +137,41 @@ struct GuideSourcesSection: View {
     }
 }
 
+/// A dua inside a guide, drawn as the Dua screen draws its rows (`AdhkarRow`: the Arabic, its
+/// transliteration, the translation, the citation, Listen, and the copy menu). The words are the
+/// shelf's, read by the same reference and token ranges a `DuaItem` on the Dua screen uses, never
+/// a copy typed into the article; until the shelf answers (one off-main read the first time) the row
+/// shows the transliteration alone, as the Dua screen's own rows do on a cold launch.
+struct GuideDuaRow: View {
+    let dua: DuaItem
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @State private var resolved: DuaItem?
+
+    init(_ dua: DuaItem) {
+        self.dua = dua
+    }
+
+    var body: some View {
+        let shown = resolved ?? dua
+        AdhkarRow(
+            arabicText: shown.arabicText,
+            transliteration: shown.transliteration,
+            translation: shown.translation,
+            useQuranicFont: quranDisplay.useFontArabic,
+            alwaysTrailing: true,
+            speechEnabled: true,
+            source: shown.reference
+        )
+        .equatable()
+        .spokenRowWash(shown.arabicText)
+        .task(id: dua.id) {
+            guard resolved == nil, dua.source != nil else { return }
+            let unresolved = dua
+            resolved = await Task.detached(priority: .userInitiated) { unresolved.resolved() }.value
+        }
+    }
+}
+
 struct HowToPrayView: View {
     var body: some View {
         List {
@@ -145,19 +182,18 @@ struct HowToPrayView: View {
 
                 Section(header: ArticleHeader("BEFORE YOU PRAY")) {
                     ArticleStep("1. **Purity (Taharah, طَهَارَة)**: have valid **Wudhu (وُضُوء)**, or Ghusl if required, with a clean body, clothes, and place of prayer.")
-                    ArticleStep("2. **Cover the Awrah (عَورَة)**: men from the navel to the knee at least; women cover everything except the face and hands (and, according to most scholars, the feet as well).")
+                    ArticleStep("2. **Cover the Awrah (عَورَة)**: men from the navel to the knee at least; women cover the whole body except the face and hands; most scholars, Ibn Baz among them, hold that the feet must be covered as well.")
                     ArticleStep("3. **Face the Qibla (قِبلَة)**: the direction of the Kaaba in Makkah.")
                     ArticleStep("4. **Correct time**: each prayer has its own window: Fajr, Dhuhr, Asr, Maghrib, and Isha.")
                     ArticleStep("5. **Intention (Niyyah, نِيَّة)**: intend the specific prayer in the heart; it is not spoken aloud.")
                 }
 
                 Section(header: ArticleHeader("NUMBER OF UNITS (RAKAH)")) {
-                    Text(articleMarkdown: "The obligatory **rak'ah (رَكعَة)** are: **Fajr** 2 · **Dhuhr** 4 · **Asr** 4 · **Maghrib** 3 · **Isha** 4.")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "The obligatory **rak'ah (رَكعَة)** are: **Fajr** 2 · **Dhuhr** 4 · **Asr** 4 · **Maghrib** 3 · **Isha** 4.")
                 }
 
                 Section(header: ArticleHeader("STEP BY STEP")) {
-                    Text(verbatim: "The Prophet (peace and blessings be upon him) said:").font(.body)
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) said:")
                     ScriptureQuote(hadith: "bukhari:631", cite: "Sahih al-Bukhari 631", arabic: 73...76, english: 98...104)
                     ArticleStep("1. **Takbir (تَكبِير)**: raise the hands and say “Allahu Akbar,” then place the right hand over the left upon the chest.")
                     ArticleStep("2. **Recitation**: say the opening supplication, then recite Surah **Al-Fatiha (الفَاتِحَة)**, required in every rak'ah, followed by another passage of the Quran in the first two rak'ah.")
@@ -170,8 +206,7 @@ struct HowToPrayView: View {
                 }
 
                 Section(header: ArticleHeader("THE COMMAND TO PRAY")) {
-                    Text(verbatim: "Allah (Glorified and Exalted be He) says:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Allah (Glorified and Exalted be He) says:")
                     ScriptureQuote(quran: "2:43")
 
                     ScriptureQuote(quran: "4:103", words: 13...19)
@@ -182,24 +217,19 @@ struct HowToPrayView: View {
                 }
 
                 Section(header: ArticleHeader("ITS PLACE AND ITS WEIGHT")) {
-                    Text(verbatim: "The prayer is the first thing a person will be asked about. The Prophet (peace and blessings be upon him) said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The prayer is the first thing a person will be asked about. The Prophet (peace and blessings be upon him) said:")
                     ScriptureQuote(hadith: "tirmidhi:413", cite: "Sunan al-Tirmidhi 413; graded sahih by al-Albani", arabic: 71...91, english: 68...107)
 
-                    Text(verbatim: "It is the line between belief and disbelief:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "It is the line between belief and disbelief:")
                     ScriptureQuote(hadith: "muslim:82a", cite: "Sahih Muslim 82", arabic: 34...41, english: 21...33)
 
-                    Text(verbatim: "And it washes a person clean:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "And it washes a person clean:")
                     ScriptureQuote(hadith: "bukhari:528", cite: "Sahih al-Bukhari 528, Sahih Muslim 667", arabic: 35...68, english: 6...65)
 
-                    Text(verbatim: "Praying in congregation multiplies it further:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Praying in congregation multiplies it further:")
                     ScriptureQuote(hadith: "bukhari:645", cite: "Sahih al-Bukhari 645, Sahih Muslim 650", arabic: 25...32, english: 4...19)
 
-                    Text(verbatim: "And its calm is a mercy. The Prophet (peace and blessings be upon him) would say to Bilal:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "And its calm is a mercy. The Prophet (peace and blessings be upon him) would say to Bilal:")
                     ScriptureQuote(hadith: "abudawud:4985", cite: "Sunan Abi Dawud 4985; graded sahih by al-Albani", arabic: 47...52, english: 45...55)
                 }
 
@@ -211,7 +241,7 @@ struct HowToPrayView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "HowToPrayView")
+        .englishArticle().selectableArticleList(article: "HowToPrayView")
         .navigationTitle("How to Pray")
     }
 }
@@ -225,44 +255,38 @@ struct HowToFastView: View {
                 }
 
                 Section(header: ArticleHeader("1. MAKE THE INTENTION")) {
-                    Text(articleMarkdown: "Form the **Niyyah (نِيَّة)** to fast in the heart before **Fajr**. For an obligatory Ramadan fast, intend it the night before. The Prophet (peace and blessings be upon him) said:")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "Form the **Niyyah (نِيَّة)** to fast in the heart before **Fajr**. For an obligatory Ramadan fast, intend it the night before. The Prophet (peace and blessings be upon him) said:")
                     ScriptureQuote(hadith: "abudawud:2454", cite: "Sunan Abi Dawud 2454; graded sahih by al-Albani", arabic: 51...59, english: 6...17)
                 }
 
                 Section(header: ArticleHeader("2. EAT SUHOOR")) {
-                    Text(articleMarkdown: "Take the pre-dawn meal, **Suhoor (سُحُور)**, which is a blessed Sunnah, and stop eating and drinking at the entry of **Fajr**.").font(.body)
-                    Text(verbatim: "The Prophet (peace and blessings be upon him) said:").font(.body)
+                    ArticleParagraph(articleMarkdown: "Take the pre-dawn meal, **Suhoor (سُحُور)**, which is a blessed Sunnah, and stop eating and drinking at the entry of **Fajr**.")
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) said:")
                     ScriptureQuote(hadith: "bukhari:1923", cite: "Sahih al-Bukhari 1923", arabic: 31...35, english: 4...12)
                 }
 
                 Section(header: ArticleHeader("3. FAST THROUGH THE DAY")) {
-                    Text(verbatim: "From Fajr to Maghrib, abstain from food, drink, and intimacy. The fast is also of the limbs and tongue: guard against lying, backbiting, and anger.").font(.body)
-                    Text(verbatim: "The Prophet (peace and blessings be upon him) said:").font(.body)
+                    ArticleParagraph(verbatim: "From Fajr to Maghrib, abstain from food, drink, and intimacy. The fast is also of the limbs and tongue: guard against lying, backbiting, and anger.")
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) said:")
                     ScriptureQuote(hadith: "bukhari:1903", cite: "Sahih al-Bukhari 1903", arabic: 32...46, english: 4...32)
                 }
 
                 Section(header: ArticleHeader("4. BREAK THE FAST AT MAGHRIB")) {
-                    Text(articleMarkdown: "Break the fast (**Iftar, إِفطَار**) as soon as the sun sets. Hastening it is the Sunnah:")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "Break the fast (**Iftar, إِفطَار**) as soon as the sun sets. Hastening it is the Sunnah:")
                     ScriptureQuote(hadith: "bukhari:1957", cite: "Sahih al-Bukhari 1957", arabic: 24...30, english: 4...21)
-                    Text(verbatim: "Anas (may Allah be pleased with him) described how the Prophet (peace and blessings be upon him) broke his fast:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Anas (may Allah be pleased with him) described how the Prophet (peace and blessings be upon him) broke his fast:")
                     ScriptureQuote(hadith: "abudawud:2356", cite: "Sunan Abi Dawud 2356; graded hasan sahih by al-Albani", arabic: 20...45, english: 0...41)
-                    Text(verbatim: "And he would say when he broke his fast:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "And he would say when he broke his fast:")
                     ScriptureQuote(hadith: "abudawud:2357", cite: "Sunan Abi Dawud 2357; graded hasan by al-Albani", arabic: 51...59, english: 32...46)
                 }
 
                 Section(header: ArticleHeader("WHAT INVALIDATES THE FAST")) {
-                    Text(verbatim: "Deliberately eating or drinking, intentional intimacy, and the onset of menstruation or postpartum bleeding break the fast. Eating or drinking by genuine forgetfulness does not; one simply continues fasting. The Prophet (peace and blessings be upon him) said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Deliberately eating or drinking, intentional intimacy, and the onset of menstruation or postpartum bleeding break the fast. Eating or drinking by genuine forgetfulness does not; one simply continues fasting. The Prophet (peace and blessings be upon him) said:")
                     ScriptureQuote(hadith: "bukhari:1933", cite: "Sahih al-Bukhari 1933", arabic: 28...37, english: 4...29)
                 }
 
                 Section(header: ArticleHeader("WHO IS EXCUSED")) {
-                    Text(articleMarkdown: "The sick, travelers, pregnant and nursing women, and the elderly who cannot fast are excused; missed fasts are made up later, or a **Fidyah (فِديَة)** (feeding a needy person per day) is given by those unable to fast at all. Allah (Glorified and Exalted be He) says:")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "The sick, travelers, pregnant and nursing women, and the elderly who cannot fast are excused; missed fasts are made up later, or a **Fidyah (فِديَة)** (feeding a needy person per day) is given by those unable to fast at all. Allah (Glorified and Exalted be He) says:")
                     ScriptureQuote(quran: "2:184", words: 2...18)
                 }
 
@@ -271,12 +295,10 @@ struct HowToFastView: View {
                 }
 
                 Section(header: ArticleHeader("WHY WE FAST")) {
-                    Text(verbatim: "Allah (Glorified and Exalted be He) says:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Allah (Glorified and Exalted be He) says:")
                     ScriptureQuote(quran: "2:183")
                     ScriptureQuote(quran: "2:185", words: 0...11)
-                    Text(verbatim: "The Prophet (peace and blessings be upon him) said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) said:")
                     ScriptureQuote(hadith: "bukhari:1904", cite: "Sahih al-Bukhari 1904, Sahih Muslim 1151", arabic: 37...50, english: 4...29)
                     ScriptureQuote(hadith: "bukhari:38", cite: "Sahih al-Bukhari 38, Sahih Muslim 760", arabic: 29...39, english: 4...29)
                     ScriptureQuote(hadith: "bukhari:1896", cite: "Sahih al-Bukhari 1896", arabic: 28...60, english: 4...33)
@@ -286,7 +308,7 @@ struct HowToFastView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "HowToFastView")
+        .englishArticle().selectableArticleList(article: "HowToFastView")
         .navigationTitle("How to Fast")
     }
 }
@@ -300,22 +322,19 @@ struct HowToZakahView: View {
                 }
 
                 Section(header: ArticleHeader("1. CHECK IF YOU MUST PAY")) {
-                    Text(articleMarkdown: "Zakah is due on a Muslim whose zakatable wealth reaches the **Nisab (نِصَاب)**, the minimum threshold (equal to about **85 grams of gold** or **595 grams of silver**), and has been held for one full lunar (Hijri) year (**Hawl, حَول**).")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "Zakah is due on a Muslim whose zakatable wealth reaches the **Nisab (نِصَاب)**, the minimum threshold (equal to about **85 grams of gold** or **595 grams of silver**), and has been held for one full lunar (Hijri) year (**Hawl, حَول**).")
                 }
 
                 Section(header: ArticleHeader("2. TOTAL YOUR ZAKATABLE WEALTH")) {
-                    Text(verbatim: "Include cash and savings, gold and silver, money owed to you that you expect back, business merchandise, and investments held for gain. Personal items (your home, car, and everyday belongings) are not counted.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Include cash and savings, gold and silver, money owed to you that you expect back, business merchandise, and investments held for gain. Personal items (your home, car, and everyday belongings) are not counted.")
                 }
 
                 Section(header: ArticleHeader("3. CALCULATE 2.5%")) {
-                    Text(articleMarkdown: "If your total is at or above the Nisab after the year has passed, give **2.5%** (one fortieth) of it. It becomes due the moment the year completes and must not be delayed past that; it may be paid early, so many bring it forward to Ramadan for the extra reward.")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "If your total is at or above the Nisab after the year has passed, give **2.5%** (one fortieth) of it. It becomes due the moment the year completes and must not be delayed past that; it may be paid early, so many bring it forward to Ramadan for the extra reward.")
                 }
 
                 Section(header: ArticleHeader("4. GIVE IT TO THOSE ENTITLED")) {
-                    Text(verbatim: "Allah (Glorified and Exalted be He) named eight categories of recipients:").font(.body)
+                    ArticleParagraph(verbatim: "Allah (Glorified and Exalted be He) named eight categories of recipients:")
                     ScriptureQuote(quran: "9:60", words: 1...16)
                 }
 
@@ -324,15 +343,12 @@ struct HowToZakahView: View {
                 }
 
                 Section(header: ArticleHeader("WHY WE GIVE ZAKAH")) {
-                    Text(verbatim: "Allah (Glorified and Exalted be He) says:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Allah (Glorified and Exalted be He) says:")
                     ScriptureQuote(quran: "9:103", words: 0...8)
                     ScriptureQuote(quran: "2:110", words: 0...11)
-                    Text(verbatim: "It is not a favour to the poor. It is their right in your wealth, and withholding it is a warning:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "It is not a favour to the poor. It is their right in your wealth, and withholding it is a warning:")
                     ScriptureQuote(quran: "3:180", words: 0...21)
-                    Text(verbatim: "When the Prophet (peace and blessings be upon him) sent Mu'adh to Yemen, he told him:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "When the Prophet (peace and blessings be upon him) sent Mu'adh to Yemen, he told him:")
                     ScriptureQuote(hadith: "bukhari:1395", cite: "Sahih al-Bukhari 1395, Sahih Muslim 19", arabic: 77...90, english: 66...98)
                 }
 
@@ -340,7 +356,7 @@ struct HowToZakahView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "HowToZakahView")
+        .englishArticle().selectableArticleList(article: "HowToZakahView")
         .navigationTitle("How to Give Zakah")
     }
 }
@@ -354,40 +370,34 @@ struct HowToHajjView: View {
                 }
 
                 Section(header: ArticleHeader("BEFORE YOU GO")) {
-                    Text(articleMarkdown: "Hajj is obligatory once for every Muslim who is physically and financially able. Repent sincerely, settle debts, seek lawful provision, and learn the rites. Hajj takes place from the 8th to the 13th of **Dhul-Hijjah (ذُو الحِجَّة)**.")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "Hajj is obligatory once for every Muslim who is physically and financially able. Repent sincerely, settle debts, seek lawful provision, and learn the rites. Hajj takes place from the 8th to the 13th of **Dhul-Hijjah (ذُو الحِجَّة)**.")
                 }
 
                 Section(header: ArticleHeader("1. ENTER IHRAM")) {
-                    Text(articleMarkdown: "At the appointed boundary (**Miqat, مِيقَات**), bathe, wear the Ihram garments (two unstitched cloths for men; ordinary modest dress for women), make the intention for Hajj, and begin the **Talbiyah (تَلبِيَة)**. Ibn Umar (may Allah be pleased with him) reported the Talbiyah of the Messenger of Allah (peace and blessings be upon him):")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "At the appointed boundary (**Miqat, مِيقَات**), bathe, wear the Ihram garments (two unstitched cloths for men; ordinary modest dress for women), make the intention for Hajj, and begin the **Talbiyah (تَلبِيَة)**. Ibn Umar (may Allah be pleased with him) reported the Talbiyah of the Messenger of Allah (peace and blessings be upon him):")
                     ScriptureQuote(hadith: "bukhari:1549", cite: "Sahih al-Bukhari 1549", arabic: 27...42, english: 7...21)
                 }
 
                 Section(header: ArticleHeader("2. DAY 8: MINA")) {
-                    Text(articleMarkdown: "Travel to **Mina (مِنَى)** and pray Dhuhr, Asr, Maghrib, Isha, and Fajr there, each at its time (the four-unit prayers shortened to two).")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "Travel to **Mina (مِنَى)** and pray Dhuhr, Asr, Maghrib, Isha, and Fajr there, each at its time (the four-unit prayers shortened to two).")
                 }
 
                 Section(header: ArticleHeader("3. DAY 9: ARAFAH")) {
-                    Text(articleMarkdown: "After sunrise proceed to **Arafah (عَرَفَة)** and stand there in supplication until sunset; this standing (**Wuquf**) is the essence of Hajj. Dhuhr and Asr are combined and shortened. The Prophet (peace and blessings be upon him) said:").font(.body)
+                    ArticleParagraph(articleMarkdown: "After sunrise proceed to **Arafah (عَرَفَة)** and stand there in supplication until sunset; this standing (**Wuquf**) is the essence of Hajj. Dhuhr and Asr are combined and shortened. The Prophet (peace and blessings be upon him) said:")
                     ScriptureQuote(hadith: "tirmidhi:889", cite: "Sunan al-Tirmidhi 889; graded sahih by al-Albani", arabic: 44...70, english: 29...80)
-                    Text(articleMarkdown: "After sunset, move to **Muzdalifah (مُزدَلِفَة)**, combine Maghrib and Isha, rest for the night, and gather pebbles.").font(.body)
+                    ArticleParagraph(articleMarkdown: "After sunset, move to **Muzdalifah (مُزدَلِفَة)**, combine Maghrib and Isha, rest for the night, and gather pebbles.")
                 }
 
                 Section(header: ArticleHeader("4. DAY 10: EID (YAWM AN-NAHR)")) {
-                    Text(articleMarkdown: "Stone the large pillar (**Jamrat al-Aqabah**) with seven pebbles, offer the sacrifice (**Hady/Qurbani, قُربَان**), shave or trim the hair, then perform **Tawaf al-Ifadah** around the Kaaba and **Sa'i (سَعي)** between Safa and Marwah. With this the pilgrim exits Ihram.")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "Stone the large pillar (**Jamrat al-Aqabah**) with seven pebbles, offer the sacrifice (**Hady, هَدي**) if performing tamattu' or qiran, shave or trim the hair, then perform **Tawaf al-Ifadah** around the Kaaba and **Sa'i (سَعي)** between Safa and Marwah (a qarin or mufrid who made Sa'i after the arrival Tawaf does not repeat it). After the stoning and the shaving, everything but marital relations becomes lawful; after the Tawaf, all of it.")
                 }
 
                 Section(header: ArticleHeader("5. DAYS 11–13: TASHREEQ")) {
-                    Text(articleMarkdown: "Stay in Mina and stone the three pillars (**Jamarat**) each afternoon. A pilgrim may leave after the 12th if he departs before sunset, otherwise he completes the 13th.")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "Stay in Mina and stone the three pillars (**Jamarat**) each afternoon. A pilgrim may leave after the 12th if he departs before sunset, otherwise he completes the 13th.")
                 }
 
                 Section(header: ArticleHeader("6. FAREWELL TAWAF")) {
-                    Text(articleMarkdown: "Before leaving Makkah, perform the farewell circumambulation (**Tawaf al-Wada, طَوَاف الوَدَاع**) so the last act at the Sacred House is Tawaf.")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "Before leaving Makkah, perform the farewell circumambulation (**Tawaf al-Wada, طَوَاف الوَدَاع**) so the last act at the Sacred House is Tawaf.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -398,7 +408,7 @@ struct HowToHajjView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "HowToHajjView")
+        .englishArticle().selectableArticleList(article: "HowToHajjView")
         .navigationTitle("How to Perform Hajj")
     }
 }
@@ -412,26 +422,21 @@ struct HowToUmrahView: View {
                 }
 
                 Section(header: ArticleHeader("1. ENTER IHRAM")) {
-                    Text(articleMarkdown: "At the **Miqat (مِيقَات)**, bathe, wear the Ihram (two unstitched cloths for men; modest dress for women), make the intention for Umrah with the words “Labbayk Allahumma umratan” (here I am, O Allah, for Umrah), then recite the **Talbiyah (تَلبِيَة)** of the Prophet (peace and blessings be upon him):")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "At the **Miqat (مِيقَات)**, bathe, wear the Ihram (two unstitched cloths for men; modest dress for women), make the intention for Umrah with the words “Labbayk Allahumma umratan” (here I am, O Allah, for Umrah), then recite the **Talbiyah (تَلبِيَة)** of the Prophet (peace and blessings be upon him):")
                     ScriptureQuote(hadith: "bukhari:1549", cite: "Sahih al-Bukhari 1549", arabic: 27...42, english: 7...21)
-                    Text(verbatim: "In Ihram, avoid perfume, cutting hair or nails, and marital relations.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "In Ihram, avoid perfume, cutting hair or nails, and marital relations.")
                 }
 
                 Section(header: ArticleHeader("2. TAWAF")) {
-                    Text(articleMarkdown: "At the Sacred Mosque, circle the **Kaaba (الكَعبَة)** seven times (**Tawaf, طَوَاف**), beginning and ending at the Black Stone. Then pray two rak'ah behind the **Maqam Ibrahim (مَقَام إِبرَاهِيم)** if able, and drink **Zamzam (زَمزَم)**.")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "At the Sacred Mosque, circle the **Kaaba (الكَعبَة)** seven times (**Tawaf, طَوَاف**), beginning and ending at the Black Stone. Then pray two rak'ah behind the **Maqam Ibrahim (مَقَام إِبرَاهِيم)** if able, and drink **Zamzam (زَمزَم)**.")
                 }
 
                 Section(header: ArticleHeader("3. SA'I")) {
-                    Text(articleMarkdown: "Walk seven times between the hills of **Safa (الصَّفَا)** and **Marwah (المَروَة)** (**Sa'i, سَعي**), starting at Safa and ending at Marwah, remembering Allah and supplicating, as **Hajar** (may Allah be pleased with her) once searched there for water.")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "Walk seven times between the hills of **Safa (الصَّفَا)** and **Marwah (المَروَة)** (**Sa'i, سَعي**), starting at Safa and ending at Marwah, remembering Allah and supplicating, as **Hajar** (may Allah be pleased with her) once searched there for water.")
                 }
 
                 Section(header: ArticleHeader("4. SHAVE OR TRIM")) {
-                    Text(articleMarkdown: "Men shave the head (**Halq, حَلق**) or trim it; women trim a fingertip's length (**Taqsir, تَقصِير**). With this the Umrah is complete and the pilgrim leaves the state of Ihram.")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "Men shave the head (**Halq, حَلق**) or trim it; women trim a fingertip's length (**Taqsir, تَقصِير**). With this the Umrah is complete and the pilgrim leaves the state of Ihram.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -439,15 +444,12 @@ struct HowToUmrahView: View {
                 }
 
                 Section(header: ArticleHeader("THE VIRTUE OF UMRAH")) {
-                    Text(verbatim: "Allah (Glorified and Exalted be He) says:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Allah (Glorified and Exalted be He) says:")
                     ScriptureQuote(quran: "2:196", words: 0...3)
-                    Text(verbatim: "The Prophet (peace and blessings be upon him) said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) said:")
                     ScriptureQuote(hadith: "bukhari:1773", cite: "Sahih al-Bukhari 1773, Sahih Muslim 1349", arabic: 37...49, english: 4...35)
                     ScriptureQuote(hadith: "bukhari:1782", cite: "Sahih al-Bukhari 1782, Sahih Muslim 1256", arabic: 65...69, english: 71...79)
-                    Text(verbatim: "And of the journey itself he said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "And of the journey itself he said:")
                     ScriptureQuote(hadith: "tirmidhi:810", cite: "Sunan al-Tirmidhi 810; graded hasan sahih by al-Albani", arabic: 35...55, english: 5...39)
                 }
 
@@ -455,7 +457,7 @@ struct HowToUmrahView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "HowToUmrahView")
+        .englishArticle().selectableArticleList(article: "HowToUmrahView")
         .navigationTitle("How to Perform Umrah")
     }
 }
@@ -473,17 +475,14 @@ struct TayammumView: View {
                 }
 
                 Section(header: ArticleHeader("WHEN IT IS ALLOWED")) {
-                    Text(verbatim: "Tayammum is permitted in two cases: when there is no water at all (or none to spare after drinking needs), and when water is there but using it would harm you, as with an illness, a wound, or severe cold with no way to warm it. Allah says:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Tayammum is permitted in two cases: when there is no water at all (or none to spare after drinking needs), and when water is there but using it would harm you, as with an illness, a wound, or severe cold with no way to warm it. Allah says:")
                     ScriptureQuote(quran: "5:6")
-                    Text(verbatim: "The Prophet (peace and blessings be upon him) counted this ease among the special gifts to his ummah:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) counted this ease among the special gifts to his ummah:")
                     ScriptureQuote(hadith: "bukhari:335", cite: "Sahih al-Bukhari 335", arabic: 43...83, english: [4...19, 40...75])
                 }
 
                 Section(header: ArticleHeader("WHAT TO USE")) {
-                    Text(articleMarkdown: "Anything that is of the earth's surface and is clean: soil, sand, dust, or a stone or dusty wall. Allah calls it **sa'id tayyib (صَعِيد طَيِّب)**, clean earth. It need not leave visible dust on the hands; a light strike is enough.")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "Anything that is of the earth's surface and is clean: soil, sand, dust, or a stone or dusty wall. Allah calls it **sa'id tayyib (صَعِيد طَيِّب)**, clean earth. It need not leave visible dust on the hands; a light strike is enough.")
                 }
 
                 Section(header: ArticleHeader("STEP BY STEP")) {
@@ -491,23 +490,20 @@ struct TayammumView: View {
                     ArticleStep("2. **Strike the earth once** with both palms, lightly, then blow on them or shake off the excess dust.")
                     ArticleStep("3. **Wipe the face** with both hands, once.")
                     ArticleStep("4. **Wipe the hands**: the back of the right hand with the left palm and the back of the left hand with the right palm, up to the wrists.")
-                    Text(verbatim: "That is the whole of it. When Ammar ibn Yasir (may Allah be pleased with him) rolled in the dust to purify himself from janabah, the Prophet (peace and blessings be upon him) corrected him:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "That is the whole of it. When Ammar ibn Yasir (may Allah be pleased with him) rolled in the dust to purify himself from janabah, the Prophet (peace and blessings be upon him) corrected him:")
                     ScriptureQuote(hadith: "bukhari:338", cite: "Sahih al-Bukhari 338", arabic: 68...87, english: 64...99)
                     ScriptureQuote(hadith: "muslim:368b", cite: "Sahih Muslim 368", arabic: 36...52, english: 0...19)
                 }
 
                 Section(header: ArticleHeader("WHAT BREAKS IT")) {
-                    Text(verbatim: "Everything that breaks wudhu breaks tayammum. In addition, tayammum ends when the excuse ends: when water is found, or when using it is no longer harmful. A prayer already completed with tayammum is valid and is not repeated.")
-                        .font(.body)
-                    Text(verbatim: "Tayammum done in place of ghusl is likewise a full substitute until water can be used; then a ghusl is made.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Everything that breaks wudhu breaks tayammum. In addition, tayammum ends when the excuse ends: when water is found, or when using it is no longer harmful. A prayer already completed with tayammum is valid and is not repeated.")
+                    ArticleParagraph(verbatim: "Tayammum done in place of ghusl is likewise a full substitute until water can be used; then a ghusl is made.")
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**Can tayammum replace ghusl?** Yes. Ammar's case above was janabah, and the Prophet (peace and blessings be upon him) taught him tayammum for it. When water becomes available, make ghusl for what follows.").font(.body)
-                    Text(articleMarkdown: "**Does one tayammum cover several prayers?** It remains valid, like wudhu, until it is broken or until water becomes usable. This is the stronger view among the scholars, since the Prophet named the earth a purification without limiting it to one prayer.").font(.body)
-                    Text(articleMarkdown: "**A wound is bandaged. Do I still make tayammum?** Wash what you can, wipe over the bandage, and complete the wudhu. Tayammum is for the part that can take neither washing nor wiping, and some scholars regard the wipe over the bandage as sufficient on its own. Ask a scholar about a persistent condition.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**Can tayammum replace ghusl?** Yes. Ammar's case above was janabah, and the Prophet (peace and blessings be upon him) taught him tayammum for it. When water becomes available, make ghusl for what follows.")
+                    ArticleParagraph(articleMarkdown: "**Does one tayammum cover several prayers?** It remains valid, like wudhu, until it is broken or until water becomes usable. This is the stronger view among the scholars, since the Prophet named the earth a purification without limiting it to one prayer.")
+                    ArticleParagraph(articleMarkdown: "**A wound is bandaged. Do I still make tayammum?** Wash what you can, wipe over the bandage, and complete the wudhu. Tayammum is for the part that can take neither washing nor wiping, and some scholars regard the wipe over the bandage as sufficient on its own. Ask a scholar about a persistent condition.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -518,7 +514,7 @@ struct TayammumView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "TayammumView")
+        .englishArticle().selectableArticleList(article: "TayammumView")
         .navigationTitle("How to Make Tayammum")
     }
 }
@@ -535,8 +531,7 @@ struct RawatibView: View {
 
                 Section(header: ArticleHeader("THE PROMISE")) {
                     ScriptureQuote(hadith: "muslim:728a", cite: "Sahih Muslim 728", arabic: 58...71, english: 0...18)
-                    Text(verbatim: "Aishah (may Allah be pleased with her) narrated the breakdown:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Aishah (may Allah be pleased with her) narrated the breakdown:")
                     ScriptureQuote(hadith: "tirmidhi:414", cite: "Sunan al-Tirmidhi 414", arabic: 28...56, english: 0...38)
                 }
 
@@ -545,24 +540,20 @@ struct RawatibView: View {
                     ArticleBullet("• **Before Dhuhr**: 4 rak'ah (two by two), and **after Dhuhr**: 2 rak'ah.")
                     ArticleBullet("• **After Maghrib**: 2 rak'ah.")
                     ArticleBullet("• **After Isha**: 2 rak'ah.")
-                    Text(verbatim: "Ibn Umar (may Allah be pleased with him) recalled ten of them from the Prophet himself, and named where he prayed them:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Ibn Umar (may Allah be pleased with him) recalled ten of them from the Prophet himself, and named where he prayed them:")
                     ScriptureQuote(hadith: "bukhari:1180", cite: "Sahih al-Bukhari 1180", arabic: 22...49, english: 0...42)
                     ScriptureQuote(hadith: "bukhari:1182", cite: "Sahih al-Bukhari 1182", arabic: 22...36, english: 0...17)
                 }
 
                 Section(header: ArticleHeader("THE TWO BEFORE FAJR")) {
-                    Text(verbatim: "Of all the rawatib, the two before Fajr were the ones the Prophet (peace and blessings be upon him) never left, at home or on a journey. He said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Of all the rawatib, the two before Fajr were the ones the Prophet (peace and blessings be upon him) never left, at home or on a journey. He said:")
                     ScriptureQuote(hadith: "muslim:725a", cite: "Sahih Muslim 725", arabic: 29...35, english: 0...13)
-                    Text(verbatim: "He prayed them light, with Surah al-Kafirun and Surah al-Ikhlas after al-Fatihah being his frequent choice (Sahih Muslim 726):")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "He prayed them light, with Surah al-Kafirun and Surah al-Ikhlas after al-Fatihah being his frequent choice (Sahih Muslim 726):")
                     ScriptureQuote(hadith: "bukhari:1165", cite: "Sahih al-Bukhari 1165", arabic: 62...80, english: 0...24)
                 }
 
                 Section(header: ArticleHeader("MORE THAT IS RECOMMENDED")) {
-                    Text(verbatim: "Beyond the twelve, other voluntary prayers around the obligatory ones are established and rewarded:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Beyond the twelve, other voluntary prayers around the obligatory ones are established and rewarded:")
                     ScriptureQuote(hadith: "tirmidhi:428", cite: "Sunan al-Tirmidhi 428", arabic: 55...67, english: 6...22)
                     ScriptureQuote(hadith: "tirmidhi:430", cite: "Sunan al-Tirmidhi 430; graded hasan by al-Albani", arabic: 38...44, english: 4...15)
                     ScriptureQuote(hadith: "muslim:881a", cite: "Sahih Muslim 881", arabic: 26...32, english: 0...19)
@@ -573,7 +564,7 @@ struct RawatibView: View {
                     ArticleStep(verbatim: "1. Pray them two rak'ah at a time, each pair ending with the tashahhud and the taslim. Four before Dhuhr are two pairs.")
                     ArticleStep(verbatim: "2. Intend the specific sunnah in the heart; nothing is spoken.")
                     ArticleStep(verbatim: "3. Pray them at home when you can, as the Prophet (peace and blessings be upon him) did for the Maghrib and Isha rawatib: he said that the best of a man's prayer is in his house, except the obligatory prayer (Sahih Muslim 781).")
-                    ArticleStep(verbatim: "4. If you miss one, it may be made up: the Prophet made up the two after Dhuhr when he was kept busy (Sahih al-Bukhari 1233), and prayed the two of Fajr after the obligatory prayer when he slept through the time on a journey (Sahih Muslim 681).")
+                    ArticleStep(verbatim: "4. If you miss one, it may be made up: the Prophet made up the two after Dhuhr when he was kept busy (Sahih al-Bukhari 1233), and when he slept through Fajr on a journey he prayed its two sunnah rak'ah and then the obligatory prayer (Sahih Muslim 681); a man who had missed them before Fajr he allowed to pray them right after it (Sunan at-Tirmidhi 422; Sunan Abi Dawud 1267; graded sahih by al-Albani).")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -584,7 +575,7 @@ struct RawatibView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "RawatibView")
+        .englishArticle().selectableArticleList(article: "RawatibView")
         .navigationTitle("How to Pray the Sunnah Prayers")
     }
 }
@@ -598,18 +589,15 @@ struct WitrView: View {
                 }
 
                 Section(header: ArticleHeader("ITS STATUS")) {
-                    Text(verbatim: "Witr is a strongly emphasized Sunnah, not one of the five obligations. Ali (may Allah be pleased with him) said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Witr is a strongly emphasized Sunnah, not one of the five obligations. Ali (may Allah be pleased with him) said:")
                     ScriptureQuote(hadith: "nasai:1676", cite: "Sunan an-Nasa'i 1676", arabic: 24...37, english: 0...17)
-                    Text(verbatim: "Yet the Prophet (peace and blessings be upon him) urged it in the strongest terms and advised it to those he loved:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Yet the Prophet (peace and blessings be upon him) urged it in the strongest terms and advised it to those he loved:")
                     ScriptureQuote(hadith: "abudawud:1422", cite: "Sunan Abi Dawud 1422", arabic: 35...57, english: 4...50)
                     ScriptureQuote(hadith: "bukhari:1178", cite: "Sahih al-Bukhari 1178", arabic: 25...42, english: 0...37)
                 }
 
                 Section(header: ArticleHeader("ITS TIME")) {
-                    Text(verbatim: "From after the Isha prayer until the break of dawn. The best time is the last part of the night for whoever trusts himself to wake; whoever fears he will not should pray it before sleeping.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "From after the Isha prayer until the break of dawn. The best time is the last part of the night for whoever trusts himself to wake; whoever fears he will not should pray it before sleeping.")
                     ScriptureQuote(hadith: "bukhari:998", cite: "Sahih al-Bukhari 998", arabic: 24...28, english: 4...11)
                     ScriptureQuote(hadith: "bukhari:990", cite: "Sahih al-Bukhari 990", arabic: 38...53, english: 16...61)
                 }
@@ -624,24 +612,21 @@ struct WitrView: View {
                 }
 
                 Section(header: ArticleHeader("WHAT TO RECITE")) {
-                    Text(verbatim: "In three rak'ah of Witr, the Prophet (peace and blessings be upon him) recited al-A'la in the first, al-Kafirun in the second and al-Ikhlas in the third:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "In three rak'ah of Witr, the Prophet (peace and blessings be upon him) recited al-A'la in the first, al-Kafirun in the second and al-Ikhlas in the third:")
                     ScriptureQuote(hadith: "abudawud:1423", cite: "Sunan Abi Dawud 1423", arabic: 41...64, english: 0...39)
                 }
 
                 Section(header: ArticleHeader("THE QUNUT")) {
-                    Text(articleMarkdown: "A supplication (**qunut, قُنُوت**) in the last rak'ah, before or after the ruku, is Sunnah. The Prophet (peace and blessings be upon him) taught al-Hasan ibn Ali these words:")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "A supplication (**qunut, قُنُوت**) in the last rak'ah, before or after the ruku, is Sunnah. The Prophet (peace and blessings be upon him) taught al-Hasan ibn Ali these words:")
                     ScriptureQuote(hadith: "abudawud:1425", cite: "Sunan Abi Dawud 1425", arabic: 50...84, english: 32...103)
-                    Text(verbatim: "After the taslim he would say, three times, raising his voice on the third:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "After the taslim he would say this three times, raising his voice on the third (Sunan an-Nasa'i 1734, 1750; graded sahih by al-Albani):")
                     ScriptureQuote(hadith: "abudawud:1430", cite: "Sunan Abi Dawud 1430", arabic: 47...49, english: 14...20)
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**I slept through Witr. Can I make it up?** Yes. The Prophet (peace and blessings be upon him) said that whoever sleeps through his Witr or forgets it should pray it when he wakes or remembers (Sunan Abi Dawud 1431; Sunan al-Tirmidhi 465; graded sahih by al-Albani); it may be prayed in the day after Fajr, and some scholars say as an even number then.").font(.body)
-                    Text(articleMarkdown: "**Can I pray Witr, then pray more at night?** Whoever prays Witr early and then wakes may pray as he wishes, two by two, without repeating Witr: “There are no two Witr in one night” (Sunan al-Tirmidhi 470; Sunan Abi Dawud 1439; graded sahih by al-Albani).").font(.body)
-                    Text(articleMarkdown: "**Is Witr the same as Tahajjud?** Witr is the closing rak'ah; Tahajjud is the whole of the night prayer it closes. Praying only Witr is valid; praying Tahajjud without Witr leaves it incomplete.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**I slept through Witr. Can I make it up?** Yes. The Prophet (peace and blessings be upon him) said that whoever sleeps through his Witr or forgets it should pray it when he wakes or remembers (Sunan Abi Dawud 1431; Sunan al-Tirmidhi 465; graded sahih by al-Albani); it may be prayed in the day after Fajr, and some scholars say as an even number then.")
+                    ArticleParagraph(articleMarkdown: "**Can I pray Witr, then pray more at night?** Whoever prays Witr early and then wakes may pray as he wishes, two by two, without repeating Witr: “There are no two Witr in one night” (Sunan al-Tirmidhi 470; Sunan Abi Dawud 1439; graded sahih by al-Albani).")
+                    ArticleParagraph(articleMarkdown: "**Is Witr the same as Tahajjud?** Witr is the closing rak'ah; Tahajjud is the whole of the night prayer it closes. Praying only Witr is valid; praying Tahajjud without Witr leaves it incomplete.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -652,7 +637,7 @@ struct WitrView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "WitrView")
+        .englishArticle().selectableArticleList(article: "WitrView")
         .navigationTitle("How to Pray Witr")
     }
 }
@@ -670,8 +655,7 @@ struct TahajjudView: View {
                     ScriptureQuote(quran: "73:1-4")
                     ScriptureQuote(quran: "51:17-18")
                     ScriptureQuote(quran: "32:16")
-                    Text(verbatim: "The Prophet (peace and blessings be upon him) said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) said:")
                     ScriptureQuote(hadith: "muslim:1163a", cite: "Sahih Muslim 1163", arabic: 34...46, english: 0...23)
                 }
 
@@ -680,17 +664,14 @@ struct TahajjudView: View {
                 }
 
                 Section(header: ArticleHeader("ITS TIME")) {
-                    Text(verbatim: "Any time after Isha and before Fajr is night prayer; the last third is best. To sleep first and then rise is what the word tahajjud means, and it is what the Prophet (peace and blessings be upon him) did, and what he praised in Dawud (peace be upon him):")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Any time after Isha and before Fajr is night prayer; the last third is best. To sleep first and then rise is what the word tahajjud means, and it is what the Prophet (peace and blessings be upon him) did, and what he praised in Dawud (peace be upon him):")
                     ScriptureQuote(hadith: "bukhari:1131", cite: "Sahih al-Bukhari 1131", arabic: 42...69, english: 5...50)
                 }
 
                 Section(header: ArticleHeader("HOW MANY RAK'AH")) {
-                    Text(verbatim: "There is no fixed number; two rak'ah are night prayer. The Prophet's own habit was eleven, and at times thirteen:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "There is no fixed number; two rak'ah are night prayer. The Prophet's own habit was eleven, and at times thirteen:")
                     ScriptureQuote(hadith: "bukhari:1147", cite: "Sahih al-Bukhari 1147", arabic: 42...77, english: 3...61)
-                    Text(verbatim: "Long rak'ah with few in number was his way, and he said of the night prayer that it is offered two by two, ending in one (Sahih al-Bukhari 990).")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Long rak'ah with few in number was his way, and he said of the night prayer that it is offered two by two, ending in one (Sahih al-Bukhari 990).")
                 }
 
                 Section(header: ArticleHeader("STEP BY STEP")) {
@@ -700,15 +681,14 @@ struct TahajjudView: View {
                     ArticleStep("4. **Pray two by two**, reciting slowly, with long standing, bowing and prostration. Weeping and reflecting over the ayat is of its spirit.")
                     ArticleStep("5. **Make dua in prostration and before the end**, for it is the hour of answer.")
                     ArticleStep("6. **Close with Witr**: one rak'ah, or three, with the qunut.")
-                    Text(verbatim: "The Prophet (peace and blessings be upon him) would open his night prayer with this supplication:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) would open his night prayer with this supplication:")
                     ScriptureQuote(hadith: "bukhari:1120", cite: "Sahih al-Bukhari 1120", arabic: 38...120, english: 99...309)
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**I cannot wake in the last third. Is my prayer still Tahajjud?** Pray what you can after Isha and before sleeping, with Witr. The Prophet advised those who fear they will not wake to pray Witr early. Regularity in a little beats an unkept ambition.").font(.body)
-                    Text(articleMarkdown: "**Can I pray Tahajjud sitting?** Yes, and in his later years the Prophet (peace and blessings be upon him) prayed much of the night sitting. Standing is better where you are able.").font(.body)
-                    Text(articleMarkdown: "**Should I recite aloud?** He recited sometimes aloud and sometimes softly. Recite so as to hear yourself, and lower it if it disturbs others who sleep or pray.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**I cannot wake in the last third. Is my prayer still Tahajjud?** Pray what you can after Isha and before sleeping, with Witr. The Prophet advised those who fear they will not wake to pray Witr early. Regularity in a little beats an unkept ambition.")
+                    ArticleParagraph(articleMarkdown: "**Can I pray Tahajjud sitting?** Yes, and in his later years the Prophet (peace and blessings be upon him) prayed much of the night sitting. Standing is better where you are able.")
+                    ArticleParagraph(articleMarkdown: "**Should I recite aloud?** He recited sometimes aloud and sometimes softly. Recite so as to hear yourself, and lower it if it disturbs others who sleep or pray.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -719,7 +699,7 @@ struct TahajjudView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "TahajjudView")
+        .englishArticle().selectableArticleList(article: "TahajjudView")
         .navigationTitle("How to Pray Tahajjud")
     }
 }
@@ -734,19 +714,16 @@ struct DuhaView: View {
 
                 Section(header: ArticleHeader("ITS VIRTUE")) {
                     ScriptureQuote(hadith: "muslim:720", cite: "Sahih Muslim 720", arabic: 45...77, english: 0...88)
-                    Text(verbatim: "It was among the three things the Prophet (peace and blessings be upon him) advised Abu Hurayrah never to leave (Sahih al-Bukhari 1178), and he called it the prayer of those who turn back to Allah:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "It was among the three things the Prophet (peace and blessings be upon him) advised Abu Hurayrah never to leave (Sahih al-Bukhari 1178), and he called it the prayer of those who turn back to Allah:")
                     ScriptureQuote(hadith: "muslim:748b", cite: "Sahih Muslim 748", arabic: 38...42, english: 0...17)
                 }
 
                 Section(header: ArticleHeader("ITS TIME")) {
-                    Text(verbatim: "It begins about fifteen to twenty minutes after sunrise, when the sun has risen the height of a spear, and ends a little before the sun reaches its zenith. Its best time is when the morning has grown hot, as the hadith of the young camels describes.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "It begins about fifteen to twenty minutes after sunrise, when the sun has risen the height of a spear, and ends a little before the sun reaches its zenith. Its best time is when the morning has grown hot, as the hadith of the young camels describes.")
                 }
 
                 Section(header: ArticleHeader("HOW MANY RAK'AH")) {
-                    Text(verbatim: "The least is two. The Prophet (peace and blessings be upon him) prayed four and added as Allah willed, and prayed eight on the day Makkah was opened:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The least is two. The Prophet (peace and blessings be upon him) prayed four and added as Allah willed, and prayed eight on the day Makkah was opened:")
                     ScriptureQuote(hadith: "muslim:719c", cite: "Sahih Muslim 719", arabic: 20...33, english: 0...21)
                     ScriptureQuote(hadith: "bukhari:1176", cite: "Sahih al-Bukhari 1176", arabic: 33...58, english: 19...48)
                 }
@@ -759,8 +736,8 @@ struct DuhaView: View {
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**Did the Prophet pray it every day?** Aishah said he did not pray it regularly except on returning from a journey, while she herself prayed it (Sahih Muslim 717), and others among the Companions saw him pray it. The scholars reconcile this: he left it at times so it would not be taken as obligatory, and he advised his Companions to keep it. Keeping it daily is good, and leaving it some days is no sin.").font(.body)
-                    Text(articleMarkdown: "**Is it the same as Salat al-Ishraq?** Ishraq is the name given to Duha prayed at its earliest, right after the sun has risen a spear's length. It is one prayer.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**Did the Prophet pray it every day?** Aishah said he did not pray it regularly except on returning from a journey, while she herself prayed it (Sahih Muslim 717), and others among the Companions saw him pray it. The scholars reconcile this: he left it at times so it would not be taken as obligatory, and he advised his Companions to keep it. Keeping it daily is good, and leaving it some days is no sin.")
+                    ArticleParagraph(articleMarkdown: "**Is it the same as Salat al-Ishraq?** Ishraq is the name given to Duha prayed at its earliest, right after the sun has risen a spear's length. It is one prayer.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -771,7 +748,7 @@ struct DuhaView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "DuhaView")
+        .englishArticle().selectableArticleList(article: "DuhaView")
         .navigationTitle("How to Pray Duha")
     }
 }
@@ -786,24 +763,19 @@ struct TaraweehView: View {
 
                 Section(header: ArticleHeader("ITS VIRTUE")) {
                     ScriptureQuote(hadith: "bukhari:37", cite: "Sahih al-Bukhari 37", arabic: 26...36, english: 4...33)
-                    Text(verbatim: "The Prophet (peace and blessings be upon him) urged it without making it obligatory (Sahih Muslim 759).")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) urged it without making it obligatory (Sahih Muslim 759).")
                 }
 
                 Section(header: ArticleHeader("HOW IT BEGAN")) {
-                    Text(verbatim: "The Prophet (peace and blessings be upon him) prayed it in the mosque for three nights and the people gathered behind him; then he stayed in his house, fearing it would be made obligatory upon them:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) prayed it in the mosque for three nights and the people gathered behind him; then he stayed in his house, fearing it would be made obligatory upon them:")
                     ScriptureQuote(hadith: "bukhari:1129", cite: "Sahih al-Bukhari 1129", arabic: 65...79, english: 54...80)
-                    Text(verbatim: "After his death, Umar (may Allah be pleased with him) gathered the people behind one reciter, Ubayy ibn Ka'b, and said of it “what an excellent innovation this is” (Sahih al-Bukhari 2010), meaning the gathering behind one imam, a Sunnah the Prophet had begun and left only for fear of its becoming obligatory.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "After his death, Umar (may Allah be pleased with him) gathered the people behind one reciter, Ubayy ibn Ka'b, and said of it “what an excellent innovation this is” (Sahih al-Bukhari 2010), meaning the gathering behind one imam, a Sunnah the Prophet had begun and left only for fear of its becoming obligatory.")
                 }
 
                 Section(header: ArticleHeader("HOW MANY RAK'AH")) {
-                    Text(verbatim: "The Prophet's own night prayer, in Ramadan and outside it, was eleven rak'ah:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The Prophet's own night prayer, in Ramadan and outside it, was eleven rak'ah:")
                     ScriptureQuote(hadith: "bukhari:1147", cite: "Sahih al-Bukhari 1147", arabic: 42...77, english: 18...30)
-                    Text(verbatim: "The Companions in Umar's time prayed eleven, and later twenty and more with shorter recitation. There is no fixed limit; night prayer is two by two (Sahih al-Bukhari 990). Eleven or thirteen with long, unhurried recitation follows the Prophet most closely; more with shorter recitation is also good. The majority of the scholars, including Ibn Baz and Ibn al-Uthaymin, hold that there is no fixed limit, while some, such as al-Albani, held to eleven; it is a matter of legitimate difference, not of creed.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The Companions in Umar's time prayed eleven, and later twenty and more with shorter recitation. There is no fixed limit; night prayer is two by two (Sahih al-Bukhari 990). Eleven or thirteen with long, unhurried recitation follows the Prophet most closely; more with shorter recitation is also good. The majority of the scholars, including Ibn Baz and Ibn al-Uthaymin, hold that there is no fixed limit, while some, such as al-Albani, held to eleven; it is a matter of legitimate difference, not of creed.")
                 }
 
                 Section(header: ArticleHeader("STEP BY STEP")) {
@@ -815,9 +787,9 @@ struct TaraweehView: View {
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**Home or mosque?** Both are Sunnah. The congregation in the mosque is the way of the Companions after Umar, and the imam's recitation carries you through the Quran; at home you may pray at a slower pace. Women may attend the mosque or pray at home.").font(.body)
-                    Text(articleMarkdown: "**Can I pray Taraweeh late at night instead of after Isha?** Yes. It is the night prayer; the last third is the best time. In the last ten nights the Prophet stayed up the whole night.").font(.body)
-                    Text(articleMarkdown: "**Must the whole Quran be completed?** No. It is a good custom of the imams, not a condition. Praying a small portion with reflection is better than racing through a khatm.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**Home or mosque?** Both are Sunnah. The congregation in the mosque is the way of the Companions after Umar, and the imam's recitation carries you through the Quran; at home you may pray at a slower pace. Women may attend the mosque or pray at home.")
+                    ArticleParagraph(articleMarkdown: "**Can I pray Taraweeh late at night instead of after Isha?** Yes. It is the night prayer; the last third is the best time. In the last ten nights the Prophet stayed up the whole night.")
+                    ArticleParagraph(articleMarkdown: "**Must the whole Quran be completed?** No. It is a good custom of the imams, not a condition. Praying a small portion with reflection is better than racing through a khatm.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -828,7 +800,7 @@ struct TaraweehView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "TaraweehView")
+        .englishArticle().selectableArticleList(article: "TaraweehView")
         .navigationTitle("How to Pray Taraweeh")
     }
 }
@@ -842,59 +814,50 @@ struct JanazahView: View {
                 }
 
                 Section(header: ArticleHeader("ITS REWARD")) {
-                    ScriptureQuote(hadith: "muslim:945a", cite: "Sahih Muslim 945", english: 0...54, arabicText: "مَن شَهِدَ الجَنَازَةَ حَتَّى يُصَلَّى عَلَيهَا فَلَهُ قِيرَاطٌ وَمَن شَهِدَهَا حَتَّى تُدفَنَ فَلَهُ قِيرَاطَانِ مِثلُ الجَبَلَينِ العَظِيمَينِ")
+                    ScriptureQuote(hadith: "muslim:945a", cite: "Sahih Muslim 945", english: 0...54, arabicText: "مَن شَهِدَ الجَنَازَةَ حَتَّى يُصَلَّى عَلَيهَا فَلَهُ قِيرَاطٌ وَمَن شَهِدَهَا حَتَّى تُدفَنَ فَلَهُ قِيرَاطَانِ. قِيلَ: وَمَا القِيرَاطَانِ؟ قَالَ: مِثلُ الجَبَلَينِ العَظِيمَينِ")
                     ScriptureQuote(hadith: "muslim:948", cite: "Sahih Muslim 948", arabic: 86...103, english: 50...78)
                 }
 
                 Section(header: ArticleHeader("BEFORE THE PRAYER")) {
-                    Text(verbatim: "The deceased is washed and shrouded first. The Prophet (peace and blessings be upon him) said of his daughter:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The deceased is washed and shrouded first. The Prophet (peace and blessings be upon him) said of his daughter:")
                     ScriptureQuote(hadith: "bukhari:1253", cite: "Sahih al-Bukhari 1253", arabic: 38...61, english: 12...44)
                     ScriptureQuote(hadith: "bukhari:1264", cite: "Sahih al-Bukhari 1264", arabic: 20...40, english: 0...25)
-                    Text(verbatim: "Men are shrouded in three cloths; women in three or, according to many scholars, five (the hadith of the five is weak, so al-Albani held that women are shrouded like men), and the funeral is not delayed:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Men are shrouded in three cloths; women in three or, according to many scholars, five (the hadith of the five is weak, so al-Albani held that women are shrouded like men), and the funeral is not delayed:")
                     ScriptureQuote(hadith: "muslim:944a", cite: "Sahih Muslim 944", arabic: 38...57, english: 0...37)
                 }
 
                 Section(header: ArticleHeader("WHERE TO STAND")) {
-                    Text(verbatim: "The body is laid in front of the congregation, its right side toward the qiblah. The imam stands at the head of a man and at the middle of a woman, with the rows behind him.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The body is laid in front of the congregation, its right side toward the qiblah. The imam stands at the head of a man and at the middle of a woman, with the rows behind him.")
                     ScriptureQuote(hadith: "bukhari:1332", cite: "Sahih al-Bukhari 1332", arabic: 22...36, english: 0...26)
                 }
 
                 Section(header: ArticleHeader("STEP BY STEP")) {
-                    Text(verbatim: "There is no bowing, prostration or sitting. It is four takbirs, all standing:").font(.body)
+                    ArticleParagraph(verbatim: "There is no bowing, prostration or sitting. It is four takbirs, all standing:")
                     ArticleStep("1. **First takbir**: say “Allahu Akbar,” raising the hands, then recite Surah al-Fatihah quietly.")
                     ArticleStep("2. **Second takbir**: send prayers upon the Prophet (peace and blessings be upon him) with the salat al-Ibrahimiyyah of the tashahhud.")
                     ArticleStep("3. **Third takbir**: supplicate for the deceased, sincerely, using the Prophet's own words.")
                     ArticleStep("4. **Fourth takbir**: pause briefly, then give the taslim to the right (and to the left if you wish).")
-                    Text(verbatim: "Ibn Abbas (may Allah be pleased with him) recited al-Fatihah aloud in a funeral prayer and said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Ibn Abbas (may Allah be pleased with him) recited al-Fatihah aloud in a funeral prayer and said:")
                     ScriptureQuote(hadith: "bukhari:1335", cite: "Sahih al-Bukhari 1335", arabic: 40...57, english: 0...30)
-                    Text(verbatim: "And the Prophet (peace and blessings be upon him) prayed four takbirs over an-Najashi (Sahih al-Bukhari 1245).")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "And the Prophet (peace and blessings be upon him) prayed four takbirs over an-Najashi (Sahih al-Bukhari 1245).")
                 }
 
                 Section(header: ArticleHeader("THE SUPPLICATION")) {
-                    Text(verbatim: "Awf ibn Malik (may Allah be pleased with him) heard the Prophet pray over a deceased man:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Awf ibn Malik (may Allah be pleased with him) heard the Prophet pray over a deceased man:")
                     ScriptureQuote(hadith: "muslim:963a", cite: "Sahih Muslim 963", arabic: 43...89, english: 22...109)
-                    Text(verbatim: "And for the whole gathering, living and dead:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "And for the whole gathering, living and dead:")
                     ScriptureQuote(hadith: "abudawud:3201", cite: "Sunan Abi Dawud 3201", arabic: 38...67, english: 13...83)
-                    Text(verbatim: "For a woman, change the pronouns to the feminine; for a child, ask that Allah make the child a forerunner and a stored reward for the parents.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "For a woman, change the pronouns to the feminine; for a child, ask that Allah make the child a forerunner and a stored reward for the parents.")
                 }
 
                 Section(header: ArticleHeader("AFTER THE PRAYER")) {
-                    Text(verbatim: "Follow the funeral to the grave in silence and reflection. The deceased is lowered on the right side facing the qiblah with “Bismillah wa ‘ala sunnati Rasulillah,” the grave is filled, and those present stand and ask forgiveness and steadfastness for him, for he is now being questioned.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Follow the funeral to the grave in silence and reflection. The deceased is lowered on the right side facing the qiblah with “Bismillah wa ‘ala sunnati Rasulillah,” the grave is filled, and those present stand and ask forgiveness and steadfastness for him, for he is now being questioned.")
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**Can the prayer be offered for someone absent?** Yes, when the deceased was not prayed over where he died; the Prophet prayed over an-Najashi in Madinah. The scholars differ on doing so for one already prayed over.").font(.body)
-                    Text(articleMarkdown: "**I arrived late.** Join with a takbir and follow the imam; after his taslim, complete the takbirs you missed in order before the body is carried away.").font(.body)
-                    Text(articleMarkdown: "**Can women pray it?** Yes, in the mosque or at home; Aishah and the wives of the Prophet prayed the funeral prayer for Sa'd ibn Abi Waqqas in the mosque. Following the procession to the grave is for the men.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**Can the prayer be offered for someone absent?** Yes, when the deceased was not prayed over where he died; the Prophet prayed over an-Najashi in Madinah. The scholars differ on doing so for one already prayed over.")
+                    ArticleParagraph(articleMarkdown: "**I arrived late.** Join with a takbir and follow the imam; after his taslim, complete the takbirs you missed in order before the body is carried away.")
+                    ArticleParagraph(articleMarkdown: "**Can women pray it?** Yes, in the mosque or at home; Aishah and the wives of the Prophet prayed the funeral prayer for Sa'd ibn Abi Waqqas in the mosque. Following the procession to the grave is for the men.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -905,14 +868,17 @@ struct JanazahView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "JanazahView")
+        .englishArticle().selectableArticleList(article: "JanazahView")
         .navigationTitle("How to Pray the Funeral Prayer")
     }
 }
 
+/// Istikharah: the prayer and its dua on ONE page (Abu, 2026-10-25: "there's dua and prayer of
+/// istikhara in how to guides, merge them into one"; the dua had been its own row, IstikharahDuaView,
+/// since 2026-10-21). The dua is drawn as the Dua screen draws its rows (`GuideDuaRow`), the
+/// narrator's "or he said" set in parentheses so the page reads as a script
+/// (`WordRange.parenthesizingAsides`), and each of its phrases is explained under it.
 struct IstikharahView: View {
-    @Environment(\.appearance) private var appearance
-
     var body: some View {
         List {
             Group {
@@ -921,56 +887,168 @@ struct IstikharahView: View {
                 }
 
                 Section(header: ArticleHeader("THE HADITH")) {
-                    Text(verbatim: "Jabir ibn Abdullah (may Allah be pleased with him) said the Prophet (peace and blessings be upon him) taught them Istikharah for every matter as he taught them a surah of the Quran:")
-                        .font(.body)
-                    ScriptureQuote(hadith: "bukhari:1166", cite: "Sahih al-Bukhari 1166", arabic: 43...140, english: 46...312)
+                    ArticleParagraph(verbatim: "Jabir ibn Abdullah (may Allah be pleased with him) said the Prophet (peace and blessings be upon him) taught them Istikharah for every matter as he taught them a surah of the Quran:")
+                    ScriptureQuote(hadith: "bukhari:1166", cite: "Sahih al-Bukhari 1166", arabic: 43...53, english: [46...71, 300...312])
+                }
+
+                Section(header: ArticleHeader("THE DUA OF ISTIKHARAH")) {
+                    ArticleParagraph(verbatim: "Said after the taslim of the two rak‘ah, in Arabic if you can. Where it says هَذَا الأَمْرَ, “this matter”, name what you are deciding. The words in parentheses are the narrator's, not yours to say: “or he said” introduces the Prophet's other wording of one phrase. Say either wording in its place, or both one after the other.")
+                    // The dua as the Dua screen would carry it: the narration's own words from "Allahumma"
+                    // to "ardini bih"; the narrator's asides, which the shelf sets between dashes, are
+                    // drawn in parentheses (`WordRange.parenthesizingAsides`).
+                    GuideDuaRow(DuaItem(
+                        hadith: "bukhari:1166", cite: "Sahih al-Bukhari 1166", arabic: 54...135, english: 154...299,
+                        transliteration: "Allahumma inni astakhiruka bi-‘ilmika, wa astaqdiruka bi-qudratika, wa as'aluka min fadlika al-‘adhim, fa-innaka taqdiru wa la aqdiru, wa ta‘lamu wa la a‘lamu, wa anta ‘allamu al-ghuyub. Allahumma in kunta ta‘lamu anna hadha al-amra khayrun li fi dini wa ma‘ashi wa ‘aqibati amri (aw qala: ‘ajili amri wa ajilihi), faqdurhu li wa yassirhu li thumma barik li fih. Wa in kunta ta‘lamu anna hadha al-amra sharrun li fi dini wa ma‘ashi wa ‘aqibati amri (aw qala: fi ‘ajili amri wa ajilihi), fasrifhu ‘anni wasrifni ‘anhu, waqdur li al-khayra haythu kana thumma ardini bih.",
+                        note: "After the two rak‘ah, naming the matter at hand"
+                    ))
+                }
+
+                Section(header: ArticleHeader("WHAT EACH PHRASE ASKS")) {
+                    ArticleTermCard("I seek Your choice by Your knowledge", arabic: "أَسْتَخِيرُكَ بِعِلْمِكَ", meaning: "Istikharah is from **khayr**, good: you ask Allah to choose the good for you, because He knows how the matter ends and you do not.")
+                    ArticleTermCard("I seek Your power by Your power", arabic: "وَأَسْتَقْدِرُكَ بِقُدْرَتِكَ", meaning: "You ask Him to make you able and to bring the matter about, because the power to do either is His alone.")
+                    ArticleTermCard("I ask You of Your great bounty", arabic: "وَأَسْأَلُكَ مِنْ فَضْلِكَ الْعَظِيمِ", meaning: "Whatever He then gives is a gift from His favour, not something you earned or were owed.")
+                    ArticleTermCard("You are able and I am not, You know and I do not", arabic: "فَإِنَّكَ تَقْدِرُ وَلاَ أَقْدِرُ وَتَعْلَمُ وَلاَ أَعْلَمُ", meaning: "The reason for the asking, said plainly: all ability and all knowledge are His, and He is the Knower of the unseen (**‘allam al-ghuyub**).")
+                    ArticleTermCard("If You know this matter is good for me", arabic: "إِنْ كُنْتَ تَعْلَمُ أَنَّ هَذَا الأَمْرَ خَيْرٌ لِي", meaning: "Here you name the matter. Good is measured in three things, in this order: **my religion**, **my livelihood** (ma‘ashi) and **the end of my affair** (‘aqibati amri), the outcome in this world and the next.")
+                    ArticleTermCard("Or he said: the near and the far of my affair", arabic: "(أَوْ قَالَ: عَاجِلِ أَمْرِي وَآجِلِهِ)", meaning: "The narrator's note, in parentheses on the page: the Prophet's other wording for the third thing, **‘ajili amri wa ajilihi**, this life and the next. Say either wording where it falls, or both one after the other. The words “or he said” are the narrator's and are not recited.")
+                    ArticleTermCard("Decree it for me, ease it for me, then bless me in it", arabic: "فَاقْدُرْهُ لِي وَيَسِّرْهُ لِي ثُمَّ بَارِكْ لِي فِيهِ", meaning: "Three requests in order: that it comes to be, that it comes easily, and that once it has come it carries blessing. A thing can be given and still be without barakah, so the third is asked for on its own.")
+                    ArticleTermCard("Turn it away from me and turn me away from it", arabic: "فَاصْرِفْهُ عَنِّي وَاصْرِفْنِي عَنْهُ", meaning: "If the matter is bad for you, both directions are asked for: that it leaves you, and that your heart leaves it, so you are not left longing for what was kept away.")
+                    ArticleTermCard("Decree the good for me wherever it is, then make me content with it", arabic: "وَاقْدُرْ لِي الْخَيْرَ حَيْثُ كَانَ ثُمَّ أَرْضِنِي بِهِ", meaning: "The closing: good from whatever direction Allah knows it to be, and a heart at peace with His choice. Contentment (**rida**) is the fruit of Istikharah.")
                 }
 
                 Section(header: ArticleHeader("WHEN TO PRAY IT")) {
-                    Text(verbatim: "For any permissible matter whose outcome you cannot see: a marriage, a job, a journey, a purchase, a move. It is not prayed over obligations or prohibitions, for those are already decided, nor over trivial daily choices.")
-                        .font(.body)
-                    Text(articleMarkdown: "Consult trustworthy people first or alongside it: the Companions took counsel (**istisharah**) and sought Allah's choice (**istikharah**) together.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "For any permissible matter whose outcome you cannot see: a marriage, a job, a journey, a purchase, a move. It is not prayed over obligations or prohibitions, for those are already decided, nor over trivial daily choices.")
+                    ArticleParagraph(articleMarkdown: "Consult trustworthy people first or alongside it: the Companions took counsel (**istisharah**) and sought Allah's choice (**istikharah**) together.")
                 }
 
                 Section(header: ArticleHeader("STEP BY STEP")) {
                     ArticleStep("1. **Make wudhu** and pray two rak'ah of voluntary prayer with the intention of Istikharah, at any time prayer is permitted. Recite what you wish after al-Fatihah.")
-                    ArticleStep("2. **After the taslim**, raise your hands and say the supplication above, in Arabic if you can, otherwise in your own language. Praise Allah and send prayers upon the Prophet before it.")
-                    ArticleStep("3. **Name the matter** where the hadith says “this matter”: “if You know that marrying so-and-so...” or “this position at...”")
+                    ArticleStep("2. **After the taslim**, praise Allah and send prayers upon the Prophet (peace and blessings be upon him), then raise your hands and say the dua above: in Arabic if you can, otherwise with its meaning in your own language.")
+                    ArticleStep("3. **Name the matter** where the dua says “this matter”, in whatever words describe it: “if You know that marrying so-and-so...”, “this position at...”, the journey, the purchase.")
                     ArticleStep("4. **Then act.** Pursue the matter. If Allah eases it, that is His choice; if He turns it away, that is His choice too. Do not sit waiting for a sign.")
                 }
 
-                Section(header: ArticleHeader("THE ARABIC")) {
-                    Text.islamArabic("اللَّهُمَّ إِنِّي أَستَخِيرُكَ بِعِلمِكَ وَأَستَقدِرُكَ بِقُدرَتِكَ، وَأَسأَلُكَ مِن فَضلِكَ العَظِيمِ، فَإِنَّكَ تَقدِرُ وَلاَ أَقدِرُ، وَتَعلَمُ وَلاَ أَعلَمُ، وَأَنتَ عَلاَّمُ الغُيُوبِ. اللَّهُمَّ إِن كُنتَ تَعلَمُ أَنَّ هَذَا الأَمرَ خَيرٌ لِي فِي دِينِي وَمَعَاشِي وَعَاقِبَةِ أَمرِي فَاقدُرهُ لِي وَيَسِّرهُ لِي ثُمَّ بَارِك لِي فِيهِ، وَإِن كُنتَ تَعلَمُ أَنَّ هَذَا الأَمرَ شَرٌّ لِي فِي دِينِي وَمَعَاشِي وَعَاقِبَةِ أَمرِي فَاصرِفهُ عَنِّي وَاصرِفنِي عَنهُ، وَاقدُر لِي الخَيرَ حَيثُ كَانَ ثُمَّ أَرضِنِي بِهِ", highlightAllah: appearance.highlightAllahIslam)
-                        .font(appearance.islamArabicFont(base: 22, relativeTo: .title2))
-                        .arabicFontDesign(custom: appearance.islamUsesCustomArabicFace)
-                        .lineSpacing(6)
-                        .multilineTextAlignment(.trailing)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .foregroundColor(appearance.accent)
-                    Text(verbatim: "Allahumma inni astakhiruka bi-‘ilmika, wa astaqdiruka bi-qudratika, wa as'aluka min fadlika al-‘adhim, fa-innaka taqdiru wa la aqdiru, wa ta‘lamu wa la a‘lamu, wa anta ‘allamu al-ghuyub. Allahumma in kunta ta‘lamu anna hadha al-amra khayrun li fi dini wa ma‘ashi wa ‘aqibati amri, faqdurhu li wa yassirhu li thumma barik li fih. Wa in kunta ta‘lamu anna hadha al-amra sharrun li fi dini wa ma‘ashi wa ‘aqibati amri, fasrifhu ‘anni wasrifni ‘anhu, waqdur li al-khayra haythu kana thumma ardini bih.")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                }
-
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**Must I see a dream?** No. Nothing in the hadith mentions a dream or a feeling. The answer is in how the matter unfolds after you set out on it.").font(.body)
-                    Text(articleMarkdown: "**Can I repeat it?** Yes, if you remain unsure; some of the Salaf repeated it several times. But do not make repetition a way of avoiding a decision.").font(.body)
-                    Text(articleMarkdown: "**Can I pray it after a sunnah prayer instead of separate rak'ah?** The hadith says two rak'ah other than the obligatory ones; the scholars allow making the intention of Istikharah in a rawatib or Duha prayer. Two rak'ah prayed for it is the clearest way.").font(.body)
-                    Text(articleMarkdown: "**Can someone pray it on my behalf?** The hadith addresses the one concerned with the matter. Ask others for their counsel and their dua, and pray Istikharah yourself.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**Must I see a dream?** No. Nothing in the hadith mentions a dream or a feeling. The answer is in how the matter unfolds after you set out on it.")
+                    ArticleParagraph(articleMarkdown: "**Can I repeat it?** Yes, if the matter is still unclear, the scholars allow repeating it (the report that names seven times is weak). But do not make repetition a way of avoiding a decision.")
+                    ArticleParagraph(articleMarkdown: "**Can I pray it after a sunnah prayer instead of separate rak'ah?** The hadith says two rak'ah other than the obligatory ones; the scholars allow making the intention of Istikharah in a rawatib or Duha prayer. Two rak'ah prayed for it is the clearest way.")
+                    ArticleParagraph(articleMarkdown: "**Inside the prayer or after it?** The hadith says to pray two rak'ah and then say it, so after the taslim is its apparent meaning and the clearest way. The scholars also allowed saying it before the taslim, after the final tashahhud.")
+                    ArticleParagraph(articleMarkdown: "**Must I say it in Arabic?** Say the Prophet's words if you can; they are the Sunnah. Someone who cannot may say their meaning in their own language, and Allah hears every tongue.")
+                    ArticleParagraph(articleMarkdown: "**Can I say the dua without the two rak'ah?** The Sunnah ties the dua to the prayer. Someone who cannot pray at the time, such as a woman during her period, may say the dua on its own in the view of some scholars.")
+                    ArticleParagraph(articleMarkdown: "**Can someone pray it on my behalf?** The hadith addresses the one concerned with the matter. Ask others for their counsel and their dua, and pray Istikharah yourself.")
+                    ArticleParagraph(articleMarkdown: "**Should I memorise the dua?** It helps, and the Companions learned it as they learned the Quran. Until then read it from the page: the row above can be heard aloud and copied.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
-                    ArticleClosing("Two rak'ah, the Prophet's supplication with your matter named, then action. Whatever Allah then opens or closes is the answer, and He decrees the good wherever it is.")
+                    ArticleClosing("Two rak'ah, the Prophet's supplication with your matter named, then action. Ask by His knowledge, ask by His power, and ask for the good wherever it is and a heart content with it. Whatever Allah then opens or closes is the answer.")
                 }
 
                 ArticleSourcesSection(article: "IstikharahView")
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "IstikharahView")
+        .englishArticle().selectableArticleList(article: "IstikharahView")
         .navigationTitle("How to Pray Istikharah")
+    }
+}
+
+// MARK: - Jumuah: the khutbah
+
+/// The khatib's half of Jumuah (Abu, 2026-10-27: "how to give khutbah and jummuah and adhan for
+/// jummuah"): what makes the khutbah valid, how the Prophet gave it, its opening, and what to avoid.
+/// The congregation's half is JumuahView, which links here; the two Friday calls are in AdhanOtherView.
+struct KhutbahView: View {
+    var body: some View {
+        List {
+            Group {
+                Section(header: ArticleHeader("SUMMARY")) {
+                    ArticleLead(articleMarkdown: "In short: the Jumuah **khutbah (خُطبَة)** is two addresses given standing on the minbar after the Adhan, with a short sitting between them, before the prayer. Open with the praise of Allah and the testimony, send blessings on the Prophet, counsel the people to fear Allah with the Quran and the authentic Sunnah, keep it short, then come down and lead two rak'ah aloud.")
+                }
+
+                Section(header: ArticleHeader("ITS PLACE")) {
+                    ArticleParagraph(verbatim: "The khutbah is part of Jumuah itself, a condition of it rather than an extra. The Prophet (peace and blessings be upon him) never prayed Jumuah without it, and the scholars explained “the remembrance of Allah” the believers are told to hasten to as the khutbah and the prayer. It was two khutbahs, with Quran and counsel in them:")
+                    ScriptureQuote(hadith: "muslim:862a", cite: "Sahih Muslim 862", arabic: 27...39, english: 0...18)
+                    ArticleParagraph(verbatim: "He gave it standing, and the Quran mentions it, of the people who left in the middle of it for a caravan's trade:")
+                    ScriptureQuote(quran: "62:11")
+                }
+
+                Section(header: ArticleHeader("WHAT MAKES IT VALID")) {
+                    ArticleStep("1. **In the prayer's time, and before the prayer.** A khutbah given before the time of Jumuah, or after the prayer, does not count. Unlike Eid, Jumuah's khutbah comes first.")
+                    ArticleStep("2. **Two khutbahs.** This is the Sunnah the Prophet kept without exception, and the Shafi'i and Hanbali schools make both a condition; the Hanafis held that one suffices. Give two and you are safe in every view.")
+                    ArticleStep("3. **Aloud, to the congregation that will pray.** It is given so that the people hear it, by someone who is with them. A recording or a broadcast does not count.")
+                    ArticleStep("4. **What it says.** The Hanbali school names four pillars for each khutbah: praising Allah, sending blessings on the Prophet, reciting at least one ayah, and counselling the people to fear Allah. Others, Ibn Taymiyyah among them, held that no fixed list binds it, only what truly makes it a khutbah: the praise of Allah, the testimony, and real counsel. Keep all of them and your khutbah is valid in every view.")
+                    ArticleStep("5. **Joined to the prayer.** The two khutbahs follow each other, and the prayer follows them, without a long break.")
+                }
+
+                Section(header: ArticleHeader("STEP BY STEP")) {
+                    ArticleStep("1. **Prepare.** Take a ghusl, wear clean clothes, and be in wudhu, since you will lead the prayer. Choose one subject the people need, and gather its ayat and authentic hadith beforehand.")
+                    ArticleStep("2. **Come out when it is time, climb the minbar and face the people.** Greet them with salam; Jabir reported that the Prophet did so when he climbed the minbar (Sunan Ibn Majah 1109; graded hasan by al-Albani).")
+                    ArticleStep("3. **Sit while the muadhin calls the Adhan**, the Adhan of the Prophet's time (Sahih al-Bukhari 912).")
+                    ArticleStep("4. **Stand and begin with the praise of Allah.** You may lean on a staff or a bow:")
+                    ScriptureQuote(hadith: "abudawud:1096", cite: "Sunan Abi Dawud 1096; graded hasan by al-Albani", arabic: 84...97, english: 103...123)
+                    ArticleParagraph(verbatim: "The opening the Prophet taught, Khutbat al-Hajah, is below. After it, say “Amma ba'd” and come to your subject.")
+                    ArticleStep("5. **Speak as a warner, with feeling.** This is how Jabir described him on the minbar:")
+                    ScriptureQuote(hadith: "muslim:867a", cite: "Sahih Muslim 867", arabic: 22...45, english: 0...49)
+                    ArticleStep("6. **Recite Quran in it.** A woman of the Ansar learned a whole surah from his khutbahs:")
+                    ScriptureQuote(hadith: "muslim:873a", cite: "Sahih Muslim 873", arabic: 25...41, english: 27...62)
+                    ArticleStep("7. **Sit briefly, in silence**, then stand for the second khutbah:")
+                    ScriptureQuote(hadith: "muslim:862b", cite: "Sahih Muslim 862", arabic: 14...37, english: 0...48)
+                    ArticleStep("8. **In the second khutbah**, praise Allah again, send blessings on the Prophet, add a brief reminder, and supplicate for the Muslims. Point with your forefinger as you supplicate; do not raise both hands:")
+                    ScriptureQuote(hadith: "muslim:873c", cite: "Sahih Muslim 874", arabic: 18...49, english: 0...23)
+                    ArticleStep("9. **Come down.** The Iqamah is given at once, and you lead two rak'ah aloud: al-A'la and al-Ghashiyah, or al-Jumu'ah and al-Munafiqun.")
+                }
+
+                Section(header: ArticleHeader("THE OPENING: KHUTBAT AL-HAJAH")) {
+                    ArticleParagraph(verbatim: "The Prophet opened his addresses with this praise. When Dimad, who treated the possessed with incantations, came offering to “cure” him, these words alone brought him to Islam:")
+                    ScriptureQuote(hadith: "muslim:868", cite: "Sahih Muslim 868", arabic: 98...129, english: 101...169)
+                    ArticleParagraph(verbatim: "Its fuller form, which Ibn Mas'ud reported (Sunan Abi Dawud 2118; graded sahih by al-Albani), adds that we seek His forgiveness and take refuge in Him from the evil within ourselves, and then recites three ayat:")
+                    ScriptureQuote(quran: "3:102")
+                    ScriptureQuote(quran: "4:1")
+                    ScriptureQuote(quran: "33:70-71")
+                    ArticleParagraph(verbatim: "Then he would say “Amma ba'd” and go on:")
+                    ScriptureQuote(hadith: "muslim:867a", cite: "Sahih Muslim 867", arabic: 62...78, english: 78...114)
+                }
+
+                Section(header: ArticleHeader("SHORT KHUTBAH, LONG PRAYER")) {
+                    ArticleParagraph(verbatim: "Ammar ibn Yasir gave a short, eloquent khutbah. Asked why he had not gone on longer, he said:")
+                    ScriptureQuote(hadith: "muslim:869", cite: "Sahih Muslim 869", arabic: 51...67, english: 53...88)
+                    ScriptureQuote(hadith: "muslim:866a", cite: "Sahih Muslim 866", arabic: 20...33, english: 0...19)
+                    ArticleParagraph(verbatim: "Short is measured against the prayer. A khutbah that runs past what the people can hold, followed by a prayer rushed to make up the time, turns the Sunnah around.")
+                }
+
+                Section(header: ArticleHeader("WHAT TO SAY")) {
+                    ArticleBullet("• **One subject, built on revelation.** Tawhid and the danger of shirk, the prayer, the rights of parents, spouses and neighbours, honesty in trade, the Hereafter, and the rulings of a season that is near: Ramadan, Hajj, the sacred months.")
+                    ArticleBullet("• **Only what is authentic.** Quote the Quran and the authentic Sunnah, and say where a hadith comes from. A weak or invented narration said from the minbar travels further than any correction.")
+                    ArticleBullet("• **What the people in front of you need.** His khutbahs taught, warned and gave glad tidings; leave them with something to act on this week.")
+                    ArticleBullet("• **A language they understand.** See the first question below.")
+                }
+
+                Section(header: ArticleHeader("WHAT TO AVOID")) {
+                    ArticleBullet("• **Length**, until the people tire and the prayer is hurried.")
+                    ArticleBullet("• **Raising both hands in the khutbah's dua**, and the congregation raising theirs with you. The Sunnah is the forefinger. The one exception is asking for rain, when he raised both hands on the minbar (Sahih al-Bukhari 1029).")
+                    ArticleBullet("• **Stories with no source**, dreams, and narrations you have not checked.")
+                    ArticleBullet("• **A fixed second khutbah** recited from memory every week, with no counsel in it.")
+                    ArticleBullet("• **Turning the minbar into a platform** for insults, rumours, or matters you have no knowledge of. It is a place of reminder.")
+                }
+
+                Section(header: ArticleHeader("COMMON QUESTIONS")) {
+                    ArticleParagraph(articleMarkdown: "**May the khutbah be in English, or the people's own language?** The Prophet and the Companions gave it in Arabic, and some scholars require Arabic. Ibn Baz and Ibn al-Uthaymin allowed it in the people's language where they do not understand Arabic, since its purpose is to teach and remind. Say the opening praise, the testimony and the ayat in Arabic, then explain in their language; giving it in Arabic and then translating it avoids the difference altogether.")
+                    ArticleParagraph(articleMarkdown: "**May someone else lead the prayer?** The Sunnah is that the khatib leads it. Another may lead when there is a need, such as the khatib's wudhu breaking.")
+                    ArticleParagraph(articleMarkdown: "**May I read from paper or a screen?** Yes. What matters is that it is heard and understood, not that it is memorised.")
+                    ArticleParagraph(articleMarkdown: "**May I speak to someone during it?** Yes. The Prophet stopped to tell a man who sat down without praying to stand and pray two rak'ah (Sahih Muslim 875), and the one addressed may answer. It is the congregation who may not talk among themselves.")
+                    ArticleParagraph(articleMarkdown: "**Must the khatib be in wudhu?** It is not a condition of the khutbah in the stronger view, but he leads the prayer straight after it, so he needs it anyway.")
+                    ArticleParagraph(articleMarkdown: "**Must it end with “Inna Allaha ya'muru bil-'adl” (16:90)?** No. It is an ayah, so reciting it is good, but making it the fixed ending is a later custom, not something the Prophet did.")
+                }
+
+                Section(header: ArticleHeader("IN SUMMARY")) {
+                    ArticleClosing("Climb the minbar, greet the people and sit for the Adhan. Stand, praise Allah, bear witness, send blessings on the Prophet, and counsel with the Quran and the authentic Sunnah. Sit briefly, give a shorter second khutbah with dua for the Muslims, then come down and lead two rak'ah. Short words, a long prayer.")
+                }
+
+                ArticleSourcesSection(article: "KhutbahView")
+            }
+            .themedListRowBackground()
+        }
+        .englishArticle().selectableArticleList(article: "KhutbahView")
+        .navigationTitle("How to Give the Khutbah")
     }
 }
 
@@ -986,17 +1064,14 @@ struct TravelPrayerView: View {
 
                 Section(header: ArticleHeader("THE PERMISSION")) {
                     ScriptureQuote(quran: "4:101")
-                    Text(verbatim: "Umar (may Allah be pleased with him) was asked why the shortening remained when the fear had passed. He said he had wondered the same and asked the Prophet, who replied:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Umar (may Allah be pleased with him) was asked why the shortening remained when the fear had passed. He said he had wondered the same and asked the Prophet, who replied:")
                     ScriptureQuote(hadith: "muslim:686a", cite: "Sahih Muslim 686", arabic: 79...85, english: 63...78)
                     ScriptureQuote(hadith: "bukhari:1102", cite: "Sahih al-Bukhari 1102", arabic: 19...41, english: 0...25)
                 }
 
                 Section(header: ArticleHeader("WHO IS A TRAVELER")) {
-                    Text(verbatim: "Whoever leaves his town on a journey that is called travel in ordinary speech. Most scholars set a distance of about 80 km (some 48 miles), by the hadith of the Companions; others say any journey with provisions and a night away. Shortening begins once you have left the buildings of your town and ends when you return to them.")
-                        .font(.body)
-                    Text(verbatim: "On arrival, if you intend to stay four days or fewer you remain a traveler. If you intend longer, most scholars say you pray in full, while others allow shortening as long as you have not settled, since the Prophet shortened during his nineteen days at Makkah:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Whoever leaves his town on a journey that is called travel in ordinary speech. Most scholars set a distance of about 80 km (some 48 miles), by the hadith of the Companions; others say any journey with provisions and a night away. Shortening begins once you have left the buildings of your town and ends when you return to them.")
+                    ArticleParagraph(verbatim: "On arrival, if you intend to stay four days or fewer you remain a traveler. If you intend longer, most scholars say you pray in full, while others allow shortening as long as you have not settled, since the Prophet shortened through a stay of nineteen days (Sahih al-Bukhari 1080). Anas said of the Farewell Hajj:")
                     ScriptureQuote(hadith: "bukhari:1081", cite: "Sahih al-Bukhari 1081", arabic: 17...43, english: 4...44)
                 }
 
@@ -1004,29 +1079,26 @@ struct TravelPrayerView: View {
                     ArticleBullet("• **Dhuhr, Asr and Isha**: two rak'ah each.")
                     ArticleBullet("• **Fajr**: two, as always. **Maghrib**: three, as always.")
                     ArticleBullet(verbatim: "• The rawatib are dropped on a journey except the two before Fajr and Witr, which the Prophet (peace and blessings be upon him) never left. Other voluntary prayers remain permitted.")
-                    ArticleBullet(verbatim: "• Praying behind a resident imam, the traveler completes four with him.")
+                    ArticleBullet(verbatim: "• Praying behind a resident imam, the traveler completes four with him: Ibn Abbas called it the Sunnah of Abu al-Qasim, the Prophet (Musnad Ahmad 1862; graded sahih by al-Albani). Shortening begins once you have left your town:")
                     ScriptureQuote(hadith: "bukhari:1089", cite: "Sahih al-Bukhari 1089", arabic: 21...33, english: 0...16)
                 }
 
                 Section(header: ArticleHeader("COMBINING (JAM')")) {
-                    Text(verbatim: "Combining is a concession for hardship while actually on the move, not a fixed rule of travel. Dhuhr may be brought to Asr's time or Asr brought forward to Dhuhr's; Maghrib and Isha likewise. Each prayer is prayed complete in itself, one after the other, with one adhan and two iqamahs.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Combining is a concession for hardship while actually on the move, not a fixed rule of travel. Dhuhr may be brought to Asr's time or Asr brought forward to Dhuhr's; Maghrib and Isha likewise. Each prayer is prayed complete in itself, one after the other, with one adhan and two iqamahs.")
                     ScriptureQuote(hadith: "bukhari:1111", cite: "Sahih al-Bukhari 1111", arabic: 23...48, english: 0...54)
                     ScriptureQuote(hadith: "bukhari:1107", cite: "Sahih al-Bukhari 1107", arabic: 23...43, english: 0...24)
-                    Text(verbatim: "Combining is also allowed for a resident in hard rain, illness, or a genuine hardship, by the report of Ibn Abbas that the Prophet combined in Madinah without fear or travel so that his ummah not be put to difficulty (Sahih Muslim 705).")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Combining is also allowed for a resident in hard rain, illness, or a genuine hardship, by the report of Ibn Abbas that the Prophet combined in Madinah without fear or travel so that his ummah not be put to difficulty (Sahih Muslim 705).")
                 }
 
                 Section(header: ArticleHeader("PRAYING IN A VEHICLE")) {
-                    Text(verbatim: "Obligatory prayers are prayed standing on the ground facing the qiblah wherever stopping is possible. When it is not (an aircraft or train, with the time about to pass), pray as you are able: standing if you can, otherwise seated, facing the qiblah as best you can at the opening takbir. Voluntary prayers may be offered seated facing the direction of travel, as the Prophet prayed on his mount:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Obligatory prayers are prayed standing on the ground facing the qiblah wherever stopping is possible. When it is not (an aircraft or train, with the time about to pass), pray as you are able: standing if you can, otherwise seated, facing the qiblah throughout as far as you can, turning with the vehicle if it turns. Voluntary prayers may be offered seated facing the direction of travel, as the Prophet prayed on his mount:")
                     ScriptureQuote(hadith: "bukhari:1094", cite: "Sahih al-Bukhari 1094", arabic: 19...32, english: 0...18)
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**Is shortening obligatory or optional?** The Prophet never prayed four on a journey and neither did his Companions, so shortening is the Sunnah and the safer course. Most scholars hold completing is valid but disliked; some hold shortening is required.").font(.body)
-                    Text(articleMarkdown: "**I am traveling but staying in one place for a week. Do I combine?** It is better not to: in a hotel or a relative's home pray each prayer in its time, shortened if you are still a traveler. Combining while stopped is permitted when there is a need, since the Prophet (peace and blessings be upon him) combined while encamped at Tabuk (Sahih Muslim 706).").font(.body)
-                    Text(articleMarkdown: "**What about fasting?** A traveler may break the fast and make it up; if fasting is easy, fasting is better. Allah says: whoever is ill or on a journey, then an equal number of other days (Quran 2:185).").font(.body)
+                    ArticleParagraph(articleMarkdown: "**Is shortening obligatory or optional?** The Prophet never prayed four on a journey and neither did his Companions, so shortening is the Sunnah and the safer course. Most scholars hold completing is valid but disliked; some hold shortening is required.")
+                    ArticleParagraph(articleMarkdown: "**I am traveling but staying in one place for a week. Do I combine?** It is better not to: in a hotel or a relative's home pray each prayer in its time, shortened if you are still a traveler. Combining while stopped is permitted when there is a need, since the Prophet (peace and blessings be upon him) combined while encamped at Tabuk (Sahih Muslim 706).")
+                    ArticleParagraph(articleMarkdown: "**What about fasting?** A traveler may break the fast and make it up; if fasting is easy, fasting is better. Allah says: whoever is ill or on a journey, then an equal number of other days (Quran 2:185).")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -1037,7 +1109,7 @@ struct TravelPrayerView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "TravelPrayerView")
+        .englishArticle().selectableArticleList(article: "TravelPrayerView")
         .navigationTitle("How to Pray While Traveling")
     }
 }
@@ -1053,8 +1125,7 @@ struct SickPrayerView: View {
                 Section(header: ArticleHeader("THE PRINCIPLE")) {
                     ScriptureQuote(quran: "2:286")
                     ScriptureQuote(quran: "64:16")
-                    Text(verbatim: "Imran ibn Husayn (may Allah be pleased with him), who suffered from piles, asked the Prophet (peace and blessings be upon him) about prayer. He said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Imran ibn Husayn (may Allah be pleased with him), who suffered from piles, asked the Prophet (peace and blessings be upon him) about prayer. He said:")
                     ScriptureQuote(hadith: "bukhari:1117", cite: "Sahih al-Bukhari 1117", arabic: 40...50, english: 13...35)
                 }
 
@@ -1063,16 +1134,14 @@ struct SickPrayerView: View {
                     ArticleStep("2. **If standing is impossible or harmful**, sit, cross-legged or as is comfortable, and bow by bending forward from the sitting position. Prostrate on the ground if you can.")
                     ArticleStep("3. **If sitting on the ground is impossible**, sit on a chair, and prostrate on the ground if possible; if not, bow and prostrate by bending forward, the prostration lower than the bow.")
                     ArticleStep("4. **If sitting is impossible**, lie on your right side facing the qiblah, and perform the bowing and prostration by tilting the head.")
-                    ArticleStep("5. **If even that is impossible**, lie on your back with the feet toward the qiblah, and make the movements with the head; if even that is impossible, the heart intends each pillar (there is no authentic basis for gesturing with the eyes).")
+                    ArticleStep("5. **If even that is impossible**, lie on your back with the feet toward the qiblah, and make the movements with the head; if even that is impossible, the heart intends each pillar (the Hanbali school has him gesture with the eyes first; other scholars hold that no authentic text mentions the eyes and the heart alone intends).")
                     ArticleStep(verbatim: "6. Recite as usual; if the tongue cannot, recite in the heart. The prayer is never dropped while the mind is present.")
                 }
 
                 Section(header: ArticleHeader("THE REWARD OF THE SEATED")) {
-                    Text(verbatim: "Sitting when standing is possible halves the reward of a voluntary prayer; sitting out of inability loses nothing:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Sitting when standing is possible halves the reward of a voluntary prayer; sitting out of inability loses nothing:")
                     ScriptureQuote(hadith: "bukhari:1115", cite: "Sahih al-Bukhari 1115", arabic: 72...90, english: 18...55)
-                    Text(verbatim: "The scholars explain that this halving is for the able who choose to sit in voluntary prayer. The one who is unable and does what he can has his full reward, by the hadith that the servant is written the reward of what he used to do in health when illness or travel prevents him (Sahih al-Bukhari 2996).")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The scholars explain that this halving is for the able who choose to sit in voluntary prayer. The one who is unable and does what he can has his full reward, by the hadith that the servant is written the reward of what he used to do in health when illness or travel prevents him (Sahih al-Bukhari 2996).")
                 }
 
                 Section(header: ArticleHeader("PURIFICATION WHEN ILL")) {
@@ -1084,14 +1153,13 @@ struct SickPrayerView: View {
                 }
 
                 Section(header: ArticleHeader("COMBINING WHEN ILL")) {
-                    Text(verbatim: "A sick person for whom praying each prayer in its time is a real hardship may combine Dhuhr with Asr and Maghrib with Isha, at either time, as the traveler does. The scholars draw this from the Prophet's combining in Madinah without fear or travel (Sahih Muslim 705) and from his instruction to the woman with prolonged bleeding.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "A sick person for whom praying each prayer in its time is a real hardship may combine Dhuhr with Asr and Maghrib with Isha, at either time, as the traveler does. The scholars draw this from the Prophet's combining in Madinah without fear or travel (Sahih Muslim 705) and from his instruction to the woman with prolonged bleeding.")
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**I was unconscious for a day. Do I make up the prayers?** If unconsciousness lasted a short period, make them up; if it was prolonged (three days or more, by the view of many scholars), there is no make-up, as the pen is lifted from one without awareness. A person asleep makes up what he missed.").font(.body)
-                    Text(articleMarkdown: "**Can I pray on a hospital bed facing away from the qiblah?** Face it if you can, even by asking to be turned; if you cannot, pray as you are. The obligation is according to ability.").font(.body)
-                    Text(articleMarkdown: "**Chair or floor?** The floor, so that the prostration is on the ground, unless standing up from the floor or prostrating harms you. Use the chair for what you cannot do and the floor for what you can.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**I was unconscious for a day. Do I make up the prayers?** If unconsciousness lasted a short period, make them up; if it lasted more than three days, there is no make-up (the view Ibn Baz took from the report of Ammar; the schools differ here), as the pen is lifted from one without awareness. A person asleep makes up what he missed.")
+                    ArticleParagraph(articleMarkdown: "**Can I pray on a hospital bed facing away from the qiblah?** Face it if you can, even by asking to be turned; if you cannot, pray as you are. The obligation is according to ability.")
+                    ArticleParagraph(articleMarkdown: "**Chair or floor?** The floor, so that the prostration is on the ground, unless standing up from the floor or prostrating harms you. Use the chair for what you cannot do and the floor for what you can.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -1102,7 +1170,7 @@ struct SickPrayerView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "SickPrayerView")
+        .englishArticle().selectableArticleList(article: "SickPrayerView")
         .navigationTitle("How to Pray When Sick")
     }
 }
@@ -1117,8 +1185,7 @@ struct MissedPrayerView: View {
 
                 Section(header: ArticleHeader("SLEEP AND FORGETTING")) {
                     ScriptureQuote(hadith: "bukhari:597", cite: "Sahih al-Bukhari 597", arabic: 21...31, english: 4...26)
-                    Text(verbatim: "And he recited: “And establish prayer for My remembrance” (Quran 20:14). The Prophet (peace and blessings be upon him) himself once slept through Fajr on a journey and prayed it when the Companions woke, after the sun had risen (Sahih al-Bukhari 595). He said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "And he recited: “And establish prayer for My remembrance” (Quran 20:14). The Prophet (peace and blessings be upon him) himself once slept through Fajr on a journey and prayed it when the Companions woke, after the sun had risen (Sahih al-Bukhari 595). He said:")
                     ScriptureQuote(hadith: "muslim:681", cite: "Sahih Muslim 681", arabic: 362...392, english: 495...519)
                 }
 
@@ -1132,11 +1199,9 @@ struct MissedPrayerView: View {
                 }
 
                 Section(header: ArticleHeader("PRAYERS LEFT ON PURPOSE")) {
-                    Text(verbatim: "Leaving the prayer knowingly is the gravest of sins after shirk, and the Prophet (peace and blessings be upon him) placed it at the boundary of faith:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Leaving the prayer knowingly is among the gravest of sins. Ibn Baz and Ibn Uthaymeen held that abandoning it altogether is disbelief; al-Albani held it is not unless its obligation is denied. The Prophet (peace and blessings be upon him) placed it at the boundary of faith:")
                     ScriptureQuote(hadith: "muslim:82a", cite: "Sahih Muslim 82", arabic: 34...41, english: 21...33)
-                    Text(verbatim: "The scholars hold two views on making up what was left deliberately. The majority say: make them up, as many as you can estimate, alongside repentance, and the debt to Allah is paid with the prayers themselves. Others, among them Ibn Taymiyyah and Ibn Hazm, say a prayer deliberately left has no valid make-up, for it was tied to its time, and the door is sincere repentance and abundant voluntary prayer. On both views, repent immediately, guard every remaining prayer, and fill your days with voluntary prayer, for the voluntary completes what the obligatory lacked.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The scholars hold two views on making up what was left deliberately. The majority say: make them up, as many as you can estimate, alongside repentance, and the debt to Allah is paid with the prayers themselves. Others, among them Ibn Taymiyyah and Ibn Hazm, say a prayer deliberately left has no valid make-up, for it was tied to its time, and the door is sincere repentance and abundant voluntary prayer. On both views, repent immediately, guard every remaining prayer, and fill your days with voluntary prayer, for the voluntary completes what the obligatory lacked.")
                 }
 
                 Section(header: ArticleHeader("PREVENTION")) {
@@ -1147,9 +1212,9 @@ struct MissedPrayerView: View {
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**Do I make up the Sunnah prayers too?** The rawatib may be made up, especially the two of Fajr, which the Prophet prayed after the obligatory Fajr when the Companions slept through. Witr missed by sleep is prayed when you wake.").font(.body)
-                    Text(articleMarkdown: "**A woman missed prayers during menses.** They are not made up; the fast of Ramadan is. Prayers missed before the bleeding began, whose time had entered, are made up.").font(.body)
-                    Text(articleMarkdown: "**I do not know how many I missed.** Estimate generously and pray until you are confident you have covered them, one day's worth at a time, without a hardship that makes you abandon it.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**Do I make up the Sunnah prayers too?** The rawatib may be made up, especially the two of Fajr: when the Prophet and the Companions slept through Fajr on a journey, he prayed its two sunnah rak'ah before the obligatory prayer (Sahih Muslim 681). Witr missed by sleep is prayed when you wake.")
+                    ArticleParagraph(articleMarkdown: "**A woman missed prayers during menses.** They are not made up; the fast of Ramadan is. Prayers missed before the bleeding began, whose time had entered, are made up.")
+                    ArticleParagraph(articleMarkdown: "**I do not know how many I missed.** Estimate generously and pray until you are confident you have covered them, one day's worth at a time, without a hardship that makes you abandon it.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -1160,7 +1225,7 @@ struct MissedPrayerView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "MissedPrayerView")
+        .englishArticle().selectableArticleList(article: "MissedPrayerView")
         .navigationTitle("How to Make Up Missed Prayers")
     }
 }
@@ -1170,26 +1235,24 @@ struct SujudSahwView: View {
         List {
             Group {
                 Section(header: ArticleHeader("SUMMARY")) {
-                    ArticleLead(articleMarkdown: "In short: **Sujud as-Sahw (سُجُود السَّهو)** is two prostrations that repair a slip in the prayer: something added, something omitted, or a doubt about the count. For an omission or doubt they are made before the taslim; for an addition or an early taslim, after it. The Prophet (peace and blessings be upon him) forgot in prayer and taught his ummah exactly what to do.")
+                    ArticleLead(articleMarkdown: "In short: **Sujud as-Sahw (سُجُود السَّهو)** is two prostrations that repair a slip in the prayer: something added, something omitted, or a doubt about the count. For a missed required act, or a doubt where neither side seems more likely, they are made before the taslim; for an addition, an early taslim, or a doubt settled on the more likely side, after it. The Prophet (peace and blessings be upon him) forgot in prayer and taught his ummah exactly what to do.")
                 }
 
                 Section(header: ArticleHeader("THE PROPHET FORGOT TOO")) {
                     ScriptureQuote(hadith: "bukhari:401", cite: "Sahih al-Bukhari 401", arabic: 64...96, english: 102...169)
-                    Text(verbatim: "He prayed five rak'ah of Dhuhr once and, when told, turned his legs and prostrated twice (Sahih al-Bukhari 404).")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "He prayed five rak'ah of Dhuhr once and, when told, turned his legs and prostrated twice (Sahih al-Bukhari 404).")
                 }
 
                 Section(header: ArticleHeader("THREE CASES")) {
-                    Text(articleMarkdown: "**1. Something added** (an extra bow, prostration, standing or rak'ah): complete the prayer, give the taslim, then prostrate twice and give the taslim again. If you realize during an extra rak'ah, sit at once.").font(.body)
-                    Text(articleMarkdown: "**2. Something omitted**: a pillar (ruku, sujud, al-Fatihah) must be gone back to if you have not reached its place in the next rak'ah; otherwise that rak'ah is void and the next stands in for it, with prostration after the taslim. A required act such as the first tashahhud is not returned to once you have stood upright; you continue and prostrate before the taslim:").font(.body)
+                    ArticleParagraph(articleMarkdown: "**1. Something added** (an extra bow, prostration, standing or rak'ah): complete the prayer, give the taslim, then prostrate twice and give the taslim again. If you realize during an extra rak'ah, sit at once.")
+                    ArticleParagraph(articleMarkdown: "**2. Something omitted**: a pillar (ruku, sujud, al-Fatihah) must be gone back to if you have not reached its place in the next rak'ah; otherwise that rak'ah is void and the next stands in for it, with prostration after the taslim. A required act such as the first tashahhud is not returned to once you have stood upright; you continue and prostrate before the taslim:")
                     ScriptureQuote(hadith: "bukhari:1224", cite: "Sahih al-Bukhari 1224", arabic: 28...60, english: 0...70)
-                    Text(articleMarkdown: "**3. A doubt about the count**: if one side seems more likely, act on it and prostrate after the taslim. If neither does, build on what you are certain of, the smaller number, and prostrate before the taslim:").font(.body)
+                    ArticleParagraph(articleMarkdown: "**3. A doubt about the count**: if one side seems more likely, act on it and prostrate after the taslim. If neither does, build on what you are certain of, the smaller number, and prostrate before the taslim:")
                     ScriptureQuote(hadith: "muslim:571a", cite: "Sahih Muslim 571", arabic: 37...75, english: 6...83)
                 }
 
                 Section(header: ArticleHeader("AN EARLY TASLIM")) {
-                    Text(verbatim: "Whoever gives the taslim before the prayer is complete, then realizes, completes what remains and prostrates after the taslim, as the Prophet did on the day of Dhul-Yadayn:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Whoever gives the taslim before the prayer is complete, then realizes, completes what remains and prostrates after the taslim, as the Prophet did on the day of Dhul-Yadayn:")
                     ScriptureQuote(hadith: "bukhari:482", cite: "Sahih al-Bukhari 482", arabic: 16...159, english: [3...14, 27...37, 183...256])
                 }
 
@@ -1197,13 +1260,13 @@ struct SujudSahwView: View {
                     ArticleStep(verbatim: "1. Say “Allahu Akbar” and prostrate as in the prayer, saying “Subhana Rabbi al-A'la.”")
                     ArticleStep(verbatim: "2. Sit up with “Allahu Akbar,” then prostrate a second time.")
                     ArticleStep(verbatim: "3. If they were before the taslim, sit and give the taslim. If after, give the taslim again; a second tashahhud is not required, though some scholars allow it.")
-                    Text(verbatim: "Behind an imam, follow him: you do not prostrate for your own slip while he leads, but you prostrate with him for his, and for a slip in what you pray alone after him.").font(.body)
+                    ArticleParagraph(verbatim: "Behind an imam, follow him: you do not prostrate for your own slip while he leads, but you prostrate with him for his, and for a slip in what you pray alone after him.")
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**I remembered a missed sujud as-sahw only after leaving.** If a short time has passed, prostrate where you are; if long, the prayer stands and there is nothing owed.").font(.body)
-                    Text(articleMarkdown: "**Does reciting the wrong surah or a slip of the tongue call for it?** No. It is for the actions of the prayer, not the choice of recitation, and mispronunciation is corrected when noticed.").font(.body)
-                    Text(articleMarkdown: "**What if I doubt constantly?** Persistent doubt from whispers is ignored; build on the most likely and continue. Sujud as-sahw is for real doubt, not for a habit of doubting.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**I remembered a missed sujud as-sahw only after leaving.** If a short time has passed, prostrate where you are; if long, the prayer stands and there is nothing owed.")
+                    ArticleParagraph(articleMarkdown: "**Does reciting the wrong surah or a slip of the tongue call for it?** No. It is for the actions of the prayer, not the choice of recitation, and mispronunciation is corrected when noticed.")
+                    ArticleParagraph(articleMarkdown: "**What if I doubt constantly?** Persistent doubt from whispers is ignored; build on the most likely and continue. Sujud as-sahw is for real doubt, not for a habit of doubting.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -1214,7 +1277,7 @@ struct SujudSahwView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "SujudSahwView")
+        .englishArticle().selectableArticleList(article: "SujudSahwView")
         .navigationTitle("How to Perform Sujud as-Sahw")
     }
 }
@@ -1231,42 +1294,34 @@ struct VoluntaryFastsView: View {
 
                 Section(header: ArticleHeader("MONDAYS AND THURSDAYS")) {
                     ScriptureQuote(hadith: "tirmidhi:747", cite: "Sunan al-Tirmidhi 747", arabic: 31...41, english: 5...23)
-                    Text(verbatim: "Of Monday in particular he said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Of Monday in particular he said:")
                     ScriptureQuote(hadith: "muslim:1162e", cite: "Sahih Muslim 1162", arabic: 41...45, english: 0...14)
                 }
 
                 Section(header: ArticleHeader("THREE DAYS A MONTH")) {
-                    Text(verbatim: "Three days every month equal a lifetime of fasting, since each good deed is tenfold. The Prophet (peace and blessings be upon him) named the white days, the 13th, 14th and 15th, whose nights are lit by the full moon:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Three days every month equal a lifetime of fasting, since each good deed is tenfold. The Prophet (peace and blessings be upon him) named the white days, the 13th, 14th and 15th, whose nights are lit by the full moon:")
                     ScriptureQuote(hadith: "nasai:2420", cite: "Sunan an-Nasa'i 2420; graded hasan by al-Albani", arabic: 30...46, english: 0...21)
                     ScriptureQuote(hadith: "tirmidhi:761", cite: "Sunan al-Tirmidhi 761; graded hasan sahih by al-Albani", arabic: 35...50, english: 5...23)
-                    Text(verbatim: "Aishah said he fasted three days of every month and did not mind which days they were (Sahih Muslim 1160).")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Aishah said he fasted three days of every month and did not mind which days they were (Sahih Muslim 1160).")
                 }
 
                 Section(header: ArticleHeader("THE SIX OF SHAWWAL")) {
                     ScriptureQuote(hadith: "muslim:1164a", cite: "Sahih Muslim 1164", arabic: 56...66, english: 0...23)
-                    Text(verbatim: "They may be fasted consecutively or spread through the month, after Eid al-Fitr. Those with days of Ramadan to make up should make them up first, so the “Ramadan” in the hadith is complete.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "They may be fasted consecutively or spread through the month, after Eid al-Fitr. Those with days of Ramadan to make up should make them up first, so the “Ramadan” in the hadith is complete.")
                 }
 
                 Section(header: ArticleHeader("ARAFAH AND ASHURA")) {
-                    Text(verbatim: "Asked about the fast of the day of Arafah (9 Dhul-Hijjah), the Prophet (peace and blessings be upon him) said it expiates the year before and the year after; and of Ashura (10 Muharram), that it expiates the year before (Sahih Muslim 1162). The pilgrim at Arafah does not fast; everyone else is urged to. The nine days before Eid al-Adha are the best days for good deeds:")
-                        .font(.body)
-                    ScriptureQuote(hadith: "bukhari:969", cite: "Sahih al-Bukhari 969", english: 4...67, arabicText: "مَا العَمَلُ فِي أَيَّامِ العَشرِ أَفضَلَ مِنَ العَمَلِ فِي هَذِهِ وَلاَ الجِهَادُ، إِلاَّ رَجُلٌ خَرَجَ يُخَاطِرُ بِنَفسِهِ وَمَالِهِ فَلَم يَرجِع بِشَىءٍ")
-                    Text(verbatim: "When the Prophet (peace and blessings be upon him) came to Madinah he found the Jews fasting Ashura in gratitude for the day Allah saved the Children of Israel from their enemy, the day Musa fasted. He said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Asked about the fast of the day of Arafah (9 Dhul-Hijjah), the Prophet (peace and blessings be upon him) said it expiates the year before and the year after; and of Ashura (10 Muharram), that it expiates the year before (Sahih Muslim 1162). The pilgrim at Arafah does not fast; everyone else is urged to. The first ten days of Dhul-Hijjah are the best days for good deeds:")
+                    ScriptureQuote(hadith: "bukhari:969", cite: "Sahih al-Bukhari 969", english: 4...67, arabicText: "مَا العَمَلُ فِي أَيَّامِ العَشرِ أَفضَلَ مِنَ العَمَلِ فِي هَذِهِ. قَالُوا: وَلاَ الجِهَادُ؟ قَالَ: وَلاَ الجِهَادُ، إِلاَّ رَجُلٌ خَرَجَ يُخَاطِرُ بِنَفسِهِ وَمَالِهِ فَلَم يَرجِع بِشَىءٍ")
+                    ArticleParagraph(verbatim: "When the Prophet (peace and blessings be upon him) came to Madinah he found the Jews fasting Ashura in gratitude for the day Allah saved the Children of Israel from their enemy, the day Musa fasted. He said:")
                     ScriptureQuote(hadith: "bukhari:2004", cite: "Sahih al-Bukhari 2004", arabic: 59...62, english: 48...55)
-                    Text(verbatim: "So he fasted it and commanded that it be fasted (Sahih al-Bukhari 2004), and toward the end of his life he intended to add the ninth to it:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "So he fasted it and commanded that it be fasted (Sahih al-Bukhari 2004), and toward the end of his life he intended to add the ninth to it:")
                     ScriptureQuote(hadith: "muslim:1134b", cite: "Sahih Muslim 1134", arabic: 47...52, english: 0...14)
                 }
 
                 Section(header: ArticleHeader("SHA'BAN AND MUHARRAM")) {
                     ScriptureQuote(hadith: "bukhari:1969", cite: "Sahih al-Bukhari 1969", arabic: 21...57, english: 30...61)
-                    Text(verbatim: "And the best month to fast after Ramadan is Muharram (Sahih Muslim 1163). The fast of Dawud, every other day, is the most beloved fast to Allah (Sahih al-Bukhari 1131).")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "And the best month to fast after Ramadan is Muharram (Sahih Muslim 1163). The fast of Dawud, every other day, is the most beloved fast to Allah (Sahih al-Bukhari 1131).")
                 }
 
                 Section(header: ArticleHeader("HOW TO OBSERVE THEM")) {
@@ -1279,11 +1334,9 @@ struct VoluntaryFastsView: View {
 
                 Section(header: ArticleHeader("DAYS NOT TO FAST")) {
                     ScriptureQuote(hadith: "bukhari:1985", cite: "Sahih al-Bukhari 1985", arabic: 31...40, english: 6...21)
-                    Text(verbatim: "Fasting is forbidden on the two Eids (Sahih al-Bukhari 1991) and on the three days of Tashriq after Eid al-Adha:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Fasting is forbidden on the two Eids (Sahih al-Bukhari 1991) and on the three days of Tashriq after Eid al-Adha:")
                     ScriptureQuote(hadith: "muslim:1141a", cite: "Sahih Muslim 1141", arabic: 24...28, english: 0...10)
-                    Text(verbatim: "Nor should one fast perpetually or wear the body down; the Prophet (peace and blessings be upon him) said to Abdullah ibn Amr that whoever fasts every day has not fasted, and guided him to the fast of Dawud (Sahih al-Bukhari 1979).")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Nor should one fast perpetually or wear the body down; the Prophet (peace and blessings be upon him) said to Abdullah ibn Amr that whoever fasts every day has not fasted, and guided him to the fast of Dawud (Sahih al-Bukhari 1979).")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -1294,7 +1347,7 @@ struct VoluntaryFastsView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "VoluntaryFastsView")
+        .englishArticle().selectableArticleList(article: "VoluntaryFastsView")
         .navigationTitle("How to Fast Voluntary Fasts")
     }
 }
@@ -1310,14 +1363,13 @@ struct ItikafView: View {
                 Section(header: ArticleHeader("ITS BASIS")) {
                     ScriptureQuote(quran: "2:187")
                     ScriptureQuote(hadith: "bukhari:2026", cite: "Sahih al-Bukhari 2026", arabic: 29...48, english: 0...31)
-                    Text(verbatim: "He said he sought the Night of Decree by it, and told the people:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "He said he sought the Night of Decree by it, and told the people:")
                     ScriptureQuote(hadith: "bukhari:2017", cite: "Sahih al-Bukhari 2017", arabic: 30...39, english: 4...20)
                 }
 
                 Section(header: ArticleHeader("WHERE AND WHEN")) {
                     ArticleBullet("• **Where**: a mosque in which the congregational prayers are held, so that i'tikaf does not make you miss them. The three sacred mosques are the most excellent for it.")
-                    ArticleBullet("• **When**: the Sunnah is the last ten nights of Ramadan. Enter the mosque before sunset on the 20th, the eve of the 21st night, and leave after sunset on the last day (or, as the Prophet did, go from the mosque to the Eid prayer). I'tikaf outside Ramadan and for a shorter time is also valid.")
+                    ArticleBullet("• **When**: the Sunnah is the last ten nights of Ramadan. Enter the mosque before sunset on the 20th, the eve of the 21st night, and leave after sunset on the last day (or, as some of the Salaf did and Malik preferred, stay until going out to the Eid prayer; al-Muwatta, Book of I'tikaf). I'tikaf outside Ramadan and for a shorter time is also valid.")
                     ScriptureQuote(hadith: "bukhari:2041", cite: "Sahih al-Bukhari 2041", arabic: 25...43, english: 0...28)
                 }
 
@@ -1331,15 +1383,14 @@ struct ItikafView: View {
                 }
 
                 Section(header: ArticleHeader("WHAT BREAKS IT")) {
-                    Text(verbatim: "Leaving the mosque without need, intimacy, and losing one's mind or faith. Menses and post-natal bleeding require leaving. Illness may compel leaving, after which one returns when able.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Leaving the mosque without need, intimacy, and losing one's mind or faith. Menses and post-natal bleeding require leaving. Illness may compel leaving, after which one returns when able.")
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**Can women do i'tikaf?** Yes, in the mosque, with a screened place and their guardian's leave; the Prophet's wives did so after him. A woman does not observe i'tikaf at home, for the Quran ties it to the mosques.").font(.body)
-                    Text(articleMarkdown: "**Can I do i'tikaf for one night or one day?** Yes. Whoever cannot manage ten days may observe what he can, even the odd nights, or a single night.").font(.body)
-                    Text(articleMarkdown: "**Can I use my phone?** What draws you to Allah, yes: the Quran, the adhkar, learning. What draws you back to the world defeats the purpose; put it away.").font(.body)
-                    Text(articleMarkdown: "**Is fasting a condition?** In Ramadan it is already fasting. Outside it, many scholars, including the Hanbalis and Ibn Baz, do not make fasting a condition (the Hanafis and Malikis require it), though observing it fasting is better.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**Can women do i'tikaf?** Yes, in the mosque, with a screened place and their guardian's leave; the Prophet's wives did so after him. A woman does not observe i'tikaf at home, for the Quran ties it to the mosques.")
+                    ArticleParagraph(articleMarkdown: "**Can I do i'tikaf for one night or one day?** Yes. Whoever cannot manage ten days may observe what he can, even the odd nights, or a single night.")
+                    ArticleParagraph(articleMarkdown: "**Can I use my phone?** What draws you to Allah, yes: the Quran, the adhkar, learning. What draws you back to the world defeats the purpose; put it away.")
+                    ArticleParagraph(articleMarkdown: "**Is fasting a condition?** In Ramadan it is already fasting. Outside it, many scholars, including the Hanbalis and Ibn Baz, do not make fasting a condition (the Hanafis and Malikis require it), though observing it fasting is better.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -1350,7 +1401,7 @@ struct ItikafView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "ItikafView")
+        .englishArticle().selectableArticleList(article: "ItikafView")
         .navigationTitle("How to Perform I'tikaf")
     }
 }
@@ -1360,7 +1411,7 @@ struct ZakatFitrView: View {
         List {
             Group {
                 Section(header: ArticleHeader("SUMMARY")) {
-                    ArticleLead(articleMarkdown: "In short: **Zakat al-Fitr (زَكَاة الفِطر)** is one sa' of staple food, about 2.5 to 3 kg, given for every Muslim in the household before the Eid al-Fitr prayer. It purifies the fasting person from idle talk and feeds the poor on the day of Eid.")
+                    ArticleLead(articleMarkdown: "In short: **Zakat al-Fitr (زَكَاة الفِطر)** is one sa' of staple food, about 2 to 3 kg depending on the food, given for every Muslim in the household before the Eid al-Fitr prayer. It purifies the fasting person from idle talk and feeds the poor on the day of Eid.")
                 }
 
                 Section(header: ArticleHeader("THE OBLIGATION")) {
@@ -1369,29 +1420,23 @@ struct ZakatFitrView: View {
                 }
 
                 Section(header: ArticleHeader("WHO GIVES AND FOR WHOM")) {
-                    Text(verbatim: "Every Muslim who has food beyond his need for the day and night of Eid gives it for himself and for those he supports: wife, children, and dependents. It is not conditioned on the nisab of the annual zakah. It is recommended, and in the view of many required, to give it for a child born before sunset on the last day of Ramadan, and a family may give for the unborn as Uthman did, though that is not obligatory.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Every Muslim who has food beyond his need for the day and night of Eid gives it for himself and for those he supports: wife, children, and dependents. It is not conditioned on the nisab of the annual zakah. It is due for a child born before sunset on the last day of Ramadan, since the hadith names the young and the old alike (Sahih al-Bukhari 1503). Giving for the unborn is recommended, as is reported from Uthman, but not obligatory.")
                 }
 
                 Section(header: ArticleHeader("WHAT AND HOW MUCH")) {
-                    Text(articleMarkdown: "One **sa' (صَاع)**, the Prophet's measure of about four double handfuls, of the staple food of the land: dates, barley, wheat, raisins, rice, or the like. Abu Sa'id (may Allah be pleased with him) said:")
-                        .font(.body)
+                    ArticleParagraph(articleMarkdown: "One **sa' (صَاع)**, the Prophet's measure of about four double handfuls, of the staple food of the land: dates, barley, wheat, raisins, rice, or the like. Abu Sa'id (may Allah be pleased with him) said:")
                     ScriptureQuote(hadith: "bukhari:1506", cite: "Sahih al-Bukhari 1506", arabic: 33...55, english: 0...32)
-                    Text(verbatim: "By weight, one sa' is about 2.5 kg of wheat and closer to 3 kg of rice; giving 3 kg is safe. The Sunnah is to give food itself. Some scholars allow its value in money when that benefits the poor more; the majority hold to food, as the Prophet legislated it.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "A sa' is a measure of volume, so its weight depends on the food: Ibn Uthaymeen weighed it at about 2.04 kg of good wheat, and Ibn Baz put it at about 3 kg; giving 3 kg is safe. The Sunnah is to give food itself. Some scholars allow its value in money when that benefits the poor more; the majority hold to food, as the Prophet legislated it.")
                 }
 
                 Section(header: ArticleHeader("WHEN")) {
-                    Text(verbatim: "Its time is from sunset on the last day of Ramadan until the Eid prayer; the best is the morning of Eid before the prayer. It may be given a day or two earlier, as the Companions did:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Its time is from sunset on the last day of Ramadan until the Eid prayer; the best is the morning of Eid before the prayer. It may be given a day or two earlier, as the Companions did (Sahih al-Bukhari 1511). The Prophet commanded that it be given before the Eid prayer:")
                     ScriptureQuote(hadith: "bukhari:1509", cite: "Sahih al-Bukhari 1509", arabic: 20...33, english: 0...14)
-                    Text(verbatim: "Delaying it past the prayer without excuse is a sin; it must still be given.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Delaying it past the prayer without excuse is a sin; it must still be given.")
                 }
 
                 Section(header: ArticleHeader("TO WHOM")) {
-                    Text(verbatim: "To the poor and needy Muslims of your town. It may be given directly or through a trusted person or mosque who delivers it in time; one sa' may be split among several, and several sa' may be given to one.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "To the poor and needy Muslims of your town. It may be given directly or through a trusted person or mosque who delivers it in time; one sa' may be split among several, and several sa' may be given to one.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -1402,7 +1447,7 @@ struct ZakatFitrView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "ZakatFitrView")
+        .englishArticle().selectableArticleList(article: "ZakatFitrView")
         .navigationTitle("How to Give Zakat al-Fitr")
     }
 }
@@ -1421,8 +1466,7 @@ struct UdhiyahView: View {
                     ScriptureQuote(quran: "108:2")
                     ScriptureQuote(quran: "22:37")
                     ScriptureQuote(hadith: "bukhari:5565", cite: "Sahih al-Bukhari 5565", arabic: 10...26, english: 0...36)
-                    Text(verbatim: "It is a confirmed Sunnah for every household that can afford it; some scholars hold it obligatory on the able, so whoever can should not leave it.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "It is a confirmed Sunnah for every household that can afford it; some scholars hold it obligatory on the able, so whoever can should not leave it.")
                 }
 
                 Section(header: ArticleHeader("THE ANIMAL")) {
@@ -1433,14 +1477,12 @@ struct UdhiyahView: View {
                 }
 
                 Section(header: ArticleHeader("BEFORE EID")) {
-                    Text(verbatim: "Whoever intends to sacrifice does not cut hair or nails from the first of Dhul-Hijjah until the sacrifice:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Whoever intends to sacrifice does not cut hair or nails from the first of Dhul-Hijjah until the sacrifice:")
                     ScriptureQuote(hadith: "muslim:1977c", cite: "Sahih Muslim 1977", arabic: 34...46, english: 0...25)
                 }
 
                 Section(header: ArticleHeader("WHEN")) {
-                    Text(verbatim: "After the Eid prayer on the 10th of Dhul-Hijjah, until sunset on the 13th. Slaughtering before the prayer is not a sacrifice:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "After the Eid prayer on the 10th of Dhul-Hijjah, until sunset on the 13th. Slaughtering before the prayer is not a sacrifice:")
                     ScriptureQuote(hadith: "bukhari:5545", cite: "Sahih al-Bukhari 5545", arabic: 28...58, english: 9...70)
                 }
 
@@ -1454,16 +1496,15 @@ struct UdhiyahView: View {
                 }
 
                 Section(header: ArticleHeader("THE MEAT")) {
-                    Text(verbatim: "Eat from it, give some as gifts, and give some to the poor; a third each is a fine division, not a fixed rule. Nothing of it is sold, not even the skin, and the butcher is not paid from it. Storing beyond three days was once forbidden and then permitted:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Eat from it, give some as gifts, and give some to the poor; a third each is a fine division, not a fixed rule. Nothing of it is sold, not even the skin, and the butcher is not paid from it. Storing beyond three days was once forbidden and then permitted:")
                     ScriptureQuote(hadith: "bukhari:5569", cite: "Sahih al-Bukhari 5569", arabic: 47...59, english: 42...73)
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**Can one sheep suffice for the whole family?** Yes. The Prophet sacrificed one ram for himself and his household and another for his ummah. Separate sacrifices per person are not required.").font(.body)
-                    Text(articleMarkdown: "**Can I have it done abroad?** It is valid to appoint a trustworthy agency to slaughter and distribute on your behalf. Slaughtering where you are, with your own hand, and eating from it is the fuller Sunnah.").font(.body)
-                    Text(articleMarkdown: "**I cannot afford it.** There is no sin. Udhiyah is for the able; the poor share in its meat.").font(.body)
-                    Text(articleMarkdown: "**Is Udhiyah the same as the pilgrim's hady?** No. The hady is the pilgrim's offering in Makkah; the Udhiyah is for the Muslims at home.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**Can one sheep suffice for the whole family?** Yes. The Prophet sacrificed one ram for himself and his household and another for his ummah. Separate sacrifices per person are not required.")
+                    ArticleParagraph(articleMarkdown: "**Can I have it done abroad?** It is valid to appoint a trustworthy agency to slaughter and distribute on your behalf. Slaughtering where you are, with your own hand, and eating from it is the fuller Sunnah.")
+                    ArticleParagraph(articleMarkdown: "**I cannot afford it.** There is no sin. Udhiyah is for the able; the poor share in its meat.")
+                    ArticleParagraph(articleMarkdown: "**Is Udhiyah the same as the pilgrim's hady?** No. The hady is the pilgrim's offering in Makkah; the Udhiyah is for the Muslims at home.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -1474,7 +1515,7 @@ struct UdhiyahView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "UdhiyahView")
+        .englishArticle().selectableArticleList(article: "UdhiyahView")
         .navigationTitle("How to Offer the Eid Sacrifice")
     }
 }
@@ -1494,34 +1535,25 @@ struct BecomeMuslimView: View {
                 Section(header: ArticleHeader("WHAT ISLAM IS")) {
                     ScriptureQuote(quran: "3:19")
                     ScriptureQuote(quran: "3:85")
-                    Text(verbatim: "The Prophet (peace and blessings be upon him) said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) said:")
                     ScriptureQuote(hadith: "bukhari:8", cite: "Sahih al-Bukhari 8", arabic: 33...53, text: "“Islam is based on (the following) five (principles): To testify that none has the right to be worshipped but Allah and Muhammad is Allah's Messenger (ﷺ). To offer the (compulsory congregational) prayers dutifully and perfectly. To pay Zakat (i.e. obligatory charity). To perform Hajj. (i.e. Pilgrimage to Mecca) To observe fast during the month of Ramadan”")
                 }
 
                 Section(header: ArticleHeader("THE TESTIMONY")) {
-                    Text(verbatim: "Say, understanding and meaning it:")
-                        .font(.body)
-                    Text.islamArabic("أَشهَدُ أَن لَا إِلَٰهَ إِلَّا اللَّهُ، وَأَشهَدُ أَنَّ مُحَمَّدًا رَسُولُ اللَّهِ", highlightAllah: appearance.highlightAllahIslam)
-                        .font(appearance.islamArabicFont(base: 24, relativeTo: .title2))
-                        .arabicFontDesign(custom: appearance.islamUsesCustomArabicFace)
-                        .multilineTextAlignment(.trailing)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .foregroundColor(appearance.accent)
+                    ArticleParagraph(verbatim: "Say, understanding and meaning it:")
+                    ArticleArabic(verbatim: "أَشهَدُ أَن لَا إِلَٰهَ إِلَّا اللَّهُ، وَأَشهَدُ أَنَّ مُحَمَّدًا رَسُولُ اللَّهِ")
                     Text(verbatim: "Ash-hadu an la ilaha illa Allah, wa ash-hadu anna Muhammadan Rasulullah.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
-                    Text(verbatim: "“I bear witness that there is no deity except Allah, and I bear witness that Muhammad is the Messenger of Allah.”")
-                        .font(.body)
-                    Text(verbatim: "Its first half denies every object of worship other than Allah and affirms Him alone; its second half binds you to follow His Messenger. Saying it sincerely, knowing what it means, with no reservation, is what makes a Muslim:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "“I bear witness that there is no deity except Allah, and I bear witness that Muhammad is the Messenger of Allah.”")
+                    ArticleCallout("Said aloud, the noon of “an” melts into the laam after it (idgham): “an la ilaha” is “allaa ilaaha”, and “illa Allah” runs together as “illallah”. Ashhadu allaa ilaaha illallah, wa ashhadu anna Muhammadan rasoolullah.", title: "How it is said", systemImage: "waveform")
+                    ArticleParagraph(verbatim: "Its first half denies every object of worship other than Allah and affirms Him alone; its second half binds you to follow His Messenger. Saying it sincerely, knowing what it means, with no reservation, is what makes a Muslim:")
                     ScriptureQuote(hadith: "muslim:23a", cite: "Sahih Muslim 23", arabic: 30...47, english: 8...41)
                     ScriptureQuote(hadith: "muslim:26a", cite: "Sahih Muslim 26", arabic: 43...53, english: 15...29)
                 }
 
                 Section(header: ArticleHeader("STEP BY STEP")) {
-                    ArticleStep("1. **Believe.** Know that Allah alone is the Creator and the only One worthy of worship, that Muhammad is His final Messenger, and that the Quran is His word. Doubt is not a barrier to beginning; sincerity is the condition.")
+                    ArticleStep("1. **Believe.** Know that Allah alone is the Creator and the only One worthy of worship, that Muhammad is His final Messenger, and that the Quran is His word. Certainty is a condition of the testimony: Allah describes the believers as those who believed and then doubted not (Quran 49:15). Unanswered questions about details are no barrier to beginning; sincerity and certainty in the testimony itself are what count.")
                     ArticleStep("2. **Say the Shahadah** aloud, in Arabic and in your language. Alone is valid; before witnesses is a joy and a help, but not a condition.")
                     ArticleStep("3. **Take a bath (ghusl)**: the Prophet (peace and blessings be upon him) told Qays ibn Asim, on his embracing Islam, to bathe (Sunan Abi Dawud 355), and Thumamah bathed before he came to declare his Islam (Sahih al-Bukhari 462).")
                     ArticleStep("4. **Learn to pray**, beginning at once. The prayer is the first thing Islam asks after the testimony; learn wudhu, al-Fatihah, and the movements, and pray what you know while you learn the rest.")
@@ -1530,26 +1562,23 @@ struct BecomeMuslimView: View {
                 }
 
                 Section(header: ArticleHeader("WHAT IT EARNS YOU")) {
-                    Text(verbatim: "Everything before it is wiped away. Amr ibn al-As (may Allah be pleased with him), on his deathbed, recalled that when he came to give his hand in Islam he asked for his past to be forgiven, and the Prophet said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Everything before it is wiped away. Amr ibn al-As (may Allah be pleased with him), on his deathbed, recalled that when he came to give his hand in Islam he asked for his past to be forgiven, and the Prophet said:")
                     ScriptureQuote(hadith: "muslim:121", cite: "Sahih Muslim 121", arabic: 189...208, english: 244...276)
                     ScriptureQuote(quran: "39:53")
                     ScriptureQuote(quran: "2:256")
                 }
 
                 Section(header: ArticleHeader("STAYING FIRM")) {
-                    Text(verbatim: "Sufyan ibn Abdullah asked the Prophet (peace and blessings be upon him) for a word about Islam that would need no other. He said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Sufyan ibn Abdullah asked the Prophet (peace and blessings be upon him) for a word about Islam that would need no other. He said:")
                     ScriptureQuote(hadith: "muslim:#66", cite: "Sahih Muslim 38", arabic: 68...71, english: 42...54)
-                    Text(verbatim: "Pray on time, keep the company of the righteous, read the Quran daily, ask when you do not know, and never despair of Allah's mercy over a slip. Faith rises and falls; the Prophet said that the strongest handhold of faith is love for Allah's sake and hate for His sake (Musnad Ahmad 18524; graded hasan by al-Albani, Sahih al-Jami' 2539).")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Pray on time, keep the company of the righteous, read the Quran daily, ask when you do not know, and never despair of Allah's mercy over a slip. Faith rises and falls; the Prophet said that the strongest handhold of faith is love for Allah's sake and hate for His sake (Musnad Ahmad 18524; graded hasan by al-Albani, Sahih at-Targhib 3030).")
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**Do I need to go to a mosque or an imam?** No. The testimony between you and Allah is complete. A certificate is useful for Hajj visas and marriage in some countries, and the mosque is where you will learn, so go, but Islam did not wait for it.").font(.body)
-                    Text(articleMarkdown: "**Do I have to tell my family?** Not as a condition. Wisdom, kindness and good character are your best witness. Honor your parents whatever their faith; Allah commands it.").font(.body)
-                    Text(articleMarkdown: "**I still have questions and doubts.** So did the Companions before certainty settled. Ask, read, and pray; knowledge removes doubt. Do not delay the testimony you already believe.").font(.body)
-                    Text(articleMarkdown: "**Must I be circumcised, change my name, or learn Arabic first?** No. Circumcision is prescribed for men (obligatory according to many scholars) but is not a condition of entering Islam and may be delayed; the name stays unless its meaning is un-Islamic; Arabic comes with time, beginning with al-Fatihah.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**Do I need to go to a mosque or an imam?** No. The testimony between you and Allah is complete. A certificate is useful for Hajj visas and marriage in some countries, and the mosque is where you will learn, so go, but Islam did not wait for it.")
+                    ArticleParagraph(articleMarkdown: "**Do I have to tell my family?** Not as a condition. Wisdom, kindness and good character are your best witness. Honor your parents whatever their faith; Allah commands it.")
+                    ArticleParagraph(articleMarkdown: "**I still have questions and doubts.** Questions are no shame: ask, read, and pray, for knowledge removes doubt. Some Companions told the Prophet of whispers they found too grave to speak of, and he said: that is clear faith (Sahih Muslim 132). Do not delay the testimony you already believe.")
+                    ArticleParagraph(articleMarkdown: "**Must I be circumcised, change my name, or learn Arabic first?** No. Circumcision is prescribed for men (obligatory according to many scholars) but is not a condition of entering Islam and may be delayed; the name stays unless its meaning is un-Islamic; Arabic comes with time, beginning with al-Fatihah.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -1560,7 +1589,7 @@ struct BecomeMuslimView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "BecomeMuslimView")
+        .englishArticle().selectableArticleList(article: "BecomeMuslimView")
         .navigationTitle("How to Become a Muslim")
     }
 }
@@ -1570,7 +1599,7 @@ struct TawbahView: View {
         List {
             Group {
                 Section(header: ArticleHeader("SUMMARY")) {
-                    ArticleLead(articleMarkdown: "In short: **Tawbah (تَوبَة)** is turning back to Allah from sin: stopping it, regretting it, resolving never to return, and returning what was taken from others. It is accepted so long as the soul has not reached the throat and the sun has not risen from the west, and Allah loves the one who repents more than a man loves finding his lost camel in the desert.")
+                    ArticleLead(articleMarkdown: "In short: **Tawbah (تَوبَة)** is turning back to Allah from sin: stopping it, regretting it, resolving never to return, and returning what was taken from others. It is accepted so long as the soul has not reached the throat and the sun has not risen from the west, and Allah rejoices more at His servant's repentance than a man who finds his lost camel in the desert.")
                 }
 
                 Section(header: ArticleHeader("THE DOOR IS OPEN")) {
@@ -1602,11 +1631,9 @@ struct TawbahView: View {
                 }
 
                 Section(header: ArticleHeader("IF YOU FALL AGAIN")) {
-                    Text(verbatim: "Repent again. Returning to a sin does not cancel the earlier repentance, and the door does not shut for repeating. Allah said of a servant who sinned, repented, and sinned again:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "Repent again. Returning to a sin does not cancel the earlier repentance, and the door does not shut for repeating. Allah said of a servant who sinned, repented, and sinned again:")
                     ScriptureQuote(hadith: "bukhari:7507", cite: "Sahih al-Bukhari 7507", arabic: 35...142, english: 143...172)
-                    Text(verbatim: "This is for the one whose repentance each time is sincere, not for one who repents in word intending to return. The Prophet (peace and blessings be upon him) himself said:")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "This is for the one whose repentance each time is sincere, not for one who repents in word intending to return. The Prophet (peace and blessings be upon him) himself said:")
                     ScriptureQuote(hadith: "bukhari:6307", cite: "Sahih al-Bukhari 6307", arabic: 28...39, english: 6...25)
                 }
 
@@ -1617,10 +1644,10 @@ struct TawbahView: View {
                 }
 
                 Section(header: ArticleHeader("COMMON QUESTIONS")) {
-                    Text(articleMarkdown: "**Do I have to confess to anyone?** No. Confession is to Allah alone. The only exception is a wrong done to a person, whose right must be restored or pardoned.").font(.body)
-                    Text(articleMarkdown: "**I cannot find the person I wronged.** Return the wealth to his heirs; if that is impossible, give it in charity on his behalf and ask Allah to forgive you. For a wrong to his honor, make dua for him and speak well of him where you spoke ill.").font(.body)
-                    Text(articleMarkdown: "**Can shirk be forgiven?** Yes, by repentance in this life. What is not forgiven is dying upon it. Whoever enters Islam or returns to tawhid before death has everything before it wiped away.").font(.body)
-                    Text(articleMarkdown: "**How do I know it was accepted?** By the sign the scholars name: you are better after it than before. Have good hope in Allah, for He is as His servant thinks Him to be.").font(.body)
+                    ArticleParagraph(articleMarkdown: "**Do I have to confess to anyone?** No. Confession is to Allah alone. The only exception is a wrong done to a person, whose right must be restored or pardoned.")
+                    ArticleParagraph(articleMarkdown: "**I cannot find the person I wronged.** Return the wealth to his heirs; if that is impossible, give it in charity on his behalf and ask Allah to forgive you. For a wrong to his honor, make dua for him and speak well of him where you spoke ill.")
+                    ArticleParagraph(articleMarkdown: "**Can shirk be forgiven?** Yes, by repentance in this life. What is not forgiven is dying upon it. Whoever enters Islam or returns to tawhid before death has everything before it wiped away.")
+                    ArticleParagraph(articleMarkdown: "**How do I know it was accepted?** By the sign the scholars name: you are better after it than before. Have good hope in Allah, for He is as His servant thinks Him to be.")
                 }
 
                 Section(header: ArticleHeader("IN SUMMARY")) {
@@ -1631,7 +1658,7 @@ struct TawbahView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "TawbahView")
+        .englishArticle().selectableArticleList(article: "TawbahView")
         .navigationTitle("How to Repent")
     }
 }
@@ -1648,7 +1675,7 @@ struct MakeDuaView: View {
                     ScriptureQuote(quran: "2:186")
                     ScriptureQuote(quran: "40:60")
                     ScriptureQuote(hadith: "abudawud:1479", cite: "Sunan Abi Dawud 1479", arabic: 25...33, english: 4...9)
-                    ScriptureQuote(hadith: "muslim:2735c", cite: "Sahih Muslim 2735", english: 0...70, arabicText: "لاَ يَزَالُ يُستَجَابُ لِلعَبدِ مَا لَم يَدعُ بِإِثمٍ أَو قَطِيعَةِ رَحِمٍ مَا لَم يَستَعجِل يَقُولُ قَد دَعَوتُ وَقَد دَعَوتُ فَلَم أَرَ يَستَجِيبُ لِي فَيَستَحسِرُ عِندَ ذَلِكَ وَيَدَعُ الدُّعَاءَ")
+                    ScriptureQuote(hadith: "muslim:2735c", cite: "Sahih Muslim 2735", english: 0...70, arabicText: "لاَ يَزَالُ يُستَجَابُ لِلعَبدِ مَا لَم يَدعُ بِإِثمٍ أَو قَطِيعَةِ رَحِمٍ مَا لَم يَستَعجِل. قِيلَ: يَا رَسُولَ اللَّهِ، مَا الاستِعجَالُ؟ قَالَ: يَقُولُ قَد دَعَوتُ وَقَد دَعَوتُ فَلَم أَرَ يَستَجِيبُ لِي فَيَستَحسِرُ عِندَ ذَلِكَ وَيَدَعُ الدُّعَاءَ")
                 }
 
                 Section(header: ArticleHeader("THE MANNERS OF DUA")) {
@@ -1673,7 +1700,7 @@ struct MakeDuaView: View {
                     ScriptureQuote(hadith: "abudawud:521", cite: "Sunan Abi Dawud 521", arabic: 26...31, english: 0...11)
                     ArticleBullet("• **After the tashahhud before the taslim**, and after the obligatory prayers.")
                     ArticleBullet("• **An hour on Friday**, which the scholars place at the end of the day before Maghrib or between the khutbah and the prayer (Sahih al-Bukhari 935).")
-                    ArticleBullet("• **When rain falls, when traveling, and when oppressed**:")
+                    ArticleBullet("• **When traveling, when oppressed, and a father for his child**:")
                     ScriptureQuote(hadith: "tirmidhi:1905", cite: "Sunan al-Tirmidhi 1905; graded hasan by al-Albani", arabic: 32...45, english: 0...32)
                     ArticleBullet("• **On the day of Arafah, in Ramadan, and in Laylat al-Qadr**, and at Zamzam for the pilgrim.")
                 }
@@ -1687,8 +1714,7 @@ struct MakeDuaView: View {
                 }
 
                 Section(header: ArticleHeader("THE THREE ANSWERS")) {
-                    Text(verbatim: "The Prophet (peace and blessings be upon him) taught that no Muslim makes a dua free of sin and the cutting of ties except that Allah gives him one of three: his request soon, or its storing for the Hereafter, or the turning away of an equal harm (Musnad Ahmad 11133; graded hasan). Whoever understands this never counts a dua unanswered.")
-                        .font(.body)
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) taught that no Muslim makes a dua free of sin and the cutting of ties except that Allah gives him one of three: his request soon, or its storing for the Hereafter, or the turning away of an equal harm (Musnad Ahmad 11133; al-Adab al-Mufrad 710; graded sahih by al-Albani, Sahih al-Adab al-Mufrad 547). Whoever understands this never counts a dua unanswered.")
                     ScriptureQuote(hadith: "bukhari:7405", cite: "Sahih al-Bukhari 7405", arabic: 28...74, english: 4...39)
                 }
 
@@ -1700,8 +1726,193 @@ struct MakeDuaView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList(article: "MakeDuaView")
+        .englishArticle().selectableArticleList(article: "MakeDuaView")
         .navigationTitle("How to Make Dua")
+    }
+}
+
+// MARK: - Ruqyah
+
+/// Ruqyah as the Sunnah teaches it (Abu, 2026-10-27: "Add how to do ruqya. Make sure salafi Sunni
+/// based"): the Quran and the authentic supplications recited over oneself or another, by anyone,
+/// with the heart on Allah alone; the evil eye and magic; and what the scholars of the Sunnah (Ibn
+/// Baz, Ibn al-Uthaymin, the Standing Committee, al-Albani) warned against: amulets, fortune-tellers,
+/// jinn talk, harm and seclusion. The supplications are `GuideDuaRow`s, so each one can be heard and
+/// copied as on the Dua screen.
+struct RuqyahView: View {
+    var body: some View {
+        List {
+            Group {
+                Section(header: ArticleHeader("SUMMARY")) {
+                    ArticleLead(articleMarkdown: "In short: **ruqyah (رُقيَة)** is reciting the Quran and the Prophet's supplications over someone who is ill or afflicted, yourself first of all, and asking Allah alone for the cure. It is Sunnah when its words are Allah's words, His names or the authentic supplications, understood, and free of shirk, with the heart certain that only Allah cures. It needs no specialist, no amulet and no conversation with the jinn, and it goes hand in hand with medicine.")
+                }
+
+                Section(header: ArticleHeader("WHAT IT IS")) {
+                    ArticleParagraph(verbatim: "The Quran was sent down as a healing:")
+                    ScriptureQuote(quran: "17:82")
+                    ScriptureQuote(quran: "10:57")
+                    ArticleParagraph(verbatim: "The Prophet (peace and blessings be upon him) recited ruqyah over himself and his family, Jibril recited it over him, and he approved the ruqyah of others once he had heard it:")
+                    ScriptureQuote(hadith: "muslim:2200", cite: "Sahih Muslim 2200", arabic: 23...48, english: 0...32)
+                    ArticleParagraph(verbatim: "The one who cures is Allah. Ibrahim (peace be upon him) said it plainly:")
+                    ScriptureQuote(quran: "26:80")
+                }
+
+                Section(header: ArticleHeader("ITS CONDITIONS")) {
+                    ArticleParagraph(verbatim: "Ibn Hajar reported that the scholars agree ruqyah is permitted when three conditions are met (Fath al-Bari):")
+                    ArticleStep("1. **Its words are Allah's words, or His names and attributes**, or the supplications the Prophet taught.")
+                    ArticleStep("2. **It is in Arabic, or in words whose meaning is understood.** Mumbled syllables, unknown names and secret letters are not ruqyah: what cannot be understood cannot be trusted to be free of shirk.")
+                    ArticleStep("3. **The heart holds that the ruqyah does nothing by itself.** It is a means, and the cure comes by Allah's decree alone.")
+                    ArticleParagraph(verbatim: "So the heart leans on Allah, not on the words, the water or the person reciting.")
+                }
+
+                Section(header: ArticleHeader("DO YOUR OWN FIRST")) {
+                    ArticleParagraph(verbatim: "Anyone can recite ruqyah: over yourself, your children, your parents, your spouse. You do not need a specialist, and the best ruqyah is the one you recite yourself. Among those who enter Paradise without reckoning are those who do not ask others for it:")
+                    ScriptureQuote(hadith: "bukhari:6472", cite: "Sahih al-Bukhari 6472", arabic: 35...51, english: 4...39)
+                    ArticleParagraph(verbatim: "Ibn Taymiyyah explained that what they leave is the asking, not the ruqyah. Reciting over yourself and over others was the Prophet's own practice and is a kindness, and asking a righteous person to recite over you is permitted; leaving the asking and reciting yourself is the higher station.")
+                }
+
+                Section(header: ArticleHeader("STEP BY STEP")) {
+                    ArticleStep("1. **Turn to Allah.** Renew your trust in Him, make wudhu if you can (it is better, not required), and sit somewhere calm.")
+                    ArticleStep("2. **Put your hand on the place of pain**, say “Bismillah” three times, and then seven times “A'udhu billahi wa qudratihi min sharri ma ajidu wa uhadhir”:")
+                    ScriptureQuote(hadith: "muslim:2202", cite: "Sahih Muslim 2202", arabic: 53...76, english: 0...54)
+                    ArticleStep("3. **Recite al-Fatihah**, then blow lightly: a breath with a trace of moisture. A Companion recited it over a chief stung by a scorpion:")
+                    ScriptureQuote(hadith: "bukhari:5749", cite: "Sahih al-Bukhari 5749", arabic: 112...129, english: 191...224)
+                    ScriptureQuote(hadith: "bukhari:5749", cite: "Sahih al-Bukhari 5749", arabic: 159...175, english: 280...310)
+                    ArticleStep("4. **Recite Ayat al-Kursi** (2:255) and **the last two ayat of al-Baqarah** (2:285-286), and any other ayat you wish; all of the Quran is healing.")
+                    ArticleStep("5. **Recite al-Ikhlas, al-Falaq and an-Nas**, blow into your cupped hands, and wipe them over as much of your body as you can reach, beginning with the head and face. Do it three times. The Prophet did this every night (Sahih al-Bukhari 5017), and in his last illness:")
+                    ScriptureQuote(hadith: "bukhari:5735", cite: "Sahih al-Bukhari 5735", arabic: 25...44, english: 0...55)
+                    ArticleStep("6. **Say the Prophet's supplications for healing**, below, with your right hand on the place of pain.")
+                    ArticleStep("7. **Repeat it** as long as the need lasts, morning and evening or whenever the pain returns, without counts or schedules the Sunnah did not set. Take your medicine too, and leave the outcome with Allah.")
+                    ArticleParagraph(verbatim: "Over someone else it is the same: your hand on the place of pain, the recitation, and a light breath. A man recites over a woman only if she is his mahram, or with her mahram present and without touching her.")
+                }
+
+                Section(header: ArticleHeader("THE PROPHET'S SUPPLICATIONS FOR HEALING")) {
+                    GuideDuaRow(DuaItem(
+                        hadith: "bukhari:5743", cite: "Sahih al-Bukhari 5743", arabic: 37...52, english: 24...57,
+                        transliteration: "Allahumma Rabban-nas, adhhibil-ba's, ishfihi wa antash-Shafi, la shifa'a illa shifa'uk, shifa'an la yughadiru saqama.",
+                        note: "With the right hand over the place of pain"
+                    ))
+                    GuideDuaRow(DuaItem(
+                        hadith: "muslim:2186", cite: "Sahih Muslim 2186", arabic: 38...56, english: 12...52,
+                        transliteration: "Bismillahi arqik, min kulli shay'in yu'dhik, min sharri kulli nafsin aw 'ayni hasid, Allahu yashfik, bismillahi arqik.",
+                        note: "Jibril's ruqyah over the Prophet"
+                    ))
+                    GuideDuaRow(DuaItem(
+                        hadith: "abudawud:3106", cite: "Sunan Abi Dawud 3106; graded sahih by al-Albani", arabic: 40...47, english: 22...35,
+                        transliteration: "As'alullahal-'Azim, Rabbal-'Arshil-'Azim, an yashfiyak.",
+                        note: "Seven times, beside someone who is ill"
+                    ))
+                    GuideDuaRow(DuaItem(
+                        hadith: "bukhari:5745", cite: "Sahih al-Bukhari 5745", arabic: 33...42, english: 9...28,
+                        transliteration: "Bismillah, turbatu ardina, bi-riqati ba'dina, yushfa saqimuna, bi-idhni Rabbina.",
+                        note: "For a wound or sore: a little saliva on the forefinger, touched to the earth, then to the place"
+                    ))
+                    GuideDuaRow(DuaItem(
+                        hadith: "bukhari:3371", cite: "Sahih al-Bukhari 3371", arabic: 43...54, english: 33...55,
+                        transliteration: "A'udhu bi-kalimatillahit-tammah, min kulli shaytanin wa hammah, wa min kulli 'aynin lammah.",
+                        note: "Said over children, as he said it over al-Hasan and al-Husayn"
+                    ))
+                    ArticleParagraph(verbatim: "Over yourself, the scholars allowed “ishfini” (heal me) in place of “ishfihi” (heal him) in the first; Anas's wording of it, “ishfi”, names no one at all (Sahih al-Bukhari 5742). Aisha described the finger and the earth of the fourth in Sahih Muslim 2194.")
+                }
+
+                Section(header: ArticleHeader("THE EVIL EYE")) {
+                    ArticleParagraph(verbatim: "The eye is real: harm that comes, by Allah's leave, from a look of envy, or of admiration that forgets Allah. Ibn Kathir took this ayah as evidence for it:")
+                    ScriptureQuote(quran: "68:51", words: 0...5)
+                    ScriptureQuote(hadith: "muslim:2188", cite: "Sahih Muslim 2188", arabic: 43...54, english: 0...45)
+                    ArticleParagraph(verbatim: "Its cure is ruqyah, which he commanded for it:")
+                    ScriptureQuote(hadith: "bukhari:5739", cite: "Sahih al-Bukhari 5739", arabic: 55...59, english: 18...32)
+                    ArticleParagraph(verbatim: "When the one who gave the eye is known, he is asked to wash, and the water is poured over the one he struck:")
+                    ScriptureQuote(hadith: "ibnmajah:3509", cite: "Sunan Ibn Majah 3509; graded sahih by al-Albani", arabic: 16...101, english: 0...126)
+                    ArticleParagraph(verbatim: "Prevent it with a blessing. When something of yours or someone else's pleases you, say “Barakallahu fih” (may Allah bless it), or “Ma sha' Allah, la quwwata illa billah”, as the believer told his companion in the garden:")
+                    ScriptureQuote(quran: "18:39", words: 0...11)
+                    ArticleParagraph(verbatim: "And do not accuse people. Suspicion without proof breaks ties that no ruqyah repairs; if you suspect someone, you may ask them kindly to wash, and say nothing more.")
+                }
+
+                Section(header: ArticleHeader("MAGIC (SIHR)")) {
+                    ArticleParagraph(verbatim: "Magic is real, and practising it is kufr, yet it harms no one except by Allah's permission:")
+                    ScriptureQuote(quran: "2:102", words: 42...50)
+                    ArticleParagraph(verbatim: "The Prophet himself was affected by magic, and Allah cured him and showed him where it had been hidden; the well was then filled in (Sahih al-Bukhari 5763). Its treatment is the same ruqyah, with patience and trust:")
+                    ArticleStep("1. **Recite the ruqyah above**, with al-Fatihah, Ayat al-Kursi, al-Falaq and an-Nas, often.")
+                    ArticleStep("2. **Recite the ayat in which Allah undoes the magicians' work**: al-A'raf 7:117-119, Yunus 10:79-82 and Ta Ha 20:65-69. Ibn Baz described reciting them, with Ayat al-Kursi and the surahs of refuge, into water with crushed lote-tree (sidr) leaves, then drinking some of it and washing with the rest.")
+                    ScriptureQuote(quran: "10:81-82")
+                    ArticleStep("3. **If the object of the magic is found**, destroy it, reciting as you do.")
+                    ArticleStep("4. **Never undo magic with magic.** Going to a magician to lift it is forbidden, whatever is promised:")
+                    ScriptureQuote(hadith: "abudawud:3868", cite: "Sunan Abi Dawud 3868; graded sahih by al-Albani", arabic: 23...38, english: 0...25)
+                    ArticleParagraph(verbatim: "And for protection, the Prophet named seven 'ajwah dates in the morning:")
+                    ScriptureQuote(hadith: "bukhari:5445", cite: "Sahih al-Bukhari 5445", arabic: 27...41, english: 4...25)
+                }
+
+                Section(header: ArticleHeader("WATER, OIL AND HONEY")) {
+                    ArticleParagraph(verbatim: "Reciting into water or olive oil, then drinking it or wiping with it, was permitted by Ibn Baz and the Standing Committee and done by some of the Salaf. Reciting directly over the person and blowing is better, as the Sunnah shows. Blowing into water to take the reciter's own blessing, rather than the Quran's, is forbidden.")
+                    ArticleParagraph(verbatim: "Take the cures the Sunnah names as well. Honey:")
+                    ScriptureQuote(quran: "16:69", words: 9...17)
+                    ArticleParagraph(verbatim: "And the black seed:")
+                    ScriptureQuote(hadith: "bukhari:5688", cite: "Sahih al-Bukhari 5688", arabic: 33...41, english: 6...16)
+                }
+
+                Section(header: ArticleHeader("PROTECTION BEFORE AFFLICTION")) {
+                    ArticleParagraph(verbatim: "The strongest ruqyah is the one recited before anything happens: the morning and evening remembrances.")
+                    ScriptureQuote(hadith: "abudawud:5082", cite: "Sunan Abi Dawud 5082; graded hasan by al-Albani", arabic: 84...99, english: 72...93)
+                    GuideDuaRow(DuaItem(
+                        hadith: "abudawud:5088", cite: "Sunan Abi Dawud 5088; graded sahih by al-Albani", arabic: 34...49, english: 25...50,
+                        transliteration: "Bismillahil-ladhi la yadurru ma'a ismihi shay'un fil-ardi wa la fis-sama'i wa huwas-Sami'ul-'Alim",
+                        note: "Three times, morning and evening"
+                    ))
+                    GuideDuaRow(DuaItem(
+                        hadith: "muslim:2708a", cite: "Sahih Muslim 2708", arabic: 63...70, english: 16...32,
+                        transliteration: "A'udhu bikalimatillahit-tammati min sharri ma khalaq",
+                        note: "When stopping at a place; nothing will harm you until you move on"
+                    ))
+                    ArticleParagraph(verbatim: "Recite Ayat al-Kursi when you lie down to sleep: a guardian from Allah stays with you until morning (Sahih al-Bukhari 2311). And the last two ayat of al-Baqarah at night:")
+                    ScriptureQuote(hadith: "bukhari:5009", cite: "Sahih al-Bukhari 5009", arabic: 31...40, english: 4...21)
+                }
+
+                Section(header: ArticleHeader("WHAT TO AVOID")) {
+                    ArticleBullet("• **Amulets and charms**, whatever is written in them. The Prophet said that whoever hangs an amulet has committed shirk (Musnad Ahmad 17422; graded sahih by al-Albani), and:")
+                    ScriptureQuote(hadith: "abudawud:3883", cite: "Sunan Abi Dawud 3883; graded sahih by al-Albani", arabic: 42...46, english: 19...24)
+                    ArticleParagraph(verbatim: "The ruqyah meant there is the kind with shirk in it; the same narration ends with Ibn Mas'ud teaching his wife the Prophet's own ruqyah instead. Amulets of Quran are left too: the companions of Ibn Mas'ud disliked them all, and Ibn Baz and Ibn al-Uthaymin forbade them, because they open the door to the rest and the Quran was sent down to be recited, not hung.")
+                    ArticleBullet("• **Fortune-tellers and “healers”** who ask for your mother's name, write numbers and squares, tell you who did it, read cups or palms, or ask for an animal slaughtered in a certain way. Going to them is a sin, and believing them is worse:")
+                    ScriptureQuote(hadith: "muslim:2230", cite: "Sahih Muslim 2230", arabic: 36...47, english: 0...20)
+                    ArticleBullet("• **Talking with the jinn**, taking their word, or accusing a relative because a jinn named them. The jinn lie, and the Sunnah never made them witnesses.")
+                    ArticleBullet("• **Harming the patient**: beating, choking, shouting into the ear, electric shocks. None of it is from the Sunnah.")
+                    ArticleBullet("• **Seclusion with a woman, or touching her**, in the name of treatment:")
+                    ScriptureQuote(hadith: "bukhari:5233", cite: "Sahih al-Bukhari 5233", arabic: 23...30, english: 4...20)
+                    ArticleBullet("• **Leaving medicine.** Treatment does not contradict trust in Allah; the Prophet commanded it:")
+                    ScriptureQuote(hadith: "abudawud:3855", cite: "Sunan Abi Dawud 3855; graded sahih by al-Albani", arabic: 38...60, english: 33...73)
+                    ArticleBullet("• **Blaming everything on the eye, magic or the jinn.** Illness, sadness, anxiety and failure have ordinary causes too, and doctors and counsellors treat them. Recite ruqyah, and see the doctor.")
+                    ArticleBullet("• **Invented counts and schedules**: a surah forty-one times at a set hour, ruqyah “programs”, rituals the Sunnah never taught. What is fixed is fixed by revelation, and adding to it is innovation.")
+                }
+
+                Section(header: ArticleHeader("COMMON QUESTIONS")) {
+                    ArticleParagraph(articleMarkdown: "**Do I need a raqi?** No. Your own ruqyah is the Sunnah and the best of it. If you ask someone, choose a person of sound belief and practice who recites the Quran and the authentic supplications, and stays away from everything above.")
+                    ArticleParagraph(articleMarkdown: "**Can a woman recite ruqyah?** Yes: over herself, her children, other women and her mahrams. Aisha recited it over the Prophet in his last illness, as above.")
+                    ArticleParagraph(articleMarkdown: "**And during her period?** The supplications are always open to her. Reciting the ayat from memory during her period is permitted in the view of Ibn Taymiyyah and Ibn al-Uthaymin, above all for a need like this.")
+                    ArticleParagraph(articleMarkdown: "**Can I recite over a non-Muslim?** Yes. The chief the Companions recited al-Fatihah over was not a Muslim.")
+                    ArticleParagraph(articleMarkdown: "**May the one who recites take payment?** Yes, the Prophet allowed it, though the scholars warned against making it a trade with fixed prices and promises of cure:")
+                    ScriptureQuote(hadith: "bukhari:5737", cite: "Sahih al-Bukhari 5737", arabic: 111...118, english: 142...155)
+                    ArticleParagraph(articleMarkdown: "**Does playing a recording count?** Listening to the Quran brings calm and reward, but a recording is not ruqyah, which is recited with intention and breath by someone present. Ibn al-Uthaymin said the same of a recording of al-Baqarah played in a home.")
+                    ArticleParagraph(articleMarkdown: "**How do I know whether it is the eye, magic or the jinn?** You do not need to. The treatment is the same: ruqyah, the morning and evening remembrances, the prayer, medicine and patience. Chasing a diagnosis is how people end up at the fortune-teller's door.")
+                }
+
+                Section(header: ArticleHeader("KEY TERMS")) {
+                    ArticleTermCard("Ruqyah", arabic: "رُقْيَة", meaning: "Recitation over the sick or afflicted, seeking cure from Allah. With the Quran and the authentic supplications it is Sunnah; with shirk or unknown words it is forbidden.")
+                    ArticleTermCard("Nafth", arabic: "نَفْث", meaning: "Light blowing with a trace of moisture after reciting, over the person or into the hands: more than a breath, less than spitting.")
+                    ArticleTermCard("Al-'ayn", arabic: "العَيْن", meaning: "The evil eye: harm that strikes, by Allah's leave, from a look of envy, or of admiration that does not remember Allah.")
+                    ArticleTermCard("Sihr", arabic: "السِّحْر", meaning: "Magic: real, learned from the devils, and kufr to practise. It harms no one except by Allah's permission.")
+                    ArticleTermCard("Tamimah", arabic: "تَمِيمَة", meaning: "An amulet or charm hung or worn for protection. Shirk when it is relied on, and forbidden even when Quran is written in it, in the view the scholars of the Sunnah took.")
+                    ArticleTermCard("Nushrah", arabic: "نُشْرَة", meaning: "Undoing magic. With ruqyah and lawful medicine it is allowed; with magic it is the work of the devil.")
+                }
+
+                Section(header: ArticleHeader("IN SUMMARY")) {
+                    ArticleClosing("Ruqyah is the Quran and the Prophet's supplications, recited by you over yourself and those you love, with the heart on Allah alone. Recite al-Fatihah, Ayat al-Kursi and the surahs of refuge, blow lightly, say his words for healing, keep the morning and evening remembrances, take your medicine, and stay far from amulets, fortune-tellers and anyone who mixes the Quran with what Allah did not send down.")
+                }
+
+                ArticleSourcesSection(article: "RuqyahView")
+            }
+            .themedListRowBackground()
+        }
+        .englishArticle().selectableArticleList(article: "RuqyahView")
+        .navigationTitle("How to Do Ruqyah")
     }
 }
 

@@ -134,7 +134,9 @@ func mutashabihPhraseText(_ phrase: MutashabihatStore.Phrase, quranData: QuranDa
 /// The rows of the Similar Ayahs sheet's "Repeated Phrases" tab: each phrase this ayah shares, with
 /// how widely it repeats, opening the full list of its occurrences.
 struct MutashabihatRows: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
     @ObservedObject private var quranData = QuranData.shared
 
     let surahNumber: Int
@@ -159,6 +161,8 @@ struct MutashabihatRows: View {
                         .lineLimit(nil)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .trailing)
+                        // Arabic keeps the right edge: in the Arabic interface `.trailing` is the left.
+                        .environment(\.layoutDirection, .leftToRight)
 
                     Text(Self.summary(phrase))
                         .font(.caption)
@@ -171,10 +175,10 @@ struct MutashabihatRows: View {
     }
 
     static func summary(_ phrase: MutashabihatStore.Phrase) -> String {
-        let times = phrase.count == 1 ? "once" : "\(phrase.count) times"
-        let ayahs = phrase.ayahCount == 1 ? "1 ayah" : "\(phrase.ayahCount) ayahs"
-        let surahs = phrase.surahCount == 1 ? "1 surah" : "\(phrase.surahCount) surahs"
-        return "Repeated \(times) in \(ayahs) across \(surahs)"
+        let times = phrase.count == 1 ? String(localized: "once") : String(localized: "\(phrase.count) times")
+        let ayahs = phrase.ayahCount == 1 ? String(localized: "1 ayah") : String(localized: "\(phrase.ayahCount) ayahs")
+        let surahs = phrase.surahCount == 1 ? String(localized: "1 surah") : String(localized: "\(phrase.surahCount) surahs")
+        return String(localized: "Repeated \(times) in \(ayahs) across \(surahs)")
     }
 }
 
@@ -183,7 +187,9 @@ struct MutashabihatRows: View {
 /// All the places one phrase occurs, in mushaf order, the phrase tinted in each ayah so the words
 /// around it - what changes from one occurrence to the next - can be read against each other.
 struct PhraseOccurrencesView: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
     @ObservedObject private var quranData = QuranData.shared
 
     let phrase: MutashabihatStore.Phrase
@@ -242,6 +248,8 @@ struct PhraseOccurrencesView: View {
                         .lineLimit(nil)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .trailing)
+                        // Arabic keeps the right edge: in the Arabic interface `.trailing` is the left.
+                        .environment(\.layoutDirection, .leftToRight)
 
                     Text(MutashabihatRows.summary(phrase))
                         .font(.caption)
@@ -251,7 +259,7 @@ struct PhraseOccurrencesView: View {
                 .padding(.vertical, 4)
             }
 
-            Section(header: SectionPillHeader(title: "OCCURRENCES", count: list.count)) {
+            Section(header: SectionPillHeader(title: String(localized: "OCCURRENCES"), count: list.count)) {
                 ForEach(list) { row in
                     WordOccurrenceRow(surah: row.surah, ayah: row.ayah, tokens: row.tokens,
                                       isOrigin: row.key == (originKey ?? phrase.sourceKey), contrastTokens: row.contrast)
@@ -262,10 +270,9 @@ struct PhraseOccurrencesView: View {
 
             Section(footer:
                 Text("Repeated phrases from the Quranic Universal Library's Mutashabihat ul Quran. The accent words are the shared phrase; the orange words are what each occurrence says differently from the ayah you came from.")
-                    .font(.caption2)
             ) { EmptyView() }
         }
-        .applyConditionalListStyle(disableNowPlayingInset: true)
+        .applyConditionalListStyle()
         .navigationTitle("Repeated Phrase")
         .navigationBarTitleDisplayMode(.inline)
     }

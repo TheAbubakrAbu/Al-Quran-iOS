@@ -95,6 +95,9 @@ struct AlQuranApp: App {
                 // the key's one-time launch snapshot, so an accent change only showed after a restart.
                 .appearanceEnvironment()
                 .appReviewPrompt()
+                // A newer version on the App Store is offered when the app opens (AppUpdateCheck.swift);
+                // it waits for the reveal and for the screen to be free, like the review ask above.
+                .appUpdatePrompt()
                 // Set ABOVE (outside) `.appReviewPrompt()` too, or its `@Environment(\.appRevealed)`
                 // reads the key's default (true): the copy inside `rootContent` sits BELOW the review
                 // modifier in the tree, and environment only flows down: the launch-cover gate on the
@@ -200,8 +203,11 @@ struct AlQuranApp: App {
 private struct MainTabView: View {
     // Deliberately NOT observing Settings, QuranData or QuranPlayer: this body reads none of them, but
     // an `@ObservedObject` subscription re-evaluated the ENTIRE TabView on every publish. The warm
-    // walk reaches the singletons directly.
+    // walk reaches the singletons directly. The two slices below are what this body does read
+    // (`launchTab`, `quranPageMode`, the word-by-word switches), so their changes still land.
     private let settings = Settings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     /// True while a launch/splash screen still covers the tabs (drives the under-cover warm below).
     let isCovered: Bool
 
@@ -363,6 +369,18 @@ private struct MainTabView: View {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard !Task.isCancelled else { return }
                 await ReminderScheduler.rearmAfterLaunch()
+                // A planner reminder left pending under a switch a Reset or a restore turned off.
+                QuranPlannerReminder.dropIfSwitchedOff()
+            }
+            // Allow Notifications turned back on (`Settings.notificationsEnabledDidChange`, which cleared
+            // every pending request when it went off): the same pass now, plus the planner's kept
+            // reminder. Off needs nothing here: the clearing was the whole of it.
+            .onReceive(NotificationCenter.default.publisher(for: Settings.notificationsEnabledDidChangeNotification)) { _ in
+                guard Settings.shared.notificationsEnabled else { return }
+                Task { @MainActor in
+                    await ReminderScheduler.rearmAfterLaunch()
+                    QuranPlannerReminder.rearmIfKept()
+                }
             }
             #if DEBUG
             // "-simulateReminderTap surah:67" (or "ayah:2:285", "open"): what a reminder's or a daily

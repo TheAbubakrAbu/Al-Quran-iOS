@@ -79,9 +79,11 @@ struct MushafPage: Identifiable {
     /// opening with an id only the riwayah has (13:44 on page 255) had no juz at all (2026-10-04).
     let juz: Int?
 
-    /// The surah a page is labelled with (toolbar title, pinned header, footer meter): always the **top**
-    /// surah on the page - the one the page opens with. On a page holding Al-Ikhlas, Al-Falaq and An-Nas,
-    /// that is Al-Ikhlas (112), not whichever happens to have the most ayahs.
+    /// The surah a page is labelled with (footer meter, find scope): always the **top** surah on the
+    /// page - the one the page opens with. On a page holding Al-Ikhlas, Al-Falaq and An-Nas, that is
+    /// Al-Ikhlas (112), not whichever happens to have the most ayahs. The toolbar title and the pinned
+    /// header follow the READING POSITION instead (`MushafPagination.readingPosition`): the surah a
+    /// navigation landed on while nothing has been turned since, else this.
     var displayedSurah: Surah? { firstSurah }
 
     /// Every ayah printed on this page, as (surah, ayah) refs. Used to scope the per-ayah beginner overrides
@@ -272,6 +274,26 @@ enum MushafPagination {
         return pages.firstIndex { $0.segments.contains { $0.surah.id == surahID } }
     }
 
+    /// Where the reader IS on `page`: the surah and ayah a navigation landed on, when the page holds that
+    /// surah (the named ayah if the page has it, else that surah's first ayah on the page), otherwise the
+    /// page's first row.
+    ///
+    /// The distinction is the whole point. 64 of the 114 surahs begin partway down a page (al-Falaq opens
+    /// on page 604 under al-Ikhlas's last ayahs), and the page's first row is the PREVIOUS surah there.
+    /// Reporting that row after Choose Surah picked al-Falaq titled the page al-Ikhlas, saved al-Ikhlas as
+    /// the last read, and sent Read as List to al-Ikhlas (Abu, 2026-10-20: "it's a 50/50" - a surah that
+    /// opens its page never showed it). A swipe names no landing and reads the page's first row, as a
+    /// page turn always has. Pure and static so `ReadingModeLandingTests` can run it over every surah.
+    static func readingPosition(on page: MushafPage,
+                                landing: (surahID: Int, ayahID: Int?)?) -> (surah: Surah, ayah: Ayah)? {
+        if let landing, let segment = page.segments.first(where: { $0.surah.id == landing.surahID }) {
+            let named = landing.ayahID.flatMap { id in segment.ayahs.first { $0.id == id } }
+            if let ayah = named ?? segment.ayahs.first { return (segment.surah, ayah) }
+        }
+        guard let surah = page.firstSurah, let ayah = page.firstAyah else { return nil }
+        return (surah, ayah)
+    }
+
     /// Memo for `juzRanges`: it sits in the page footer, which re-renders on every page turn, and walking all
     /// ~604 pages each time added a full sweep per swipe. Keyed by the qiraah, the same thing that keys the
     /// pagination itself - two qiraat could coincidentally paginate to the same page count and endpoints while
@@ -325,8 +347,8 @@ private enum PageFindMemo {
 /// Everything that names where the page reader should land, as ONE `onChange` value (see the handler).
 /// Where the page reader last stood, for page mode to re-open on (`QuranView.openMushafWhereLeftOff`).
 ///
-/// Not the last-read ayah: that one is a DISPLAY preference ("Show Last Read Ayah"), and with it off
-/// (or after the Last Read row's "Delete Forever", which turns it off) nothing was recorded at all, so
+/// Not the last-read ayah: that one was a DISPLAY preference ("Show Last Read Ayah", a switch until
+/// 2026-10-25), and with it off nothing was recorded at all, so
 /// every re-open - leaving the tab, the app, a relaunch - landed back on al-Fatiha (Abu, 2026-10-14:
 /// "I go to Tawbah then leave the app then come back it goes to Fatiha"). Plain defaults, no publish:
 /// nothing on screen shows it, so it is written on every page turn without the debounce last read needs.
@@ -354,6 +376,16 @@ private struct ReseedKey: Equatable {
     let surahID: Int
     let ayahID: Int?
     let token: Int
+}
+
+/// The surah and ayah a PROGRAMMATIC landing named, bound to the page it is for. The initial seed, an
+/// in-place surah swap (Choose Surah, Previous/Next, a search hit, "go to what's playing") and a
+/// repagination arm one before they move the index; the next `.onChange(of: pageIndex)` consumes it and
+/// reports the position from it (`MushafPagination.readingPosition`). See `SurahPageReader.pendingLanding`.
+private struct MushafPageLanding {
+    let pageIndex: Int
+    let surahID: Int
+    let ayahID: Int?
 }
 
 /// DEBUG-ONLY seed for the folded state, used by the `#Preview`s and the headless screenshot runs.
@@ -647,6 +679,16 @@ private final class MushafPagerBandBox {
     /// mid-expand must win over the expand's delayed half, and the other way round.
     var playerGeneration = 0
     var selectGeneration = 0
+    /// Bumped by every programmatic turn (`turnPage`), every page change, and a find step that settles
+    /// on the page already showing: a turn still waiting on its landing page's render checks it, so a
+    /// newer turn, a swipe or such a step overtakes it. Checking only "not on that page yet" let an
+    /// overtaken turn land anyway: the find bar stepping down to a cold page and back up to a match on
+    /// this one slid the reader to the cold page with no match lit, and over the facsimile (every turn
+    /// waits out the render's 0.4 s) the left then the right arrow went forward one and back two.
+    var turnGeneration = 0
+    /// The page the latest programmatic turn is headed for, with its generation, while it waits: the
+    /// next arrow press steps on from there, not from the page it is about to leave.
+    var turnTarget: (index: Int, generation: Int)?
 }
 
 /// The chrome changes the pager takes in one step, each with its own learned twin geometry
@@ -682,6 +724,15 @@ enum MushafChromeJump: CaseIterable {
 private let mushafChromeFadeOut: Double = 0.14
 private let mushafChromeFadeIn: Double = 0.2
 
+/// The page pill's percentages in the Arabic interface ("٧٪"): the locale's digits and sign, where a
+/// "7%" glued to Arabic text read as "%7".
+private let mushafPercentFormatter: NumberFormatter = {
+    let formatter = NumberFormatter()
+    formatter.numberStyle = .percent
+    formatter.maximumFractionDigits = 0
+    return formatter
+}()
+
 /// No animation at all, for the one-step half of a chrome change: the pager and every page in it take
 /// the new band at once, whatever transaction the tap that caused it was in.
 private var mushafStillTransaction: Transaction {
@@ -691,7 +742,11 @@ private var mushafStillTransaction: Transaction {
 }
 
 struct SurahPageReader<Controls: View>: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @ObservedObject private var quranData = QuranData.shared
     /// Playback STATE comes from the coalesced `NowPlayingState` (one publish per main-queue turn, only
     /// when a read field changed); the raw player published five or six times per ayah advance and each
@@ -753,7 +808,7 @@ struct SurahPageReader<Controls: View>: View {
     /// present itself - the actions sheet, tafsir and the other secondaries, the word cards - could
     /// therefore vanish on a page turn, including the automatic turn that follows the recitation. The
     /// host outlives every page, exactly as it does for the list rows (`AyahRow.onRequestSheet`, Phase 5
-    /// step 6). See `Docs/Page Mode Sheet Ownership.md`.
+    /// step 6). See `Docs/Quran/Page Mode Sheet Ownership.md`.
     var onRequestSheet: ((AyahRowSheetKind, Surah, Ayah) -> Void)? = nil
     /// The ayah whose ACTIONS sheet the host has up, if any: the page keeps it tinted while the sheet is
     /// open. It used to read the page's own sheet state; the host owns that state now.
@@ -789,13 +844,6 @@ struct SurahPageReader<Controls: View>: View {
 
     @State private var pageIndex = 0
     @State private var didSetInitialPage = false
-    /// The page the mounted window is centred on. NOT `pageIndex`: the window used to follow the
-    /// selection directly, so every swipe changed the pager's page set while the swipe was still
-    /// in flight, and the UIKit pager behind `.page` style landed BETWEEN pages ("when I scroll
-    /// right or left it goes half way", Abu, 2026-09-06). The centre now moves only once the
-    /// selection has rested (`recentreWindow`), or at once when the selection reaches the window's
-    /// inner edge so the next swipe always finds its page mounted. -1 until the first seed.
-    @State private var windowCentre = -1
     /// The reader's own width, for the wide-layout bottom bars (see `bottomBars`).
     @State private var readerWidth: CGFloat = 0
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -809,41 +857,31 @@ struct SurahPageReader<Controls: View>: View {
     /// The pager's band as last measured, for `updatePagerSize` to drop repeats. A reference, so the
     /// per-frame writes during a fold re-render nothing.
     @State private var pagerBand = MushafPagerBandBox()
-    /// Pages mounted to either side of the centre (a computed constant: the reader is generic,
-    /// so a static stored property is not allowed here). A spread mounts two pages per pager child,
-    /// so the same reach in SWIPES needs more pages: 14 is seven spreads to either side, one more than
-    /// the phone's six pages. The window only ever moves while the pager rests (`recentreWindow`),
-    /// so in a run of swipes too quick to ever rest the ring is all the reach there is: measured
-    /// 2026-09-27 at a 0.6 s cadence (each swipe landing on the previous one's deceleration), a ring
-    /// of five spreads ran out on the sixth swipe and the pager bounced at its end until the run
-    /// paused. The pager creates cells lazily, so the extra children cost a diff per publish, not a
-    /// typesetting; the ring was 4 pages until then.
-    private var windowRadius: Int { spreadActive ? 14 : 6 }
-    /// How far the selection may drift from the window's centre before the window follows it at the
-    /// pager's next rest (`recentreWindow`). Smaller = more reloads, each at rest and invisible, and
-    /// more slack kept ahead for a run of swipes; larger = fewer reloads. 2 leaves two pages mounted
-    /// ahead when the follow is requested and four right after it. Every reload rebuilds the pager's
-    /// visible cell (two typeset pages in a spread), so a drift under the lead is left alone: the
-    /// ring still reaches both ways from there.
-    private var recentreLead: Int { spreadActive ? 4 : 2 }
-    /// Extra centres for `pageWindow` while an animated turn is in flight: the page being LEFT and
-    /// the page being turned TO, so the mounted set does not change inside the animated transaction
-    /// (an insertion there renders as a crossfade, not a slide). Cleared once the slide has finished.
-    @State private var windowAnchors: Set<Int> = []
     /// The page the last turn LEFT, so the ring can be ordered ahead of the direction of travel.
     @State private var previousPageIndex = -1
     /// The surah named by the pinned header at the top of the reader, and the ONLY thing that decides when
     /// the header (and the parent's toolbar title) re-renders. It is written by `reportSurah` and only when
-    /// the top surah's id actually changes, so paging within one surah leaves it - and the header - alone.
+    /// the position's surah actually changes, so paging within one surah leaves it - and the header - alone.
+    /// The position's surah: the one a navigation landed on, else the page's top surah (see
+    /// `MushafPagination.readingPosition`).
     @State private var headerSurah: Surah?
     /// The header's own surah-info sheet - and the one a surah heading tapped in the page TEXT opens
     /// (`MushafPageContent.onShowSurahInfo`). Reader-level, not page-level: the header no longer lives
     /// inside a page, and a page must not own a sheet at all, or a page turn tears it down.
     @State private var headerInfoSurah: Surah?
-    /// The first (surah, ayah) of the page on screen - the reading position a repagination re-seeds to.
+    /// The reading position on the page on screen - the (surah, ayah) a navigation landed on, else the
+    /// page's first row - which a repagination re-seeds to and the parent lands a mode switch on.
     @State private var currentAnchor: (surahID: Int, ayahID: Int)?
     /// That page's NUMBER, which a repagination re-seeds to first (see `reseedAfterRepagination`).
     @State private var currentAnchorPage: Int?
+    /// The landing the next `.onChange(of: pageIndex)` reports the position from, when the page it is bound
+    /// to is the one that arrives: the surah and ayah a seed, an in-place swap or a repagination named.
+    /// Armed by them before they move the index, consumed (cleared) by the first index change after,
+    /// whatever page that is - a swipe that beats the turn reads its own page's first row, and a landing
+    /// is never applied to a page it was not bound to. Without it the position was always the page's
+    /// first row, which for the 64 surahs that open partway down a page is the surah BEFORE the one
+    /// just navigated to (the title, header, last read and the list-mode landing all said so).
+    @State private var pendingLanding: MushafPageLanding?
     /// Set when `pageIndex` is about to be moved PROGRAMMATICALLY (initial seed, in-place surah swap),
     /// consumed by the next `.onChange(of: pageIndex)`. The `didSetInitialPage` flag alone can't tell the
     /// seed from a real page turn - `.onAppear` finishes (flag already true) before the seed's `onChange`
@@ -1090,10 +1128,20 @@ struct SurahPageReader<Controls: View>: View {
     /// The same, for a landing named explicitly (see the `ReseedKey` handler: an `onChange` action
     /// must not read the landing off `self`).
     private func startingPageIndex(in pages: [MushafPage], surahID: Int, ayahID: Int?) -> Int {
-        let targetAyah = ayahID
-            ?? (settings.lastReadSurah == surahID && settings.lastReadAyah > 0 ? settings.lastReadAyah : nil)
+        MushafPagination.pageIndex(surahID: surahID, ayahID: landingAyah(surahID: surahID, ayahID: ayahID),
+                                   in: pages) ?? 0
+    }
 
-        return MushafPagination.pageIndex(surahID: surahID, ayahID: targetAyah, in: pages) ?? 0
+    /// The ayah a landing resolves to: the one named, else the last-read ayah when it is in this surah.
+    private func landingAyah(surahID: Int, ayahID: Int?) -> Int? {
+        ayahID ?? (settings.lastReadSurah == surahID && settings.lastReadAyah > 0 ? settings.lastReadAyah : nil)
+    }
+
+    /// The landing for the page `startingPageIndex` picks, to report the position from (see `pendingLanding`).
+    private func startingLanding(in pages: [MushafPage], surahID: Int, ayahID: Int?) -> MushafPageLanding {
+        MushafPageLanding(pageIndex: startingPageIndex(in: pages, surahID: surahID, ayahID: ayahID),
+                          surahID: surahID,
+                          ayahID: landingAyah(surahID: surahID, ayahID: ayahID))
     }
 
     // MARK: Two-page spread
@@ -1131,9 +1179,17 @@ struct SurahPageReader<Controls: View>: View {
         mushafWindowWidth()
     }
 
-    /// The spread rule on a measured band (see `spreadActive`): wider than it is tall.
+    /// The spread rule on a measured band (see `spreadActive`): wider than it is tall, in a window that
+    /// is itself wider than tall. The window clause is from 2026-10-23: on a portrait 17 Pro the find bar
+    /// took the band from 526 to 402 pt, exactly square, and the Now Playing bar under it to 280, so
+    /// searching while listening opened the two-page book on a 402 pt wide screen (Abu: "makes it two
+    /// pages on mobile and its just annoying"). "Horizontal" means the reader is turned sideways, never
+    /// a page squeezed short by its own chrome. Inside a landscape window the band still decides, so a
+    /// narrow split-view column stays one page.
     private static func spreadRule(_ band: CGSize) -> Bool {
-        band.height > 0 && band.width > band.height
+        guard band.height > 0, band.width > band.height else { return false }
+        guard let window = mushafKeyWindow()?.bounds, window.height > 0 else { return true }
+        return window.width > window.height
     }
 
     /// The first page of the spread holding `index`: the ODD page, which sits on the right the way
@@ -1186,103 +1242,44 @@ struct SurahPageReader<Controls: View>: View {
         )
     }
 
-    /// A programmatic landing (initial seed, in-place surah swap, a picker or search jump): the
-    /// selection and the window centre move together, so the target is mounted in the same pass.
+    /// A programmatic landing (initial seed, in-place surah swap): the pager shows the page at once, no
+    /// slide (`MushafPagerView` slides only inside an animated transaction; see `turnPage`).
     private func seedPageIndex(_ index: Int) {
         pageIndex = index
-        windowCentre = index
     }
 
-    /// Follows the selection with the mounted window - and NEVER while a page turn is in flight
-    /// (`Docs/Mushaf Page Turn Glitch.md`). The pager writes the selection when the finger lifts, while
-    /// its slide is still running; re-centring right there changed the pager's child set under the live
-    /// transition, and the UIKit pager reloads its children for that: the page being LEFT vanished for a
-    /// few frames mid-slide (the blank panel on the side the swipe heads towards, every third page - the
-    /// re-centre cadence - plus the "resistance" and the halfway stop). Measured on the simulator with
-    /// real swipes (idb) and a frame scan of the recording, 2026-09-20. Every change to the mounted set
-    /// now waits for the pager to rest (`whenPagerRests`).
-    ///
-    /// Since 2026-09-27 that is the ONLY rule: a drift of `recentreLead` pages or more re-centres at the
-    /// pager's next rest, a smaller drift is left alone (the ring reaches both ways from there), and
-    /// nothing re-centres mid-slide any more. Two paths used to: a 0.6 s settle for small drifts (a
-    /// reload after every single swipe, each rebuilding the visible cell for nothing) and a no-slack
-    /// fallback at the ring's edge that ran busy or not. Recorded with the book open at a 0.6 s
-    /// cadence, that fallback reloaded SwiftUI's paging collection view mid-deceleration and the view
-    /// kept its offset over the new cells: the pager came to rest half a cell off (page 19 beside page
-    /// 18, pairing wrong), the next swipe dropped the far cell and blanked half the screen, and once it
-    /// reported the cell under the old offset as the selection - four spreads ahead of the swipe - the
-    /// reader jumped there (Abu, 2026-09-26: "sometimes it jumps back"). In a run of swipes too quick
-    /// to ever rest, the ring simply runs out: the swipe past its last mounted page bounces, the pager
-    /// rests, the window catches up and the next swipe turns. That is the accepted cost, and it is why
-    /// the spread's ring is five spreads deep (`windowRadius`).
-    private func recentreWindow(on index: Int, in pages: [MushafPage]) {
-        if windowCentre < 0 {
-            windowCentre = index
-            return
-        }
-        // Measured between SPREADS when the book is open: the second page of the spread already
-        // centred has not drifted at all.
-        let drift = abs(spreadLeading(index, in: pages) - spreadLeading(windowCentre, in: pages))
-        guard drift >= recentreLead else { return }
-        whenPagerRests {
-            guard windowCentre != pageIndex else { return }
-            windowCentre = pageIndex
-        }
+    /// The leading index one step from `index` in reading order, for the pager's data source
+    /// (`MushafPagerView.neighbour`): the next page, or with the book open the next spread's leading
+    /// page; nil past either cover.
+    private func pagerNeighbour(of index: Int, step: Int, in pages: [MushafPage]) -> Int? {
+        guard pages.indices.contains(index) else { return nil }
+        let target = step > 0 ? (spreadPartner(of: index, in: pages) ?? index) + 1 : index - 1
+        guard pages.indices.contains(target) else { return nil }
+        return spreadLeading(target, in: pages)
     }
 
-    /// Runs `change` the moment the pager is at rest - now, if it already is - and never inside a swipe
-    /// or a slide. Polled at frame rate through `MushafPagerProbe`.
-    ///
-    /// The timeout is a safety net for a probe that misreads the pager as "between pages" (the content
-    /// sitting off a boundary with nothing moving it), never a licence to reload under a finger or a
-    /// running deceleration: those are read straight off the scroll view's own flags
-    /// (`MushafPagerProbe.isMoving`) and hold the change past the timeout, up to a hard cap that only a
-    /// stuck flag could ever reach. A timeout that ran regardless was measured (2026-09-27, 0.5 s at a
-    /// 0.6 s swipe cadence) landing the reload with the finger down: the pager jumped four spreads.
-    private func whenPagerRests(timeout: TimeInterval = 2.0, _ change: @escaping () -> Void) {
-        let deadline = Date().addingTimeInterval(timeout)
-        // Only a stuck flag reaches this; a finger holding a drag for that long is not a real case.
-        let hardCap = Date().addingTimeInterval(max(timeout, 20.0))
-        func attempt() {
-            let probe = MushafPagerProbe.shared
-            let now = Date()
-            if !probe.isTurning || (now >= deadline && !probe.isMoving) || now >= hardCap {
-                #if DEBUG
-                MushafPagerProbe.trace("apply idx=\(pageIndex) centre=\(windowCentre) waited=\(String(format: "%.2f", timeout - deadline.timeIntervalSinceNow))s moving=\(probe.isMoving ? 1 : 0)")
-                #endif
-                change()
-                return
+    /// One child of the pager at a leading index: the page, or with the book open the spread it leads.
+    @ViewBuilder
+    private func pagerChild(_ index: Int, pages: [MushafPage],
+                            liveSearch: (matches: [HighlightedAyahRef], term: String, rule: SearchWordRule)?) -> some View {
+        if spreadActive {
+            // The open book. `index` is the spread's leading (odd) page, which sits on the RIGHT; its
+            // partner faces it on the left. Pinned to a left-to-right stack so "right" means right
+            // whatever the app's direction; each page restores its own direction inside.
+            HStack(spacing: 0) {
+                if let partner = spreadPartner(of: index, in: pages) {
+                    pagerPage(partner, pages: pages, liveSearch: liveSearch)
+                } else {
+                    // A leaf with no facing page (an odd page count's last one).
+                    Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                pagerPage(index, pages: pages, liveSearch: liveSearch)
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60.0, execute: attempt)
+            .environment(\.layoutDirection, .leftToRight)
+            .overlay { spreadSpine }
+        } else {
+            pagerPage(index, pages: pages, liveSearch: liveSearch)
         }
-        attempt()
-    }
-
-    /// The page indices the pager mounts (Phase 5 step 4): the page on screen and three to either
-    /// side, plus the same ring around `windowAnchor` during an animated far turn. The `TabView` used
-    /// to be handed all 604 pages: every publish the reader observes (each player tick, each Settings
-    /// write) diffed 604 children and evaluated 604 `MushafPageContent` bodies (measured: 1,200 to
-    /// 2,400 body evaluations per second while the reader sat idle), and realizing the pager the first
-    /// time cost ~900 ms of main thread. Indices are the REAL page indices (`.tag(index)` unchanged),
-    /// so selection, jumps and the prewarm ring keep their contract; a page that leaves the window is
-    /// torn down and rebuilt from the render cache when it returns.
-    ///
-    /// With the book open (`spreadActive`) the pager's children are SPREADS, so the ring is folded
-    /// onto each spread's leading page: that is the tag, and the spread view mounts its partner.
-    private func pageWindow(in pages: [MushafPage]) -> [Int] {
-        let count = pages.count
-        guard count > 0 else { return [] }
-        func ring(_ centre: Int) -> ClosedRange<Int> {
-            let c = spreadLeading(min(max(centre, 0), count - 1), in: pages)
-            return max(0, c - windowRadius)...min(count - 1, c + windowRadius)
-        }
-        var indices = Set(ring(windowCentre >= 0 ? windowCentre : pageIndex))
-        for anchor in windowAnchors { indices.formUnion(ring(anchor)) }
-        if spreadActive { indices = Set(indices.map { spreadLeading($0, in: pages) }) }
-        #if DEBUG
-        MushafPagerProbe.traceWindow(indices.sorted(), pageIndex: pageIndex)
-        #endif
-        return indices.sorted()
     }
 
     /// One page of the pager: the printed facsimile or the composed page. Shared by the single
@@ -1388,7 +1385,13 @@ struct SurahPageReader<Controls: View>: View {
         if ruleMet != spreadRuleMet { spreadRuleMet = ruleMet }
         // The render cache's "current geometry" is the band ONE page gets: half of it across a spread.
         let pageBand = onePageBand(in: rounded, ruleMet: ruleMet)
-        MushafPageRenderCache.noteVisibleGeometry(band: pageBand)
+        // PLAIN: no transient chrome in the band. Only a plain band is persisted for the next launch's
+        // prewarm (see `noteVisibleGeometry`): a session that ended with the mini player up, the find
+        // bar open, the bars folded or select mode on persisted THAT band, the next launch fitted the
+        // last-read pages for it, and the first open showed one of them scaled into the real band
+        // until the exact fit replaced it (Abu, 2026-10-20: "the first time i open it weird refitting").
+        let plain = !playerActive && !searchActive && !chromeCollapsed && !isSelecting
+        MushafPageRenderCache.noteVisibleGeometry(band: pageBand, plain: plain)
         // The band a fold (or the find bar) lands on. The pager takes either change in one step (see
         // its `.animation(nil, value:)` pair), so this one report is the whole change, and the page band
         // it came from is its twin across that change.
@@ -1651,47 +1654,23 @@ struct SurahPageReader<Controls: View>: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                // A mushaf is bound on the right: page 1 sits at the far RIGHT, and you turn leftward through it.
-                // This reverses the DATA rather than flipping `layoutDirection` on the TabView. The RTL environment is
-                // not reliably honoured by the UIPageViewController behind `.page` style - on an English (LTR) device
-                // it mirrored each page's CONTENT while still starting index 0 on the LEFT, which is exactly backwards.
-                // Reversing the emission puts index 0 on the right in a plain LTR pager, and every index-based path
-                // (selection, prewarm, jump-to-page) is untouched because `.tag(index)` still carries the real index.
-                TabView(selection: pagerSelection(in: pages)) {
-                    // `MushafPageContent` is a view struct, not an inline builder, so SwiftUI only evaluates
-                    // a page's (expensive) Arabic body when that page is actually on screen - otherwise all
-                    // ~600 pages would render up front.
-                    // Iterating `indices.reversed()` (a lazy range) instead of `Array(enumerated()).reversed()`
-                    // keeps this body from materializing a fresh 604-tuple array on every swipe (and on every
-                    // player tick while audio runs) just so the diff can walk it.
-                    ForEach(pageWindow(in: pages).reversed(), id: \.self) { index in
-                        Group {
-                            if spreadActive {
-                                // The open book. `index` is the spread's leading (odd) page, which
-                                // sits on the RIGHT; its partner faces it on the left. Pinned to a
-                                // left-to-right stack so "right" means right whatever the app's
-                                // direction; each page restores its own direction inside.
-                                HStack(spacing: 0) {
-                                    if let partner = spreadPartner(of: index, in: pages) {
-                                        pagerPage(partner, pages: pages, liveSearch: liveSearch)
-                                    } else {
-                                        // A leaf with no facing page (an odd page count's last one).
-                                        Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    }
-                                    pagerPage(index, pages: pages, liveSearch: liveSearch)
-                                }
-                                .environment(\.layoutDirection, .leftToRight)
-                                .overlay { spreadSpine }
-                            } else {
-                                pagerPage(index, pages: pages, liveSearch: liveSearch)
-                            }
-                        }
-                            .tag(index)
-                    }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                // Finds the UIKit pager behind the TabView, so window changes can wait for it to rest
-                // (`whenPagerRests`). Inert: no size of its own, no touches.
+                // A mushaf is bound on the right: page 1 sits at the far RIGHT, and you turn leftward
+                // through it. The pager's geometry is pinned left-to-right (`MushafPagerView`), so forward
+                // is the child on the left in every interface language, and selection, jumps and the
+                // prewarm ring all work in REAL page indices (a spread's child is its leading page).
+                // `MushafPageContent` is a view struct, not an inline builder, so a page's (expensive)
+                // Arabic body is evaluated for the hosts the pager holds and nothing else.
+                MushafPagerView(
+                    count: pages.count,
+                    layoutKey: "\(pages[0].paginationKey)|\(pages.count)|\(spreadActive ? 2 : 1)",
+                    selection: pagerSelection(in: pages),
+                    reach: spreadActive ? 4 : 2,
+                    neighbour: { index, step in pagerNeighbour(of: index, step: step, in: pages) },
+                    content: { index in AnyView(pagerChild(index, pages: pages, liveSearch: liveSearch)) }
+                )
+                // Finds the UIKit scroll view inside the pager, so a programmatic turn can wait for a
+                // slide to end (`MushafPagerView.Coordinator.show`) and the find bar's keyboard goes on a
+                // drag. Inert: no size of its own, no touches.
                 .background(MushafPagerProbeView())
                 // The pager's own band, for `spreadActive`: a paged TabView is laid out INSIDE the
                 // safe area, so its frame is already the region between the bars that a page gets
@@ -1709,6 +1688,10 @@ struct SurahPageReader<Controls: View>: View {
                 .animation(nil, value: selectRoom)
             }
         }
+        // A settings page's own animated write (SettingsControls.swift, `withSettingsPageAnimation`)
+        // reaches the pages WITHOUT its animation: every mounted page used to recompose and re-lay
+        // itself out inside that ease-in-out on every flip of a switch in the sheet above it.
+        .ignoresSettingsPageAnimation()
         // A phone in LANDSCAPE reads the page across the sensor housing's safe area. Measured
         // 2026-10-05: the pager's band came out 750x169 on an 874 pt screen, so 62 pt of each side
         // went to the housing - 124 pt, 14% of the width, on the axis a landscape mushaf has least of
@@ -1799,7 +1782,8 @@ struct SurahPageReader<Controls: View>: View {
                 if facsimileDocument != nil { facsimileDocument = nil }
                 return
             }
-            let document = await MushafPDFLibrary.loadDocument(for: Self.facsimileTag(of: key))
+            let edition = Self.facsimileEdition(of: key)
+            let document = await MushafPDFLibrary.loadDocument(for: edition.tag, hafsEdition: edition.hafsEdition)
             guard !Task.isCancelled, facsimileKey == key else { return }
             facsimileDocument = document
         }
@@ -1941,13 +1925,17 @@ struct SurahPageReader<Controls: View>: View {
             // reader back to the page it was opened at.
             guard !didSetInitialPage else { return }
             didSetInitialPage = true
-            let target = startingPageIndex(in: pages)
+            let landing = startingLanding(in: pages, surahID: surah.id, ayahID: initialAyah)
+            let target = landing.pageIndex
             // Only latch when the index actually changes - an unfired onChange would leave the latch
-            // armed and silently swallow the first REAL page turn's clear.
-            if target != pageIndex { suppressNextPageTurnClear = true }
+            // armed and silently swallow the first REAL page turn's clear. The landing is armed on the
+            // same condition for the same reason; the index change's handler reports from it.
+            if target != pageIndex {
+                suppressNextPageTurnClear = true
+                pendingLanding = landing
+            }
             seedPageIndex(target)
-            reportSurah(on: pageIndex, in: pages)
-            reportAnchor(on: pageIndex, in: pages)
+            reportPosition(on: pageIndex, in: pages, landing: landing)
             MushafPageRenderCache.prewarm(pages: pages, around: pageIndex, includeCenter: true)
         }
         // The surah was swapped in place (surah picker, next-surah, a search hit). The reader used to be
@@ -1963,22 +1951,31 @@ struct SurahPageReader<Controls: View>: View {
         // pick of 2:255 from al-Kahf re-seeded once as (18, ayah 10) and once as (2, no ayah), and
         // landed on al-Baqarah's first page instead of Ayat al-Kursi's (logged).
         .onChange(of: ReseedKey(surahID: surah.id, ayahID: initialAyah, token: jumpToken)) { key in
+            #if DEBUG
+            MushafPagerProbe.trace("reseed key surah=\(key.surahID) ayah=\(key.ayahID ?? 0) token=\(key.token) pages=\(pages.count) idx=\(pageIndex)")
+            #endif
             reseedToStartingPage(in: pages, surahID: key.surahID, ayahID: key.ayahID)
         }
         .onChange(of: pageIndex) { index in
             #if DEBUG
             MushafPagerProbe.trace("pageIndex \(previousPageIndex) -> \(index) spread=\(spreadActive ? 1 : 0) turning=\(MushafPagerProbe.shared.isTurning ? 1 : 0)")
             #endif
+            // The landing this index change was bound for, if a seed, swap or repagination armed one
+            // (see `pendingLanding`). Consumed here whatever the page: a swipe that got in first reads
+            // its own page, and the landing never outlives the change that follows it.
+            let landing = pendingLanding
+            if landing != nil { pendingLanding = nil }
+            // The page moved (a swipe, a seed, a turn's own write): a programmatic turn still waiting on
+            // its render is overtaken and must not pull the reader somewhere else after it.
+            pagerBand.turnGeneration &+= 1
             // Which way the reader is moving, for the ring's order: a run of swipes keeps the pages
             // AHEAD of it warm first. A seed or a far jump (no previous page yet) stays symmetric.
             let direction = previousPageIndex >= 0 ? (index - previousPageIndex).signum() : 0
             previousPageIndex = index
-            recentreWindow(on: index, in: pages)
             // Leaving a page resets its pinch zoom to the fitted view (user rule: same as the PDF) -
             // otherwise the adjacent page stays mounted zoomed-in and greets you magnified on return.
             NotificationCenter.default.post(name: PageZoomScrollView.resetZoomNotification, object: nil)
-            reportSurah(on: index, in: pages)
-            reportAnchor(on: index, in: pages)
+            reportPosition(on: index, in: pages, landing: landing)
             // `includeCenter` is load-bearing for far jumps (page/juz/surah picker): this onChange runs
             // BEFORE the landing page's body, so without the center the ring's 10 fits were enqueued
             // first on the serial fit queue and the landing page's own fit ran LAST behind all of them -
@@ -1997,14 +1994,23 @@ struct SurahPageReader<Controls: View>: View {
                 if highlightedAyah != nil { highlightedAyah = nil }
                 onPageTurned?()
             }
+            // Whatever turned the page, a mark the pages now on screen do not hold is dropped. The
+            // suppressed clear above exists so that a search hit's or an ayah pick's OWN mark survives
+            // the turn that lands on it - and that mark is on the landing page. The mark of the ayah the
+            // reader OPENED at is not: it outlived every Choose Surah pick and every recitation-driven
+            // turn, and a mode switch lands on the marked ayah first, so Read as List after picking
+            // Ibrahim from al-Baqarah reopened al-Baqarah (2026-10-20, the "50/50").
+            if let mark = highlightedAyah, pages.indices.contains(index),
+               !visiblePageIndices(around: index, in: pages).contains(where: { pages[$0].ayahRefs.contains(mark) }) {
+                highlightedAyah = nil
+            }
             // Page-scoped matches are per-page, so turning the page re-runs the find against the new one. A
             // surah-wide find already holds every match and turning pages is how you STEP through it -
             // resyncing there would throw the position back to the first match on every step.
             if searchActive, findSurahID == nil { syncMatch(pages: pages, resetIndex: true) }
-            guard pages.indices.contains(index),
-                  let surah = pages[index].firstSurah,
-                  let ayah = pages[index].firstAyah else { return }
-            saveLastRead(surahID: surah.id, ayahID: ayah.id)
+            // The last read is the position too: picking al-Falaq used to record al-Ikhlas.
+            guard let position = readingPosition(on: index, in: pages, landing: landing) else { return }
+            saveLastRead(surahID: position.surah.id, ayahID: position.ayah.id)
         }
         .onChange(of: pageSearchText) { _ in syncMatch(pages: pages, resetIndex: true) }
         .onChange(of: findFilters) { _ in syncMatch(pages: pages, resetIndex: true) }
@@ -2137,6 +2143,13 @@ struct SurahPageReader<Controls: View>: View {
     /// starting playback on an ayah that lives on another page - so the reader turns the page and reading
     /// carries on, instead of the page being swapped out from under the reciter.
     private func turnPage(to target: Int, in pages: [MushafPage], suppressClear: Bool = true) {
+        #if DEBUG
+        MushafPagerProbe.trace("turn to=\(target) from=\(pageIndex) spread=\(spreadActive ? 1 : 0)")
+        #endif
+        // Every request overtakes a turn still waiting on its render, a request for the page already
+        // showing included (`turnGeneration`).
+        pagerBand.turnGeneration &+= 1
+        let generation = pagerBand.turnGeneration
         guard pages.indices.contains(target), target != pageIndex else { return }
         // The other page of the spread already open: nothing turns, the reader's position just moves
         // onto it (footer, last read). Same latch contract as a real turn.
@@ -2145,6 +2158,7 @@ struct SurahPageReader<Controls: View>: View {
             pageIndex = target
             return
         }
+        pagerBand.turnTarget = (target, generation)
         // Compose the destination BEFORE the turn starts, so what slides in is the page rather than its
         // loading spinner. (`.onChange(of: pageIndex)` prewarms too, but that runs as the turn begins.)
         MushafPageRenderCache.prewarm(pages: pages, around: target, radius: 1, includeCenter: true)
@@ -2154,36 +2168,42 @@ struct SurahPageReader<Controls: View>: View {
         // the moment its fit lands, or after 0.4 s regardless, so a slow fit degrades to the old
         // behaviour (the spinner, briefly) rather than to a jump that never comes.
         MushafPageRenderCache.whenRendered(page: pages[target], within: 0.4) {
+            #if DEBUG
+            MushafPagerProbe.trace("turn fired to=\(target) idx=\(pageIndex)")
+            #endif
             // The reader may have moved on while the fit ran (a swipe, a newer jump).
-            guard pages.indices.contains(target), target != pageIndex else { return }
+            guard pagerBand.turnGeneration == generation, pages.indices.contains(target), target != pageIndex
+            else { return }
             // A follow/seed is not a user page turn - it must not wipe the mark or the selections. A
             // DELIBERATE jump (the page/juz pickers) passes false: there a new page is a fresh start,
             // exactly as if it had been swiped to. Latched HERE, not before the wait: a turn that the
             // guard above abandons must not leave the latch armed to swallow the next real turn's clear.
             if suppressClear { suppressNextPageTurnClear = true }
-            // Mount the target's ring NOW (this transaction, not animated) and keep the departure page
-            // mounted through the slide: the animated selection change below must find both pages
-            // already there, with the mounted set unchanged, or the pager crossfades instead of sliding
-            // (verified on the simulator: a ring inserted inside the animated transaction faded in).
-            // Released after the turn has settled, again outside any animation.
-            let departure = pageIndex
-            let anchors: Set<Int> = [departure, target]
-            windowAnchors = anchors
-            // Released once the slide has settled - and only while the pager rests, so the release
-            // can never land under a swipe that started right after the turn (see `recentreWindow`).
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                whenPagerRests {
-                    if windowAnchors == anchors { windowAnchors = [] }
-                }
+            // A tick later, outside whichever update this callback arrived in (`scheduleTurnWrite`): a
+            // cache hit calls back synchronously, inside the handler's own update. Over the printed
+            // facsimile any PDFKit view still holding first responder is resigned first; a first responder
+            // resigned under the slide used to cycle (see `FitFlooredPDFView.releaseFirstResponder`).
+            if facsimileDocument != nil {
+                DispatchQueue.main.async { MushafFacsimileFocus.release() }
             }
-            // Deferred one runloop tick, deliberately: this is called from `.onChange` handlers running
-            // INSIDE the player publish's own update pass, and a selection write made there reached the
-            // UIPageViewController without the animated transaction - the page SNAPPED instead of sliding
-            // (verified frame-by-frame: one giant scene step, zero intermediates). Hopping to the next
-            // tick puts the write in a fresh transaction whose animation the pager honors.
-            DispatchQueue.main.async {
-                withAnimation(.easeInOut(duration: 0.35)) { pageIndex = target }
-            }
+            scheduleTurnWrite(to: target, generation: generation)
+        }
+    }
+
+    /// The animated selection write of a programmatic turn, one run-loop tick later. Deferred
+    /// deliberately: `turnPage` is called from `.onChange` handlers running INSIDE the player
+    /// publish's own update pass, and a selection write made there reached the UIPageViewController
+    /// without the animated transaction - the page SNAPPED instead of sliding (verified
+    /// frame-by-frame: one giant scene step, zero intermediates). Hopping to the next tick puts the
+    /// write in a fresh transaction whose animation the pager honors.
+    private func scheduleTurnWrite(to target: Int, generation: Int) {
+        DispatchQueue.main.async {
+            // The reader may have moved on meanwhile (a swipe, a newer jump: `turnGeneration`).
+            guard pagerBand.turnGeneration == generation, target != pageIndex else { return }
+            withAnimation(.easeInOut(duration: 0.35)) { pageIndex = target }
+            #if DEBUG
+            MushafPagerProbe.trace("turn wrote to=\(target) idx=\(pageIndex)")
+            #endif
         }
     }
 
@@ -2196,11 +2216,14 @@ struct SurahPageReader<Controls: View>: View {
     /// `.hidden()` one does not receive it). They stand down while the find field is typing (the arrows
     /// move its caret), while the page or juz wheel is up, and while a turn is still sliding.
     private func arrowKeyPageTurns(pages: [MushafPage]) -> some View {
+        // `.withoutMirroring`: the default localization swaps the arrow keys in a right-to-left interface,
+        // and the pager keeps forward on the LEFT in every interface language (`MushafPagerView`), so in
+        // Arabic and Urdu the left arrow went back, against the page it points at.
         ZStack {
             Button("Next Page") { arrowKeyTurn(forward: true, in: pages) }
-                .keyboardShortcut(.leftArrow, modifiers: [])
+                .keyboardShortcut(.leftArrow, modifiers: [], localization: .withoutMirroring)
             Button("Previous Page") { arrowKeyTurn(forward: false, in: pages) }
-                .keyboardShortcut(.rightArrow, modifiers: [])
+                .keyboardShortcut(.rightArrow, modifiers: [], localization: .withoutMirroring)
         }
         .opacity(0)
         .frame(width: 0, height: 0)
@@ -2211,7 +2234,13 @@ struct SurahPageReader<Controls: View>: View {
     private func arrowKeyTurn(forward: Bool, in pages: [MushafPage]) {
         guard !pages.isEmpty, activePicker == nil, !pageSearchFocused,
               !MushafPagerProbe.shared.isTurning else { return }
-        let onScreen = visiblePageIndices(around: pageIndex, in: pages)
+        // From the page a turn still waiting on its render is headed for, when one is (`turnTarget`):
+        // from the page on screen, a left then a right before the first landed went forward one and
+        // back two. Back at the page on screen, `turnPage` turns nothing and drops the waiting turn.
+        let waiting = pagerBand.turnTarget.flatMap {
+            $0.generation == pagerBand.turnGeneration && pages.indices.contains($0.index) ? $0.index : nil
+        }
+        let onScreen = visiblePageIndices(around: waiting ?? pageIndex, in: pages)
         guard let first = onScreen.first, let last = onScreen.last else { return }
         // Back lands on the previous spread's FIRST page, where a swipe back lands.
         let target = forward ? last + 1 : spreadLeading(first - 1, in: pages)
@@ -2227,13 +2256,22 @@ struct SurahPageReader<Controls: View>: View {
     /// old instant landing for deliberate navigation is gone. `turnPage` keeps the arrival highlight a
     /// search hit or picker set (its suppressed page-turn clear).
     private func reseedToStartingPage(in pages: [MushafPage], surahID: Int, ayahID: Int?) {
-        let target = startingPageIndex(in: pages, surahID: surahID, ayahID: ayahID)
+        let landing = startingLanding(in: pages, surahID: surahID, ayahID: ayahID)
+        let target = landing.pageIndex
+        #if DEBUG
+        MushafPagerProbe.trace("reseed target=\(target) idx=\(pageIndex) landing=\(landing.surahID):\(landing.ayahID ?? 0)")
+        #endif
         if target != pageIndex {
+            pendingLanding = landing
             turnPage(to: target, in: pages)
-            // `.onChange(of: pageIndex)` reports + prewarms + saves.
+            // `.onChange(of: pageIndex)` reports (from the landing) + prewarms + saves.
         } else {
-            reportSurah(on: target, in: pages)
-            reportAnchor(on: target, in: pages)
+            // The same page (al-Falaq picked while on the page al-Ikhlas opens): nothing turns, and the
+            // position moves onto the picked surah - title, header, anchor and last read alike.
+            reportPosition(on: target, in: pages, landing: landing)
+            if let position = readingPosition(on: target, in: pages, landing: landing) {
+                saveLastRead(surahID: position.surah.id, ayahID: position.ayah.id)
+            }
         }
     }
 
@@ -2260,8 +2298,12 @@ struct SurahPageReader<Controls: View>: View {
         if let target = byNumber ?? byAnchor,
            pages.indices.contains(target), target != pageIndex {
             // A re-seed is not a user page turn - don't wipe the mark/selections. The pageIndex change
-            // reports + prewarms via its own onChange.
+            // reports + prewarms via its own onChange, from the anchor where the new page still holds
+            // its surah, so a riwayah switch keeps the position's surah rather than the page's top one.
             suppressNextPageTurnClear = true
+            if let anchor = currentAnchor {
+                pendingLanding = MushafPageLanding(pageIndex: target, surahID: anchor.surahID, ayahID: anchor.ayahID)
+            }
             seedPageIndex(target)
         } else {
             if pageIndex >= pages.count { seedPageIndex(pages.count - 1) }
@@ -2290,12 +2332,15 @@ struct SurahPageReader<Controls: View>: View {
         let match = matches[currentMatchIndex]
         highlightedAyah = match.ref
         // A surah-wide find can land its first match on a page other than the one on screen - take the
-        // reader there, the way tapping through the matches does. Through `turnPage`, which mounts the
-        // target's ring before the animated write: a bare write to a page outside the mounted window
-        // selected an unmounted tag while `recentreWindow` moved the window in the same pass (Quality
+        // reader there, the way tapping through the matches does. Through `turnPage`, which composes the
+        // landing page before the animated write and defers the write out of this update (Quality
         // Guide G6).
         if findSurahID != nil, match.pageIndex != pageIndex, pages.indices.contains(match.pageIndex) {
             turnPage(to: match.pageIndex, in: pages, suppressClear: true)
+        } else if findSurahID != nil, match.pageIndex == pageIndex {
+            // The match is on this page: a turn to an earlier match, still waiting on its render, must
+            // not carry the reader off it (`turnGeneration`).
+            pagerBand.turnGeneration &+= 1
         }
     }
 
@@ -2313,6 +2358,10 @@ struct SurahPageReader<Controls: View>: View {
         }
         if match.pageIndex != pageIndex, pages.indices.contains(match.pageIndex) {
             turnPage(to: match.pageIndex, in: pages, suppressClear: true)
+        } else {
+            // Back on this page: the step to a match elsewhere, if its turn still waits on the render,
+            // is overtaken (`turnGeneration`).
+            pagerBand.turnGeneration &+= 1
         }
     }
 
@@ -2419,9 +2468,10 @@ struct SurahPageReader<Controls: View>: View {
         turnPage(to: index, in: pages, suppressClear: true)
     }
 
-    /// The in-page find bar: a text field, a match counter with up/down, a close button, and - always - the
-    /// two ways OUT of this page: widen the find to the whole surah (in place, stepping through it turns
-    /// pages), or hand the query to the whole-Quran search. Both are offered whether or not this page has a
+    /// The in-page find bar: a text field, a match counter with up/down, a close button, and the ways OUT
+    /// of this page: widen the find to the whole surah (in place, stepping through it turns pages), which
+    /// is offered in both modes, and hand the query to the whole-Quran search, which is Full Mode only
+    /// (Simple leaves that to the Quran tab's search). They are offered whether or not this page has a
     /// match, which is the point: a page with nothing on it should never be a dead end.
     /// `matches` comes from the body's shared fold, so it runs once per keystroke.
     private func pageFindBar(pages: [MushafPage], matches: [MushafFindMatch]) -> some View {
@@ -2435,79 +2485,67 @@ struct SurahPageReader<Controls: View>: View {
         // row goes, and the scope buttons join the field's row, so the bar is one row there.
         let compact = verticalSizeClass == .compact
 
-        return VStack(spacing: 5) {
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
+        // ONE row of room: the field, its counter and arrows, and the X (the scope buttons join it in
+        // compact height). The filter chips and the scope row used to be two more rows of the bar
+        // itself, and the bar's room comes out of the page: on the 17 Pro the band went from 526 to
+        // 402 pt, so the page refitted to three quarters of its size the moment Search was tapped, and
+        // with the Now Playing bar up it went squatter than wide (Abu, 2026-10-23: "Searching quran
+        // mushaf page is messy"). Those rows now HANG below the bar, over the page, while the field is
+        // focused (`findHangingRows`), the keyboard covering the page's lower half anyway; once it goes,
+        // this row alone stays and the page has its height back. The room is still one fixed height,
+        // so the page never refits as the keyboard comes and goes.
+        return HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
 
-                TextField(searchingSurah ? "Search this surah" : "Search this page", text: $pageSearchText)
-                    .textFieldStyle(.plain)
-                    .autocorrectionDisabled()
-                    .focused($pageSearchFocused)
-                    .submitLabel(.search)
-                    // One height, focused or not: an editing field is a point taller (125.67 against
-                    // 126.67 for the bar, measured), and the page's band followed it, so every time the
-                    // keyboard came or went the page refitted by a point.
-                    .frame(height: findFieldHeight)
+            TextField(searchingSurah ? "Search this surah" : "Search this page", text: $pageSearchText)
+                .textFieldStyle(.plain)
+                .autocorrectionDisabled()
+                .focused($pageSearchFocused)
+                .submitLabel(.search)
+                // One height, focused or not: an editing field is a point taller (125.67 against
+                // 126.67 for the bar, measured), and the page's band followed it, so every time the
+                // keyboard came or went the page refitted by a point.
+                .frame(height: findFieldHeight)
 
-                if hasQuery {
-                    Text(matches.isEmpty ? "0/0" : "\(currentMatchIndex + 1)/\(matches.count)")
-                        .font(.subheadline.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(matches.isEmpty ? .secondary : .primary)
+            if hasQuery {
+                Text("\(matches.isEmpty ? 0 : currentMatchIndex + 1)/\(matches.count)")
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(matches.isEmpty ? .secondary : .primary)
 
-                    Button { goToMatch(-1, pages: pages) } label: {
-                        Image(systemName: "chevron.up").font(.body.weight(.semibold))
-                    }
-                    .disabled(matches.isEmpty)
-
-                    Button { goToMatch(1, pages: pages) } label: {
-                        Image(systemName: "chevron.down").font(.body.weight(.semibold))
-                    }
-                    .disabled(matches.isEmpty)
+                Button { goToMatch(-1, pages: pages) } label: {
+                    Image(systemName: "chevron.up").font(.body.weight(.semibold))
                 }
+                .disabled(matches.isEmpty)
 
-                if compact {
-                    findScopeButtons(pages: pages, scopeSurah: scopeSurah, searchingSurah: searchingSurah,
-                                     maxWidth: 200)
+                Button { goToMatch(1, pages: pages) } label: {
+                    Image(systemName: "chevron.down").font(.body.weight(.semibold))
                 }
-
-                Button {
-                    settings.hapticFeedback()
-                    // The keyboard goes first, outside the close's animation (see `searchActive`'s
-                    // onChange): dropped inside it, the chips below slid out of their row and over
-                    // the page as the keyboard went.
-                    pageSearchFocused = false
-                    withAnimation(.easeInOut) { searchActive = false }
-                } label: {
-                    Image(systemName: "xmark").font(.body.weight(.semibold))
-                }
-                .accessibilityLabel("Close search")
+                .disabled(matches.isEmpty)
             }
-            .foregroundStyle(settings.accentColor.color)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .conditionalGlassEffect(rectangle: true)
 
-            if !compact {
-                // The same buttons as the reader's search bar, bled to the screen edges so the row scrolls
-                // under the find bar's own side padding.
-                QuranSearchFilterBar(filters: $findFilters, surahs: [], inReader: true) {
-                    showFindFilterSheet = true
-                }
-                .padding(.horizontal, -(settings.defaultView ? 20 : 16))
-                .padding(.vertical, -4)
-
-                // The scope row. The first button is a TOGGLE that always names where it will take you - "Search
-                // this Surah" while the find is on this page, "Search this Page" once it has been widened - so
-                // the label is the action, never a status line you can't act on. The whole-Quran button beside
-                // it still hands the query off to the global search.
-                HStack(spacing: 6) {
-                    findScopeButtons(pages: pages, scopeSurah: scopeSurah, searchingSurah: searchingSurah,
-                                     maxWidth: .infinity)
-                }
+            if compact {
+                findScopeButtons(pages: pages, scopeSurah: scopeSurah, searchingSurah: searchingSurah,
+                                 maxWidth: 200)
             }
+
+            Button {
+                settings.hapticFeedback()
+                // The keyboard goes first, outside the close's animation (see `searchActive`'s
+                // onChange): dropped inside it, the chips below slid out of their row and over
+                // the page as the keyboard went.
+                pageSearchFocused = false
+                withAnimation(.easeInOut) { searchActive = false }
+            } label: {
+                Image(systemName: "xmark").font(.body.weight(.semibold))
+            }
+            .accessibilityLabel("Close search")
         }
+        .foregroundStyle(settings.accentColor.color)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .conditionalGlassEffect(rectangle: true)
         .padding(.horizontal, settings.defaultView ? 20 : 16)
         // SYMMETRIC air (user rule, after a round each way: 2pt read as glued to the title, 10pt
         // as "too much at the top" with none below): the same cushion above the pill and below the
@@ -2520,21 +2558,60 @@ struct SurahPageReader<Controls: View>: View {
         // The room is given back for exactly that state (the field focused = the keyboard up); it
         // costs the page nothing it can use, the keyboard covering most of it anyway.
         .padding(.top, compact && pageSearchFocused ? 40 : 0)
-        // What comes and goes as you type (the "Go to" rows, the no-matches note) HANGS below the bar,
-        // over the page, instead of growing it: grown, each keystroke that added or removed a row moved
-        // the page's band and refitted the page under the keyboard (402, 331, 366 pt typing "2:255",
-        // 2026-09-25). The bar's own room is one fixed height, the page-mode rule for anything
-        // transient (`jumpPickerOverlay` is the other).
+        // What comes and goes (the chips and scope rows with the keyboard, the "Go to" rows and the
+        // no-matches note as you type) HANGS below the bar, over the page, instead of growing it: grown,
+        // each keystroke that added or removed a row moved the page's band and refitted the page under
+        // the keyboard (402, 331, 366 pt typing "2:255", 2026-09-25). The bar's own room is one fixed
+        // height, the page-mode rule for anything transient (`jumpPickerOverlay` is the other).
         .overlay(alignment: .bottom) {
-            findResultRows(pages: pages, targets: refTargets,
-                           showsNoMatches: hasQuery && matches.isEmpty && refTargets.isEmpty,
-                           searchingSurah: searchingSurah)
+            findHangingRows(pages: pages, scopeSurah: scopeSurah, searchingSurah: searchingSurah,
+                            targets: refTargets,
+                            showsNoMatches: hasQuery && matches.isEmpty && refTargets.isEmpty,
+                            compact: compact)
                 .alignmentGuide(.bottom) { $0[.top] }
         }
         .sheet(isPresented: $showFindFilterSheet) {
             QuranSearchFilterSheet(filters: $findFilters, surahs: [], inReader: true)
                 .smallMediumSheetPresentation()
         }
+    }
+
+    /// Everything that hangs below the find bar, over the page, never growing the bar's room. While the
+    /// field is focused: the filter chips and the scope row (the page / surah toggle, the whole-Quran
+    /// hand-off), the typing-time choices. Always: the typed-reference "Go to" rows and the no-matches
+    /// note (`findResultRows`). In compact height the scope buttons ride in the field's row and the chips
+    /// are not offered, as before.
+    @ViewBuilder
+    private func findHangingRows(pages: [MushafPage], scopeSurah: Surah?, searchingSurah: Bool,
+                                 targets: [(surah: Surah, ayahID: Int?)], showsNoMatches: Bool,
+                                 compact: Bool) -> some View {
+        VStack(spacing: 5) {
+            if !compact, pageSearchFocused {
+                // The same buttons as the reader's search bar, edge to edge (the overlay is as wide as
+                // the bar, side padding included), so the row scrolls under the bar's side padding.
+                QuranSearchFilterBar(filters: $findFilters, surahs: [], inReader: true) {
+                    showFindFilterSheet = true
+                }
+                .padding(.vertical, -4)
+
+                // The scope row. The first button is a TOGGLE that always names where it will take you - "Search
+                // this Surah" while the find is on this page, "Search this Page" once it has been widened - so
+                // the label is the action, never a status line you can't act on. In Full Mode the whole-Quran
+                // button beside it hands the query off to the global search; Simple shows this toggle alone.
+                HStack(spacing: 6) {
+                    findScopeButtons(pages: pages, scopeSurah: scopeSurah, searchingSurah: searchingSurah,
+                                     maxWidth: .infinity)
+                }
+                .padding(.horizontal, settings.defaultView ? 20 : 16)
+            }
+
+            findResultRows(pages: pages, targets: targets, showsNoMatches: showsNoMatches,
+                           searchingSurah: searchingSurah)
+        }
+        // The rows come and go with the keyboard on a fade of their own: the focus writes around them
+        // run in the reader's still transaction (no animation), right for the band and wrong for a row
+        // appearing over the page.
+        .animation(.easeInOut(duration: 0.15), value: pageSearchFocused)
     }
 
     /// The find bar's transient rows, hung below it (`pageFindBar`). The typed-reference rows: "2:255" /
@@ -2553,8 +2630,8 @@ struct SurahPageReader<Controls: View>: View {
                         jumpToReference(target, pages: pages)
                     } label: {
                         scopeButtonLabel(
-                            target.ayahID.map { "Go to \(target.surah.nameTransliteration) \(target.surah.id):\($0)" }
-                                ?? "Go to Surah \(target.surah.nameTransliteration)",
+                            target.ayahID.map { String(localized: "Go to \(target.surah.displayName) \(target.surah.id):\($0)") }
+                                ?? String(localized: "Go to Surah \(target.surah.displayName)"),
                             systemImage: "arrow.turn.down.right",
                             color: settings.accentColor.color
                         )
@@ -2576,8 +2653,8 @@ struct SurahPageReader<Controls: View>: View {
     }
 
     /// The two scope buttons share a label so they read as one pair rather than two differently-sized pills.
-    /// The find bar's two scope buttons: the page/surah TOGGLE and the whole-Quran hand-off. Their own
-    /// row under the field normally; beside it, capped in width, when the height is compact.
+    /// The find bar's two scope buttons: the page/surah TOGGLE and the whole-Quran hand-off (Full Mode
+    /// only). Their own row under the field normally; beside it, capped in width, when the height is compact.
     @ViewBuilder
     private func findScopeButtons(pages: [MushafPage], scopeSurah: Surah?, searchingSurah: Bool,
                                   maxWidth: CGFloat) -> some View {
@@ -2590,7 +2667,7 @@ struct SurahPageReader<Controls: View>: View {
                 syncMatch(pages: pages, resetIndex: true)
             } label: {
                 scopeButtonLabel(
-                    searchingSurah ? "Search this Page" : "Search this Surah",
+                    searchingSurah ? String(localized: "Search this Page") : String(localized: "Search this Surah"),
                     systemImage: searchingSurah ? "doc.text.magnifyingglass" : "book.closed",
                     color: settings.accentColor.accent1,
                     maxWidth: maxWidth
@@ -2599,19 +2676,23 @@ struct SurahPageReader<Controls: View>: View {
             .buttonStyle(.plain)
         }
 
-        Button {
-            settings.hapticFeedback()
-            let query = pageSearchText
-            pageSearchFocused = false
-            withAnimation(.easeInOut) { searchActive = false }
-            QuranSearchHandoff.shared.request(query)
-        } label: {
-            scopeButtonLabel("Search the whole Quran",
-                             systemImage: "text.magnifyingglass",
-                             color: settings.accentColor.color,
-                             maxWidth: maxWidth)
+        // Simple Mode leaves the whole-Quran search to the Quran tab's own search bar, as the list
+        // reader's controls row drops its Global button; this page and this surah stay.
+        if !settings.hides(.findWholeQuran) {
+            Button {
+                settings.hapticFeedback()
+                let query = pageSearchText
+                pageSearchFocused = false
+                withAnimation(.easeInOut) { searchActive = false }
+                QuranSearchHandoff.shared.request(query)
+            } label: {
+                scopeButtonLabel(String(localized: "Search the whole Quran"),
+                                 systemImage: "text.magnifyingglass",
+                                 color: settings.accentColor.color,
+                                 maxWidth: maxWidth)
+            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
     }
 
     private func scopeButtonLabel(_ title: String, systemImage: String, color: Color,
@@ -2627,16 +2708,34 @@ struct SurahPageReader<Controls: View>: View {
             .conditionalGlassEffect(rectangle: true)
     }
 
-    /// The single gate on "which surah am I in". Every page turn calls this, but only a turn that lands on a
-    /// page whose TOP surah is a different surah gets past the id check - so an intra-surah turn writes
-    /// nothing, re-renders nothing, and notifies nobody. Doing the comparison HERE (rather than in the
-    /// parent's callback) is the point: the parent's guard could only ever fire after the reader had already
-    /// pushed a value at it on every single swipe.
-    private func reportSurah(on index: Int, in pages: [MushafPage]) {
-        guard pages.indices.contains(index), let surah = pages[index].displayedSurah else { return }
+    /// The single gate on "which surah am I in": the position's surah (`MushafPagination.readingPosition`).
+    /// Every page turn reports, but only one whose position is in a different surah gets past the id
+    /// check - so an intra-surah turn writes nothing, re-renders nothing, and notifies nobody. Doing the
+    /// comparison HERE (rather than in the parent's callback) is the point: the parent's guard could only
+    /// ever fire after the reader had already pushed a value at it on every single swipe.
+    private func reportSurah(_ surah: Surah) {
         guard headerSurah?.id != surah.id else { return }
         headerSurah = surah
         onSurahChange?(surah)
+    }
+
+    /// The position on the page at `index` - `landing` honoured only when it is bound to that page.
+    private func readingPosition(on index: Int, in pages: [MushafPage],
+                                 landing: MushafPageLanding?) -> (surah: Surah, ayah: Ayah)? {
+        guard pages.indices.contains(index) else { return nil }
+        let bound = landing.flatMap { $0.pageIndex == index ? (surahID: $0.surahID, ayahID: $0.ayahID) : nil }
+        return MushafPagination.readingPosition(on: pages[index], landing: bound)
+    }
+
+    /// Reports the position on the page at `index`: its surah to the header and the parent's title, its
+    /// (surah, ayah) as the anchor.
+    private func reportPosition(on index: Int, in pages: [MushafPage], landing: MushafPageLanding?) {
+        guard let position = readingPosition(on: index, in: pages, landing: landing) else { return }
+        #if DEBUG
+        MushafPagerProbe.trace("report idx=\(index) page=\(pages[index].page) position=\(position.surah.id):\(position.ayah.id) landing=\(landing.map { "\($0.pageIndex)/\($0.surahID):\($0.ayahID ?? 0)" } ?? "none") first=\(pages[index].firstSurah?.id ?? 0):\(pages[index].firstAyah?.id ?? 0)")
+        #endif
+        reportSurah(position.surah)
+        reportAnchor(surah: position.surah, ayah: position.ayah, page: pages[index])
     }
 
     /// The reader's pinned surah header, in its smallest form: revelation symbol, ayah/page summary at
@@ -2741,17 +2840,10 @@ struct SurahPageReader<Controls: View>: View {
                                       : "Hide the reader controls and surah header")
     }
 
-    private func reportAnchor(on index: Int, in pages: [MushafPage]) {
-        guard pages.indices.contains(index),
-              let surah = pages[index].firstSurah,
-              let ayah = pages[index].firstAyah else { return }
+    private func reportAnchor(surah: Surah, ayah: Ayah, page: MushafPage) {
         currentAnchor = (surah.id, ayah.id)
-        currentAnchorPage = pages[index].page
+        currentAnchorPage = page.page
         onPageAnchor?(surah.id, ayah.id)
-        // A surah picker can land on the page already selected by the pager, so pageIndex may not
-        // change and its persistence hook would never run. Persist the visible anchor whenever the
-        // reader reports it; the settings layer still debounces the actual write.
-        saveLastRead(surahID: surah.id, ayahID: ayah.id)
     }
 
     private func saveLastRead(surahID: Int, ayahID: Int) {
@@ -2779,14 +2871,20 @@ struct SurahPageReader<Controls: View>: View {
     /// everyone starts on) produced "" here, which the loader below read as "not the facsimile", and
     /// "Read Pages as Printed Mushaf" silently kept composing text for Hafs while every other
     /// riwayah opened its print (2026-09-12).
+    /// The Hafs edition rides along after a "|", so picking another edition reloads the document.
     private var facsimileKey: String {
         guard settings.resolvedMushafPageLanguage.isPDF else { return "" }
         return "pdf:" + (settings.displayQiraahForArabic ?? Settings.Riwayah.hafsTag)
+            + "|" + settings.resolvedMushafHafsPDFEdition.rawValue
     }
 
-    /// The riwayah tag inside a non-empty `facsimileKey`.
-    private static func facsimileTag(of key: String) -> String {
-        key.hasPrefix("pdf:") ? String(key.dropFirst(4)) : key
+    /// The riwayah tag and Hafs edition inside a non-empty `facsimileKey`.
+    private static func facsimileEdition(of key: String) -> (tag: String, hafsEdition: MushafHafsPDFEdition) {
+        let body = key.hasPrefix("pdf:") ? String(key.dropFirst(4)) : key
+        let parts = body.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+        let tag = parts.first.map(String.init) ?? ""
+        let edition = parts.count > 1 ? MushafHafsPDFEdition(rawValue: String(parts[1])) ?? .alIslam : .alIslam
+        return (tag, edition)
     }
 
     /// A wide reader has the room to put the legend / search / riwayah row BESIDE the footer instead of
@@ -2820,7 +2918,15 @@ struct SurahPageReader<Controls: View>: View {
     /// own text degrades more gracefully than that, so the crowded case keeps the old 404.
     private var wideFooterWidth: CGFloat {
         let base: CGFloat = controlsRowIsCrowded ? 404 : 460
-        return min(max(readerWidth / 2, base * footerScale), max(readerWidth - 240, 0))
+        // The controls row's floor beside it. Crowded (legend + "Search" + riwayah picker without
+        // its "(default)" suffix), the row wants ~400 pt with its own 48 pt of side padding, which a
+        // 744 pt iPad mini or a 700 pt Mac window cannot give it without truncating the footer
+        // ("Surah 1...", "Page 312 / 604..." at 344 pt, measured 2026-10-20). 340 keeps the footer
+        // whole there and the search pill drops to its magnifier (`ViewThatFits` in the host's bar)
+        // instead of a clipped "Sea..."; the word comes back once the reader is ~800 pt wide
+        // (Abu, 2026-10-20: "so much space but search is getting eaten off").
+        let controlsFloor: CGFloat = controlsRowIsCrowded ? 340 : 240
+        return min(max(readerWidth / 2, base * footerScale), max(readerWidth - controlsFloor, 0))
     }
 
     /// Wide, the mini player takes the reader's whole width above the bottom row, as one horizontal bar
@@ -2912,7 +3018,12 @@ struct SurahPageReader<Controls: View>: View {
             let juzPosition = jr.map { pageIndex - $0.start + 1 } ?? 0
             let juzTotal = jr?.count ?? 0
 
-            let footerSurah = page.displayedSurah
+            // The meter's surah is the POSITION's (the header's and the title's) while the page holds
+            // it, else the page's top surah: after Choose Surah picked Ibrahim, the title said Ibrahim
+            // while this meter counted ar-Ra'd's pages ("Surah 7/7" for Ibrahim's first page).
+            let footerSurah = headerSurah.flatMap { header in
+                page.segments.contains { $0.surah.id == header.id } ? header : nil
+            } ?? page.displayedSurah
             let surahTotal = max(footerSurah?.pageCount ?? 1, 1)
             let surahPosition = min(
                 max((page.page - (footerSurah?.pageStart ?? page.page)) + 1, 1),
@@ -2941,7 +3052,7 @@ struct SurahPageReader<Controls: View>: View {
                 // never fold, so the play button rides in space the row already occupies and the fold
                 // stays ONE band change.
                 if let footerSurah {
-                    pageFooterPlayButton(surah: footerSurah)
+                    pageFooterPlayButton(surah: footerSurah, onScreen: surahsOnScreen(pages: pages))
                 }
 
             }
@@ -3001,12 +3112,22 @@ struct SurahPageReader<Controls: View>: View {
     }
 
     /// "Page 5", or "Pages 5–6" while both are on screen as a spread.
+    /// The footer's page line: "Page 42 / 604  7%", or "Pages 42–43 / 604  7%" for an open spread.
+    private func pageLine(for page: MushafPage, in pages: [MushafPage]) -> String {
+        let share = percent(page.page, of: pages.count)
+        let onScreen = visiblePageIndices(around: pageIndex, in: pages)
+        guard onScreen.count == 2, let first = onScreen.first, let last = onScreen.last else {
+            return String(localized: "Page \(page.page) / \(pages.count)  \(share)")
+        }
+        return String(localized: "Pages \(pages[first].page)–\(pages[last].page) / \(pages.count)  \(share)")
+    }
+
     private func pageLabel(for page: MushafPage, in pages: [MushafPage]) -> String {
         let onScreen = visiblePageIndices(around: pageIndex, in: pages)
         guard onScreen.count == 2, let first = onScreen.first, let last = onScreen.last else {
-            return "Page \(page.page)"
+            return String(localized: "Page \(page.page)")
         }
-        return "Pages \(pages[first].page)–\(pages[last].page)"
+        return String(localized: "Pages \(pages[first].page)–\(pages[last].page)")
     }
 
     /// The footer row's height. The info panel and the play control both take it, so the two read as one bar
@@ -3017,7 +3138,7 @@ struct SurahPageReader<Controls: View>: View {
     /// Mode, where it holds the two jump buttons alone (Abu, 2026-10-11: "make the height of the button
     /// and the page/juz thing smaller"): the smallest comfortable tap target, and the play control
     /// shrinks with it. Flipping the mode is one band change, which the page refits for once.
-    private var footerHeight: CGFloat { ((settings.simpleMode ? 44 : 62) * footerScale).rounded() }
+    private var footerHeight: CGFloat { ((settings.hides(.mushafMeters) ? 44 : 62) * footerScale).rounded() }
 
     /// The footer's size under a two-page spread on an iPad or in a Mac window: 1.3 times, so its 10 pt
     /// figures become 13 (they read as specks under two full pages; Abu, 2026-09-29: "the page/juz thing
@@ -3033,9 +3154,9 @@ struct SurahPageReader<Controls: View>: View {
                               surahPosition: Int, surahTotal: Int,
                               juzPosition: Int, juzTotal: Int) -> some View {
         VStack(spacing: 6 * footerScale) {
-            if settings.simpleMode {
+            if settings.hides(.mushafMeters) {
                 // Simple Mode: where this page is, as the two jumps; the meters, the percentages and
-                // the whole-mushaf bar step aside (docs/Simple Mode Guide.md). A shorter pill too
+                // the whole-mushaf bar step aside (Docs/Product/Simple Mode Guide.md). A shorter pill too
                 // (`footerHeight`): two buttons need no more.
                 HStack(spacing: 12 * footerScale) {
                     jumpButton(
@@ -3051,7 +3172,7 @@ struct SurahPageReader<Controls: View>: View {
                     )
 
                     jumpButton(
-                        title: "Juz \(page.juz ?? 1)",
+                        title: String(localized: "Juz \(page.juz ?? 1)"),
                         target: .juz,
                         color: settings.accentColor.accent2,
                         prominent: true,
@@ -3067,11 +3188,11 @@ struct SurahPageReader<Controls: View>: View {
                     VStack(alignment: .leading, spacing: 4 * footerScale) {
                         // Plain "Surah", deliberately (user rule: names run too long here); the row
                         // above names it.
-                        meter(label: "Surah", position: surahPosition, total: surahTotal,
+                        meter(label: String(localized: "Surah"), position: surahPosition, total: surahTotal,
                               color: settings.accentColor.accent1)
 
                         if juzTotal > 0 {
-                            meter(label: "Juz", position: juzPosition, total: juzTotal,
+                            meter(label: String(localized: "Juz"), position: juzPosition, total: juzTotal,
                                   color: settings.accentColor.accent2)
                         }
                     }
@@ -3080,7 +3201,9 @@ struct SurahPageReader<Controls: View>: View {
 
                     VStack(alignment: .trailing, spacing: 4 * footerScale) {
                         jumpButton(
-                            title: "\(pageLabel(for: page, in: pages)) / \(pages.count)  \(percent(page.page, of: pages.count))",
+                            // One sentence for the catalog with the numbers as numbers, like the juz line below:
+                            // nesting the page label as an argument left Arabic nothing to order the parts by.
+                            title: pageLine(for: page, in: pages),
                             target: .page,
                             color: settings.accentColor.accent1,
                             seed: {
@@ -3091,7 +3214,7 @@ struct SurahPageReader<Controls: View>: View {
                         )
 
                         jumpButton(
-                            title: "Juz \(page.juz ?? 1) / 30  \(percent(page.juz ?? 1, of: 30))",
+                            title: String(localized: "Juz \(page.juz ?? 1) / 30  \(percent(page.juz ?? 1, of: 30))"),
                             target: .juz,
                             color: settings.accentColor.accent2,
                             seed: {
@@ -3139,7 +3262,11 @@ struct SurahPageReader<Controls: View>: View {
     /// "43%" - how far through the mushaf (or through the 30 juz) this page sits.
     private func percent(_ position: Int, of total: Int) -> String {
         guard total > 0 else { return "" }
-        return "\(Int((Double(position) / Double(total) * 100).rounded()))%"
+        let whole = Int((Double(position) / Double(total) * 100).rounded())
+        if AppLanguage.isArabicScript, let localized = mushafPercentFormatter.string(from: NSNumber(value: Double(whole) / 100)) {
+            return localized
+        }
+        return "\(whole)%"
     }
 
     /// "Surah 12/48" with its own little bar - the two positions the reader actually cares about.
@@ -3190,7 +3317,7 @@ struct SurahPageReader<Controls: View>: View {
             }
         } label: {
             HStack(spacing: 3 * footerScale) {
-                Text(title)
+                Text(title.localizedDigits)
                 Image(systemName: isOpen ? "chevron.down" : "chevron.up.chevron.down")
                     .font(.system(size: size * 0.6 * footerScale))
             }
@@ -3313,7 +3440,7 @@ struct SurahPageReader<Controls: View>: View {
         // deliberately ignores the keyboard inset - see the note on `showTypedJump`). The TextField only
         // renders inside alerts on iOS 16+, which is why the keyboard button that raises this is gated.
         .alert(target == .page ? "Go to Page" : "Go to Juz", isPresented: $showTypedJump) {
-            TextField(target == .page ? "1 – \(pages.last?.page ?? pages.count)" : "1 – 30", text: $typedJumpText)
+            TextField((target == .page ? "1 – \(pages.last?.page ?? pages.count)" : "1 – 30").localizedDigits, text: $typedJumpText)
                 .keyboardType(.numberPad)
             Button("Go") { commitTypedJump(target: target, pages: pages) }
             Button("Cancel", role: .cancel) {}
@@ -3323,7 +3450,7 @@ struct SurahPageReader<Controls: View>: View {
     /// Jump from a typed number. Page numbers are what the footer displays (`pages[i].page`), not indices;
     /// out-of-range input clamps to the nearest end rather than being dropped.
     private func commitTypedJump(target: PickerTarget, pages: [MushafPage]) {
-        guard let n = Int(typedJumpText.trimmingCharacters(in: .whitespaces)), !pages.isEmpty else { return }
+        guard let n = Int(typedJumpText.normalizingArabicIndicDigitsToWestern.trimmingCharacters(in: .whitespaces)), !pages.isEmpty else { return }
         switch target {
         case .page:
             // `max(n, 1) - 1`, not `n - 1`: a typed "-9223372036854775808" (Mac or iPad keyboard) overflowed.
@@ -3341,18 +3468,54 @@ struct SurahPageReader<Controls: View>: View {
         withAnimation(.easeInOut) { activePicker = nil }
     }
 
+    /// Every surah with ayahs on the page(s) now on screen, in reading order: the one page, or both
+    /// pages of the open spread. More than one, and the play menu asks which one (Abu, 2026-10-21:
+    /// "when I click play surah in page mode and there are multiple surahs on the screen have me
+    /// choose via a menu").
+    private func surahsOnScreen(pages: [MushafPage]) -> [Surah] {
+        var seen = Set<Int>()
+        return visiblePageIndices(around: pageIndex, in: pages)
+            .flatMap { pages[$0].segments.map(\.surah) }
+            .filter { seen.insert($0.id).inserted }
+    }
+
+    /// A surah row in the "which surah" lists: the number and name, as the surah grid writes them.
+    private static func surahChoiceTitle(_ surah: Surah) -> String {
+        "\(surah.id): \(surah.displayName)"
+    }
+
     /// The list reader's play menu, verbatim (user rule: "take the SurahView play menu exactly and put it in
     /// the mushaf one") - reciter picker on top, then Other Options (custom range, random ayah, random
     /// reciter, repeat), ayah-by-ayah, last listened, and Play Surah nearest the thumb. It acts on the surah
-    /// the FOOTER is showing, which in page mode is wherever the reader has paged to.
-    private func pageFooterPlayButton(surah: Surah) -> some View {
+    /// the FOOTER is showing, which in page mode is wherever the reader has paged to. With more than one
+    /// surah on screen (`onScreen`: page 604 carries 112, 113 and 114; an open spread can hold more),
+    /// Play Surah and Play Ayah by Ayah open a list of those surahs instead of guessing the meter's one.
+    /// The double-tap shortcut cannot ask, so it keeps the meter's surah.
+    private func pageFooterPlayButton(surah: Surah, onScreen: [Surah]) -> some View {
         let idle = !nowPlaying.isLoading && !nowPlaying.isPlaying && !nowPlaying.isPaused
         let canResumeLast = settings.lastListenedSurah?.surahNumber == surah.id
         let repeatCounts = [20, 15, 10, 5, 3, 2]
+        let asksWhichSurah = onScreen.count > 1
 
         return Group {
             if idle {
-                Menu {
+                ShortcutMenu(
+                    doubleTap: MenuShortcut(String(localized: "Play Surah")) {
+                        settings.hapticFeedback()
+                        quranPlayer.playSurah(surahNumber: surah.id, surahName: surah.nameTransliteration)
+                    },
+                    hold: settings.isHafsDisplay && onPlayCustomRange != nil
+                        ? MenuShortcut(String(localized: "Play Custom Range")) {
+                            settings.hapticFeedback()
+                            onPlayCustomRange?()
+                        }
+                        : onChooseReciter.map { choose in
+                            MenuShortcut(String(localized: "Choose Reciter")) {
+                                settings.hapticFeedback()
+                                choose()
+                            }
+                        }
+                ) {
                     // Reciter picker pinned to the very top, with a divider under it - the same placement
                     // as the list reader's play menu, so all the play menus read identically.
                     if let onChooseReciter {
@@ -3367,11 +3530,14 @@ struct SurahPageReader<Controls: View>: View {
                     }
 
                     // Test Mode, as in the list reader's menu. The printed facsimile is a picture of
-                    // the page and cannot hide one ayah, so there the row says so and stays off.
-                    QuranTestModeMenuSection(settings: settings,
-                                             available: !settings.resolvedMushafPageLanguage.isPDF)
+                    // the page and cannot hide one ayah, so there the row says so and stays off. Simple
+                    // Mode trims it, and the divider under it, while it is off.
+                    QuranTestModeMenuGate(settings: settings) {
+                        QuranTestModeMenuSection(settings: settings,
+                                                 available: !settings.resolvedMushafPageLanguage.isPDF)
 
-                    Divider()
+                        Divider()
+                    }
 
                     Text("Surah Playback")
                         .foregroundStyle(.secondary)
@@ -3379,88 +3545,107 @@ struct SurahPageReader<Controls: View>: View {
                     // Play Surah sits at the visual BOTTOM of every play menu (user-picked order) - the
                     // primary action lands nearest the thumb, with Play Last Listened just above it.
                     // Declared order is visual order (`fixedMenuOrder`).
-                    Menu {
-                        Text("More Playback")
-                            .foregroundStyle(.secondary)
-
-                        // Ayah-level playback in a Hafs display only: the ayah audio is Hafs-numbered
-                        // (the list reader's menu, Quality Guide A5).
-                        if settings.isHafsDisplay {
-                            if let onPlayCustomRange {
-                                Button {
-                                    settings.hapticFeedback()
-                                    onPlayCustomRange()
-                                } label: {
-                                    Label("Play Custom Range", systemImage: "slider.horizontal.3")
-                                }
-                            }
-
-                            Button {
-                                settings.hapticFeedback()
-                                let ayahsForQiraah = surah.ayahs.filter {
-                                    $0.existsInQiraah(settings.displayQiraahForArabic, surahID: surah.id)
-                                }
-                                if let randomAyah = ayahsForQiraah.randomElement() {
-                                    quranPlayer.playAyah(
-                                        surahNumber: surah.id,
-                                        ayahNumber: randomAyah.id,
-                                        continueRecitation: true
-                                    )
-                                }
-                            } label: {
-                                Label("Play Random Ayah", systemImage: "shuffle.circle")
-                            }
-                        }
-
-                        if let onPlayRandomReciter {
-                            Button {
-                                settings.hapticFeedback()
-                                onPlayRandomReciter(surah)
-                            } label: {
-                                Label("Play Random Reciter", systemImage: "person.wave.2")
-                            }
-                        }
-
+                    // Simple Mode drops Other Options: Play Custom Range is the play button's hold, the repeats
+                    // live in that range's sheet, and the random picks go.
+                    if !settings.hides(.playOtherOptions) {
                         Menu {
-                            Text("Repeat Count")
+                            Text("More Playback")
                                 .foregroundStyle(.secondary)
 
-                            Button {
-                                settings.hapticFeedback()
-                                quranPlayer.playSurah(
-                                    surahNumber: surah.id,
-                                    surahName: surah.nameTransliteration,
-                                    repeatCount: QuranPlayer.infiniteRepeat
-                                )
-                            } label: {
-                                Label("Repeat Forever", systemImage: "infinity")
+                            // Ayah-level playback in a Hafs display only: the ayah audio is Hafs-numbered
+                            // (the list reader's menu, Quality Guide A5).
+                            if settings.isHafsDisplay {
+                                if let onPlayCustomRange {
+                                    Button {
+                                        settings.hapticFeedback()
+                                        onPlayCustomRange()
+                                    } label: {
+                                        Label("Play Custom Range", systemImage: "slider.horizontal.3")
+                                    }
+                                }
+
+                                Button {
+                                    settings.hapticFeedback()
+                                    let ayahsForQiraah = surah.ayahs.filter {
+                                        $0.existsInQiraah(settings.displayQiraahForArabic, surahID: surah.id)
+                                    }
+                                    if let randomAyah = ayahsForQiraah.randomElement() {
+                                        quranPlayer.playAyah(
+                                            surahNumber: surah.id,
+                                            ayahNumber: randomAyah.id,
+                                            continueRecitation: true
+                                        )
+                                    }
+                                } label: {
+                                    Label("Play Random Ayah", systemImage: "shuffle.circle")
+                                }
                             }
 
-                            ForEach(repeatCounts, id: \.self) { n in
+                            if let onPlayRandomReciter {
+                                Button {
+                                    settings.hapticFeedback()
+                                    onPlayRandomReciter(surah)
+                                } label: {
+                                    Label("Play Random Reciter", systemImage: "person.wave.2")
+                                }
+                            }
+
+                            Menu {
+                                Text("Repeat Count")
+                                    .foregroundStyle(.secondary)
+
                                 Button {
                                     settings.hapticFeedback()
                                     quranPlayer.playSurah(
                                         surahNumber: surah.id,
                                         surahName: surah.nameTransliteration,
-                                        repeatCount: n
+                                        repeatCount: QuranPlayer.infiniteRepeat
                                     )
                                 } label: {
-                                    Label("Repeat \(n)×", systemImage: "\(n).circle")
+                                    Label("Repeat Forever", systemImage: "infinity")
                                 }
+
+                                ForEach(repeatCounts, id: \.self) { n in
+                                    Button {
+                                        settings.hapticFeedback()
+                                        quranPlayer.playSurah(
+                                            surahNumber: surah.id,
+                                            surahName: surah.nameTransliteration,
+                                            repeatCount: n
+                                        )
+                                    } label: {
+                                        Label("Repeat \(n)×", systemImage: "\(n).circle")
+                                    }
+                                }
+                            } label: {
+                                Label("Repeat Surah", systemImage: "repeat")
                             }
                         } label: {
-                            Label("Repeat Surah", systemImage: "repeat")
+                            Label("Other Options", systemImage: "ellipsis.circle")
                         }
-                    } label: {
-                        Label("Other Options", systemImage: "ellipsis.circle")
                     }
 
                     if settings.isHafsDisplay {
-                        Button {
-                            settings.hapticFeedback()
-                            quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: 1, continueRecitation: true)
-                        } label: {
-                            Label("Play Ayah by Ayah", systemImage: "list.number")
+                        if asksWhichSurah {
+                            Menu {
+                                ForEach(onScreen, id: \.id) { candidate in
+                                    Button {
+                                        settings.hapticFeedback()
+                                        quranPlayer.playAyah(surahNumber: candidate.id, ayahNumber: 1, continueRecitation: true)
+                                    } label: {
+                                        Text(Self.surahChoiceTitle(candidate).localizedDigits)
+                                    }
+                                }
+                            } label: {
+                                Label("Play Ayah by Ayah", systemImage: "list.number")
+                            }
+                        } else {
+                            Button {
+                                settings.hapticFeedback()
+                                quranPlayer.playAyah(surahNumber: surah.id, ayahNumber: 1, continueRecitation: true)
+                            } label: {
+                                Label("Play Ayah by Ayah", systemImage: "list.number")
+                            }
                         }
                     }
 
@@ -3477,13 +3662,28 @@ struct SurahPageReader<Controls: View>: View {
                         }
                     }
 
-                    Button {
-                        settings.hapticFeedback()
-                        quranPlayer.playSurah(surahNumber: surah.id, surahName: surah.nameTransliteration)
-                    } label: {
-                        // No reciter caption here: this menu's Choose Reciter row already carries
-                        // it (Abu, 2026-09-21: "no point in saying the name twice").
-                        Label(canResumeLast ? "Play from Beginning" : "Play Surah", systemImage: "memories")
+                    if asksWhichSurah {
+                        Menu {
+                            ForEach(onScreen, id: \.id) { candidate in
+                                Button {
+                                    settings.hapticFeedback()
+                                    quranPlayer.playSurah(surahNumber: candidate.id, surahName: candidate.nameTransliteration)
+                                } label: {
+                                    Text(Self.surahChoiceTitle(candidate).localizedDigits)
+                                }
+                            }
+                        } label: {
+                            Label("Play Surah", systemImage: "memories")
+                        }
+                    } else {
+                        Button {
+                            settings.hapticFeedback()
+                            quranPlayer.playSurah(surahNumber: surah.id, surahName: surah.nameTransliteration)
+                        } label: {
+                            // No reciter caption here: this menu's Choose Reciter row already carries
+                            // it (Abu, 2026-09-21: "no point in saying the name twice").
+                            Label(canResumeLast ? "Play from Beginning" : "Play Surah", systemImage: "memories")
+                        }
                     }
                 } label: {
                     playControlLabel
@@ -3551,7 +3751,11 @@ enum PageReaderControlsPart {
 
 /// One page of the mushaf. Its body is only built when the page scrolls into view.
 private struct MushafPageContent: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     /// The lit themes' washes on this page (see `ThemeHighlights`).
     @ObservedObject private var themeHighlights = ThemeHighlights.shared
     // Deliberately NOT @ObservedObject: this page only hands quranData to its secondary sheets as an
@@ -3637,7 +3841,7 @@ private struct MushafPageContent: View {
     // surah-info sheet and the double-tapped word cards are all presented by the HOST through
     // `onRequestSheet` / `onShowSurahInfo`: a page that owned a `.sheet` lost it whenever it left the
     // pager's window - on a manual swipe, or on the turn that follows the recitation - which was "the
-    // sheet dismissed itself" in every one of its forms. See `Docs/Page Mode Sheet Ownership.md`.)
+    // sheet dismissed itself" in every one of its forms. See `Docs/Quran/Page Mode Sheet Ownership.md`.)
 
     private func ayahRef(surahID: Int, ayahID: Int) -> (Surah, Ayah)? {
         for segment in page.segments where segment.surah.id == surahID {
@@ -3751,6 +3955,9 @@ private struct MushafPageContent: View {
             // the main thread. `renderTick` is the re-read signal the async render fires.
             let _ = renderTick
             let exact = MushafPageRenderCache.renderedIfAvailable(page: page, width: width, height: textHeight)
+            // A band a page is actually shown at: its renders may stand in for a neighbouring band's
+            // later (`nearestRendered`, `shownGeometries`).
+            let _ = exact == nil ? () : MushafPageRenderCache.noteShown(width: width, height: textHeight)
             // The height budget moved (a bar appeared/disappeared, the mini player mounted, a transition
             // is mid-flight): keep the render this page was showing on screen while the exact fit lands
             // in the background: content over a loading flash. Same width and settings, so the text
@@ -4325,6 +4532,9 @@ struct MushafComposeConfig {
     /// nil means Hafs. Threaded into `displayArabicText(qiraahOverride:)` so the compose never falls back
     /// to reading Settings off-main.
     let displayQiraah: String?
+    /// The hamzat al-wasl notation, resolved for `displayQiraah` on main (`Settings.waslSign(for:)`),
+    /// threaded the same way.
+    let waslSign: Settings.WaslSignStyle
     let cleanArabicText: Bool
     let beginnerMode: Bool
     /// Individual ayahs pinning their own display choices (the per-ayah "Apply Settings" menu, or the
@@ -4378,6 +4588,7 @@ struct MushafComposeConfig {
             quranUsesSystemArabicFont: s.quranUsesSystemArabicFont,
             arabicFontName: s.quranArabicFontName(for: s.displayQiraahForArabic),
             displayQiraah: s.displayQiraahForArabic,
+            waslSign: s.waslSign(for: s.displayQiraahForArabic),
             cleanArabicText: s.cleanArabicText,
             beginnerMode: s.beginnerMode,
             ayahOverrides: AyahDisplayOverrides.shared.overrides,
@@ -4506,7 +4717,9 @@ struct MushafPageComposer {
     /// the font (maximize-font user rule: every line's saving compounds across ~15 lines). At 0.90,
     /// baselines sit 1.58x the point size apart - the pitch a printed mushaf runs - and the overflow
     /// splits evenly above and below (`bodyBaselineOffset`), where the neighbouring lines' own air
-    /// absorbs it; nothing clips, the text view and zoom container draw outside their bounds already.
+    /// absorbs it. The first and last lines have no neighbour there, and a text view never draws past
+    /// its own bounds, so the page's text view hangs past its box above and below
+    /// (`ArabicInkBleedHost.verticalBleed`); without that the ۖ over a first line's word lost its top.
     /// Only the fitted Quranic-face page: English prose and the system face have no air to give, and
     /// fit-off pages keep their classic setting.
     private var lineBoxScale: CGFloat {
@@ -4584,7 +4797,7 @@ struct MushafPageComposer {
         let beginner = choice.beginner
         let qiraahOverride = config.displayQiraah ?? "Hafs"
         let base = ayah.displayArabicText(surahId: surah.id, clean: clean, removeDots: choice.dots,
-                                          qiraahOverride: qiraahOverride)
+                                          qiraahOverride: qiraahOverride, waslSign: config.waslSign)
         let display = beginner ? base.beginnerSpaced : base
         let font = arabicFont(size)
 
@@ -4595,11 +4808,12 @@ struct MushafPageComposer {
                // The RAW text: fully vocalized and dotted. The projection applies this ayah's own clean
                // and dots choices; reading the global Hide Dots here produced a shorter string than
                // the page was measured with, and `finalize` aborted (Quality Guide C1).
-               text: ayah.displayArabicText(surahId: surah.id, clean: false, removeDots: false, qiraahOverride: qiraahOverride),
+               text: ayah.displayArabicText(surahId: surah.id, clean: false, removeDots: false, qiraahOverride: qiraahOverride, waslSign: .print),
                displayText: display,
                cleanDisplayText: clean,
                beginnerSpacing: beginner,
-               removeArabicDots: choice.dots
+               removeArabicDots: choice.dots,
+               waslSign: config.waslSign
            ) {
             // The tajweed colours are already UIColor; overlay the font/paragraph without touching them.
             let ns = NSMutableAttributedString(attributedString: NSAttributedString(styled))
@@ -4620,8 +4834,8 @@ struct MushafPageComposer {
                // The full text is the vocalized, DOTTED one: the store strips (and un-dots) it itself.
                fullText: clean
                    ? (beginner
-                      ? ayah.displayArabicText(surahId: surah.id, clean: false, removeDots: false, qiraahOverride: qiraahOverride).beginnerSpaced
-                      : ayah.displayArabicText(surahId: surah.id, clean: false, removeDots: false, qiraahOverride: qiraahOverride))
+                      ? ayah.displayArabicText(surahId: surah.id, clean: false, removeDots: false, qiraahOverride: qiraahOverride, waslSign: config.waslSign).beginnerSpaced
+                      : ayah.displayArabicText(surahId: surah.id, clean: false, removeDots: false, qiraahOverride: qiraahOverride, waslSign: config.waslSign))
                    : nil
            ) {
             let ns = NSMutableAttributedString(attributedString: NSAttributedString(styled))
@@ -4639,9 +4853,9 @@ struct MushafPageComposer {
     }
 
     /// "Highlight Allah" on the composed page - the list rows' red divine name, page-mode edition.
-    /// Painted AFTER the tajweed/riwayah colors so the red wins on overlap, exactly like the list
-    /// (`HighlightedSnippet` applies it over the pre-styled tajweed text). Arabic goes through the
-    /// SAME shared scanner the list and word-by-word renderers use - one detector, and it already
+    /// Painted AFTER the tajweed/riwayah colors, and only on the letters no rule colored, exactly like
+    /// the list (`HighlightedSnippet` and `AllahNameInk`): the name's heavy laam keeps its tajweed color.
+    /// Arabic goes through the SAME shared scanner the list and word-by-word renderers use - one detector, and it already
     /// stops the red before a trailing stop-sign ornament; English matches "Allah" case-insensitively.
     /// A foreground color never moves a glyph, so the fitted layout is untouched.
     private func paintAllahNames(in ns: NSMutableAttributedString, enabled: Bool) {
@@ -4658,7 +4872,7 @@ struct MushafPageComposer {
             return
         }
         for range in HighlightedSnippet.arabicAllahRanges(in: text) {
-            ns.addAttribute(.foregroundColor, value: UIColor.systemRed, range: NSRange(range, in: text))
+            AllahNameInk.paint(ns, range: NSRange(range, in: text), color: .systemRed)
         }
     }
 
@@ -4871,9 +5085,17 @@ struct MushafPageComposer {
                     ))
                 }
             } else if i > 0 {
+                // The Arabic interface names the continuing surah in Arabic on the Arabic page, cleaned
+                // through the config snapshot like the opening heading (the composer runs off-main).
+                var continuingName = segment.surah.nameTransliteration
+                if !isEnglish && AppLanguage.isArabicScript {
+                    continuingName = segment.surah.nameArabic
+                    if config.cleanArabicText { continuingName = continuingName.removingArabicDiacriticsAndSigns }
+                    if config.removeArabicDots { continuingName = continuingName.removingArabicDots }
+                }
                 let name = isEnglish
                     ? "\n\(segment.surah.id). \(segment.surah.nameTransliteration)\n"
-                    : "\n﴿ \(segment.surah.nameTransliteration) ﴾\n"
+                    : "\n﴿ \(continuingName) ﴾\n"
                 let headingStart = result.length
                 result.append(NSAttributedString(string: name, attributes: [
                     .font: UIFont.systemFont(ofSize: max(size * 0.5, 12), weight: .semibold),
@@ -6111,6 +6333,11 @@ enum MushafPageRenderCache {
             // Was missing: toggling "Hide Arabic Dots" did not change the key, so every already-composed page
             // kept serving its dotted text until the 24-entry cache happened to evict it.
             s.removeArabicDots ? "d" : "-",
+            // The hamzat al-wasl notation the composer splices in (`MushafComposeConfig.waslSign`), the
+            // RESOLVED one (the Warsh face keeps the print's dot whatever the picker says). Missing, a
+            // switch of the picker kept serving every composed page in the old notation while pages
+            // composed afterwards took the new one; the fit numbers (`metricsKey`) already carried it.
+            s.waslSign(for: s.displayQiraahForArabic).rawValue,
             s.beginnerMode ? "b" : "-",
             s.mushafFitPage ? "f" : "-",
             s.mushafPageLanguage,
@@ -6121,13 +6348,17 @@ enum MushafPageRenderCache {
 
     /// The geometry the visible page was last laid out at, so neighbouring pages can be composed ahead of time
     /// without a `GeometryReader` of their own. Persisted so the NEXT launch can prewarm the last-read pages
-    /// before the reader has ever been on screen - geometry only actually changes on rotation or a new device,
-    /// so the persisted value is almost always exactly what the first render will ask for (and when it isn't,
-    /// the misses were composed off-main and simply go unused).
+    /// before the reader has ever been on screen - but only while it is a PLAIN band (`lastGeometryIsPlain`):
+    /// the reader opens plain, so a band the mini player, the find bar, a fold or select mode had shrunk
+    /// is exactly what the first render will NOT ask for, and a prewarm fitted to it stood in for the
+    /// first page at the wrong size (2026-10-20). Geometry otherwise only changes on rotation or a new
+    /// device, so the persisted value is almost always exactly what the first render asks for (and when
+    /// it isn't, the misses were composed off-main and simply go unused - `nearestRendered` never serves
+    /// a render for a band no page was shown at).
     private static var lastGeometry: (width: CGFloat, height: CGFloat)? {
         didSet {
             guard let g = lastGeometry, g != (oldValue ?? (0, 0)) else { return }
-            fitTrace("GEO \(Int(g.width.rounded()))x\(Int(g.height.rounded())) was \(oldValue.map { "\(Int($0.width.rounded()))x\(Int($0.height.rounded()))" } ?? "nil")")
+            fitTrace("GEO \(Int(g.width.rounded()))x\(Int(g.height.rounded())) was \(oldValue.map { "\(Int($0.width.rounded()))x\(Int($0.height.rounded()))" } ?? "nil") plain=\(lastGeometryIsPlain ? 1 : 0)")
             // Rotation / iPad split-resize / the bottom bars folding: every page in the prewarm ring
             // was fitted for the OLD geometry, so the first swipe in each direction landed on a cold
             // spinner (or the stale fallback). Re-warm the ring - but DEBOUNCED to the value that holds
@@ -6149,9 +6380,7 @@ enum MushafPageRenderCache {
             let hadPrevious = oldValue != nil
             geometrySettleWork?.cancel()
             let work = DispatchWorkItem {
-                if let settled = lastGeometry {
-                    UserDefaults.standard.set([Double(settled.width), Double(settled.height)], forKey: geometryDefaultsKey)
-                }
+                persistGeometryIfPlain()
                 guard hadPrevious, let context = lastPrewarmContext else { return }
                 // Center included: a geometry change makes the VISIBLE page cold too, and its refit
                 // must lead the ring, not trail it.
@@ -6186,20 +6415,43 @@ enum MushafPageRenderCache {
     /// the push was still animating (measured on the 17 Pro simulator). A launch straight into the
     /// reader can report before `prewarmAtLaunch` has run, so the persisted geometry is the baseline
     /// then too; only with nothing known at all (a first launch) is the first report taken at once.
-    static func noteVisibleGeometry(band: CGSize) {
+    static func noteVisibleGeometry(band: CGSize, plain: Bool) {
         let text = MushafPageContent.textGeometry(in: band)
         guard !isDegenerate(width: text.width, height: text.height) else { return }
         visibleGeometryWork?.cancel()
         visibleGeometryWork = nil
         if lastGeometry == nil { lastGeometry = persistedGeometry }
         guard let last = lastGeometry else {
+            lastGeometryIsPlain = plain
             lastGeometry = text
             return
         }
-        guard last != text else { return }
-        let work = DispatchWorkItem { lastGeometry = text }
+        guard last != text else {
+            // The same band, reported plain now (the chrome that shrank it left without moving the
+            // band): it may be persisted after all. Deferred like the settle write, never inline.
+            if plain, !lastGeometryIsPlain {
+                lastGeometryIsPlain = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { persistGeometryIfPlain() }
+            }
+            return
+        }
+        let work = DispatchWorkItem {
+            lastGeometryIsPlain = plain
+            lastGeometry = text
+        }
         visibleGeometryWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
+    /// Whether `lastGeometry` is a PLAIN band (no mini player, find bar, fold or select mode), as the
+    /// reader reports it. Only a plain band is persisted for the next launch. The persisted seed itself
+    /// was plain, so the flag starts true.
+    private static var lastGeometryIsPlain = true
+
+    /// The launch seed: the settled geometry, written only while it is a plain band.
+    private static func persistGeometryIfPlain() {
+        guard lastGeometryIsPlain, let settled = lastGeometry else { return }
+        UserDefaults.standard.set([Double(settled.width), Double(settled.height)], forKey: geometryDefaultsKey)
     }
 
     /// The pending `noteVisibleGeometry`; every newer band report supersedes it.
@@ -6371,6 +6623,7 @@ enum MushafPageRenderCache {
             "\(page.page)", page.contentSpan, "\(Int(width.rounded()))", "\(Int(height.rounded()))",
             String(describing: config.pageLanguage),
             config.removeArabicDots ? "d" : "-",
+            config.waslSign.rawValue,
             config.quranUsesSystemArabicFont ? "s" : "-",
             config.arabicFontName,
             config.displayQiraah ?? "Hafs",
@@ -6782,6 +7035,11 @@ enum MushafPageRenderCache {
               // Same ayahs: page 13 of another riwayah's pagination is not this page (`contentSpan`).
               entry.span == page.contentSpan,
               abs(entry.budget - height) <= max(entry.budget, height) * 0.45 else { return nil }
+        // Only a render for a band some page has been SHOWN at (see `shownGeometries`).
+        guard shownGeometries.contains(geometryToken(width: entry.width, height: entry.budget)) else {
+            fitTrace("UNSHOWN \(traceLabel(page)) want=\(Int(width.rounded()))x\(Int(height.rounded())) have=\(Int(entry.width.rounded()))x\(Int(entry.budget.rounded()))")
+            return nil
+        }
         fitTrace("STALE \(traceLabel(page)) want=\(Int(width.rounded()))x\(Int(height.rounded())) have=\(Int(entry.width.rounded()))x\(Int(entry.budget.rounded())) rendered=\(Int(entry.rendered.height.rounded()))")
         return entry.rendered
     }
@@ -6795,6 +7053,20 @@ enum MushafPageRenderCache {
     /// Whether a page has ever finished a fit at exactly this geometry (see `settledGeometries`).
     static func hasSettledRender(width: CGFloat, height: CGFloat) -> Bool {
         settledGeometries.contains(geometryToken(width: width, height: height))
+    }
+
+    /// Geometries at which a page body has DISPLAYED an exact render this session. `nearestRendered`
+    /// serves a stand-in only from one of these. A render fitted for a band no page was ever shown at
+    /// is the launch prewarm's guess at a persisted geometry that turned out stale (the last session
+    /// ended with other chrome up, or on another device), and serving it put a page fitted for a
+    /// 419 pt band into the 526 pt band, smaller, until the exact fit replaced it a beat later: the
+    /// refit on a first open (2026-10-20, reproduced with a seeded stale geometry). A spinner for that
+    /// beat is honest; a page that changes size under the reader is not.
+    private static var shownGeometries: Set<String> = []
+
+    /// A page body displayed an exact render at this geometry (`MushafPageContent`).
+    static func noteShown(width: CGFloat, height: CGFloat) {
+        shownGeometries.insert(geometryToken(width: width, height: height))
     }
 
     private static func geometryToken(width: CGFloat, height: CGFloat) -> String {
@@ -6997,18 +7269,297 @@ extension AyahHighlightColor {
     }
 }
 
+// MARK: - Page mode: the pager
+
+/// The pager behind page mode: UIKit's `UIPageViewController` (scroll style) over a PULL-BASED data
+/// source, hosting one SwiftUI page (or one spread) per child.
+///
+/// It replaced a paged `TabView` over a mounted WINDOW of pages (2026-10-26). A `TabView` evaluates every
+/// child it is given on every publish, so the reader could only hand it a ring of pages around the
+/// selection, and that ring had to MOVE; but SwiftUI's pager rebuilds its cells whenever the set changes,
+/// which mid-slide blanked the outgoing page, mispaired a spread or jumped pages, so the ring could only
+/// move while the pager rested (`Docs/Quran/Mushaf Page Turn Glitch.md`). A run of swipes too quick to
+/// ever rest then ran the ring out: past its last page every swipe bounced, the bounce never settled under
+/// the next swipe, and the reader sat stuck until the thumb paused (Abu, 2026-10-26: "every 3 pages if I
+/// go too fast it fully pauses"; measured on the simulator at a 0.45 s cadence: pages 3 to 9 turned,
+/// swipes 7 to 12 all bounced, the window followed 3 s later). A page view controller has no set to
+/// change: it asks `neighbour` for the next page as a gesture begins and keeps only the page on screen
+/// and the ones beside it, so nothing ever reloads under a slide and a run goes on as long as the thumb.
+///
+/// The reader's state still reaches every mounted page: `updateUIViewController` hands each live host a
+/// fresh root view on every publish (a handful of bodies, against the ring's thirteen). The selection is
+/// a plain binding: a finished slide writes it; a write from the reader turns the pager, sliding inside
+/// an animated transaction (`turnPage`) and at once otherwise; and a write that lands mid-slide waits for
+/// the pager to rest rather than cutting into the gesture.
+struct MushafPagerView: UIViewControllerRepresentable {
+    /// Leading indices the book has: `neighbour` and `content` are asked for `0..<count` only.
+    let count: Int
+    /// Everything that changes what an index MEANS: the pagination and whether the book is open (a
+    /// spread's child is a pair of pages). A change drops every host and shows `selection` afresh.
+    let layoutKey: String
+    /// The leading index on screen (the spread's leading page with the book open).
+    @Binding var selection: Int
+    /// Hosts kept to either side of the shown index, in leading indices (which step by two in a spread).
+    let reach: Int
+    /// The leading index one step (+1 forward, -1 back) from `index` in reading order; nil past a cover.
+    let neighbour: (_ index: Int, _ step: Int) -> Int?
+    /// The page (or spread) at a leading index.
+    let content: (_ index: Int) -> AnyView
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIViewController(context: Context) -> UIPageViewController {
+        let pager = UIPageViewController(transitionStyle: .scroll, navigationOrientation: .horizontal,
+                                         options: [.interPageSpacing: 0])
+        pager.dataSource = context.coordinator
+        pager.delegate = context.coordinator
+        pager.view.backgroundColor = .clear
+        // A mushaf is bound on the right, page 1 at the far right, and forward lies to the LEFT in every
+        // interface language. UIKit mirrors a page view controller in a right-to-left interface (its
+        // "before" page then sits on the right, and it does so whatever semantic attribute its view is
+        // forced to; measured in the Arabic interface, 2026-10-26), so the data source maps "before" and
+        // "after" by the view's effective direction (`Coordinator.forwardIsBefore`).
+        context.coordinator.pager = pager
+        context.coordinator.environment = context.environment
+        context.coordinator.layoutKey = layoutKey
+        #if DEBUG
+        MushafPagerProbe.trace("pager made key=\(layoutKey) idx=\(selection)")
+        #endif
+        context.coordinator.show(selection, animated: false)
+        return pager
+    }
+
+    func updateUIViewController(_ pager: UIPageViewController, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.parent = self
+        coordinator.environment = context.environment
+        if coordinator.layoutKey != layoutKey {
+            coordinator.layoutKey = layoutKey
+            coordinator.rebuild(at: selection)
+            return
+        }
+        coordinator.refreshHosts()
+        if selection != coordinator.current {
+            let animated = context.transaction.animation != nil && !context.transaction.disablesAnimations
+            coordinator.show(selection, animated: animated)
+        }
+    }
+
+    /// One child of the pager: a SwiftUI page (or spread) and the leading index it shows.
+    final class PageHost: UIHostingController<AnyView> {
+        let index: Int
+
+        init(index: Int, rootView: AnyView) {
+            self.index = index
+            super.init(rootView: rootView)
+            view.backgroundColor = .clear
+            // The page takes the whole band it is given. The reader has already laid the pager out clear
+            // of the bars and, in landscape, of the sensor housing (`safeAreaPadding` on its band), so the
+            // window's safe area must not apply AGAIN inside each page: UIKit hands a hosting controller
+            // the window's insets, and every spread page came out 124 pt narrower than its half, cold at a
+            // width the ring had never composed (every page a spinner; 2026-10-26). The keyboard neither:
+            // a hosting controller of its own avoids it by default, and the page would refit to the
+            // half-height box left above the find bar's keyboard (the reader ignores it too). The root
+            // view ignores every region as well (`Coordinator.rootView`), which covers iOS 16.0 to 16.3.
+            if #available(iOS 16.4, *) { safeAreaRegions = [] }
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { nil }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+        var parent: MushafPagerView
+        weak var pager: UIPageViewController?
+        /// The reader's environment, handed whole to every host (`rootView`).
+        var environment: EnvironmentValues?
+        var layoutKey = ""
+        /// The leading index the pager shows, or is sliding to; -1 before the first `show`.
+        private(set) var current = -1
+        /// Live hosts by leading index: the page on screen and a few to either side, so a swipe back finds
+        /// its page typeset. Pruned after every landing (`parent.reach`).
+        private var hosts: [Int: PageHost] = [:]
+        /// A programmatic slide of this pager's own is running (`setViewControllers(animated: true)`).
+        private var sliding = false
+        /// A selection that arrived while the pager was moving: shown at its next rest.
+        private var pending: Int?
+
+        init(parent: MushafPagerView) { self.parent = parent }
+
+        // MARK: Showing a page
+
+        /// Whether the next page in reading order is the page view controller's "before" child: the one
+        /// on the LEFT in a left-to-right interface, where UIKit lays "before" out; on the right, which is
+        /// "after", once UIKit has mirrored the pager for a right-to-left interface.
+        private var forwardIsBefore: Bool {
+            (pager?.view.effectiveUserInterfaceLayoutDirection ?? .leftToRight) == .leftToRight
+        }
+
+        /// Shows `target`: sliding to it when `animated`, else at once. Never under a finger or a running
+        /// slide (a page view controller cannot stack transitions, and a reload under a gesture is the
+        /// very thing the window pager suffered from): then it waits for the rest (`pending`).
+        func show(_ target: Int, animated: Bool) {
+            guard let pager, parent.count > 0 else { return }
+            let target = min(max(target, 0), parent.count - 1)
+            guard target != current || (pager.viewControllers ?? []).isEmpty else { return }
+            if sliding || MushafPagerProbe.shared.isMoving {
+                pending = target
+                scheduleFlush()
+                return
+            }
+            // Forward in reading order is a slide to the "before" child (UIKit's reverse direction) in a
+            // left-to-right interface, to the "after" child in a right-to-left one (`forwardIsBefore`).
+            let forward = current < 0 || target > current
+            let direction: UIPageViewController.NavigationDirection = forward == forwardIsBefore ? .reverse : .forward
+            let host = host(for: target)
+            let slides = animated && current >= 0
+            current = target
+            sliding = slides
+            pending = nil
+            #if DEBUG
+            MushafPagerProbe.trace("show idx=\(target) animated=\(slides ? 1 : 0) hosts=\(hosts.keys.sorted())")
+            #endif
+            guard slides else {
+                pager.setViewControllers([host], direction: direction, animated: false)
+                prune(around: target)
+                return
+            }
+            pager.setViewControllers([host], direction: direction, animated: true) { [weak self] _ in
+                // The page view controller's own neighbour cache can go stale after an animated jump
+                // (the next swipe shows a page from before the jump); setting the shown page again
+                // without animation, a tick later, is the standard remedy.
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    guard let pager = self.pager, self.current == target else {
+                        self.sliding = false
+                        self.flushPending()
+                        return
+                    }
+                    pager.setViewControllers([host], direction: direction, animated: false) { _ in
+                        self.sliding = false
+                        self.prune(around: target)
+                        self.flushPending()
+                    }
+                }
+            }
+        }
+
+        /// A new pagination, or the book opening or closing: nothing a host shows means the same any more.
+        func rebuild(at index: Int) {
+            #if DEBUG
+            MushafPagerProbe.trace("rebuild key=\(layoutKey) idx=\(index)")
+            #endif
+            hosts.removeAll()
+            current = -1
+            pending = nil
+            show(index, animated: false)
+        }
+
+        /// Every live host re-reads the reader's state (highlights, the find, select mode, the theme...).
+        func refreshHosts() {
+            for (index, host) in hosts { host.rootView = rootView(for: index) }
+        }
+
+        /// The pending selection, shown once the pager rests. Polled rather than left to a delegate
+        /// callback alone: a bounce at a cover, or a drag let go in place, ends with no callback.
+        private func scheduleFlush() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 30.0) { [weak self] in self?.flushPending() }
+        }
+
+        private func flushPending() {
+            guard let target = pending else { return }
+            // Stale once the selection has moved on: a swipe that landed meanwhile wrote the binding
+            // (the reader's state is the truth, and the pager already shows it). Applying it anyway
+            // slid the pager to a page the reader no longer named (seen in a scripted run, 2026-10-26).
+            guard target == parent.selection else {
+                pending = nil
+                return
+            }
+            if sliding || MushafPagerProbe.shared.isMoving {
+                scheduleFlush()
+                return
+            }
+            pending = nil
+            show(target, animated: true)
+        }
+
+        private func host(for index: Int) -> PageHost {
+            if let host = hosts[index] { return host }
+            #if DEBUG
+            MushafPagerProbe.trace("host idx=\(index) hosts=\(hosts.keys.sorted())")
+            #endif
+            let host = PageHost(index: index, rootView: rootView(for: index))
+            hosts[index] = host
+            return host
+        }
+
+        private func rootView(for index: Int) -> AnyView {
+            let page = parent.content(index)
+            // The reader's environment, whole: its objects, direction, color scheme and type size. A
+            // hosting controller of its own would start from UIKit's traits, not from the tree it sits in.
+            // Every safe-area region is ignored here as well as on the host (see `PageHost`).
+            guard let environment else { return AnyView(page.ignoresSafeArea()) }
+            return AnyView(page.environment(\.self, environment).ignoresSafeArea())
+        }
+
+        /// Hosts beyond `reach` of the shown page go; the page view controller keeps the ones it holds.
+        private func prune(around centre: Int) {
+            let reach = parent.reach
+            hosts = hosts.filter { abs($0.key - centre) <= reach }
+        }
+
+        // MARK: Data source
+
+        func pageViewController(_ pageViewController: UIPageViewController,
+                                viewControllerBefore viewController: UIViewController) -> UIViewController? {
+            // The next page of the mushaf in a left-to-right interface (the child on the left), the
+            // previous one in a right-to-left interface (`forwardIsBefore`).
+            neighbourHost(of: viewController, step: forwardIsBefore ? 1 : -1)
+        }
+
+        func pageViewController(_ pageViewController: UIPageViewController,
+                                viewControllerAfter viewController: UIViewController) -> UIViewController? {
+            neighbourHost(of: viewController, step: forwardIsBefore ? -1 : 1)
+        }
+
+        private func neighbourHost(of viewController: UIViewController, step: Int) -> UIViewController? {
+            guard let host = viewController as? PageHost,
+                  let index = parent.neighbour(host.index, step),
+                  (0..<parent.count).contains(index) else { return nil }
+            return self.host(for: index)
+        }
+
+        // MARK: Delegate
+
+        func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool,
+                                previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
+            guard completed, let host = pageViewController.viewControllers?.first as? PageHost else {
+                flushPending()
+                return
+            }
+            current = host.index
+            prune(around: current)
+            #if DEBUG
+            MushafPagerProbe.trace("landed idx=\(current) hosts=\(hosts.keys.sorted())")
+            #endif
+            if parent.selection != current { parent.selection = current }
+            flushPending()
+        }
+    }
+}
+
 /// The scroll view hosting a composed mushaf page. UIScrollView never lays out its content on its own, so
 /// this keeps the text view pinned to the box SwiftUI gives the page - and resets the zoom whenever that
 /// box changes size (a rotation, a bars-fold): the page refits to the new box anyway, so a held-over
 /// magnification would be anchored to a layout that no longer exists.
 // MARK: - Page mode: the pager's rest state
 
-/// Whether the UIKit pager behind the reader's paged `TabView` is mid-turn, for the window mutations that
-/// must wait for it (`SurahPageReader.whenPagerRests`; `Docs/Mushaf Page Turn Glitch.md`). SwiftUI exposes
-/// no "transition ended" hook for a paged TabView, so the pager's own scroll view is found in the view
-/// hierarchy from a probe the reader plants behind the TabView (`MushafPagerProbeView`), and rest is read
-/// off it: no finger down, no deceleration or slide running, and the content sitting exactly on a page
-/// boundary. Main-thread only (UIKit).
+/// Whether the UIKit scroll view inside the reader's pager is mid-turn, for the programmatic turns that
+/// must wait for it (`MushafPagerView.Coordinator.show`; `Docs/Quran/Mushaf Page Turn Glitch.md`). The
+/// pager's scroll view is found in the view hierarchy from a probe the reader plants behind the pager
+/// (`MushafPagerProbeView`), and rest is read off it: no finger down, no deceleration or slide running,
+/// and the content sitting exactly on a page boundary. Main-thread only (UIKit).
 @MainActor
 final class MushafPagerProbe {
     static let shared = MushafPagerProbe()
@@ -7020,7 +7571,7 @@ final class MushafPagerProbe {
     /// controller). Found by walking up from the probe and searching each ancestor's subtree, nearest
     /// first - the probe sits beside the pager, not inside it.
     ///
-    /// Only a scroll view laid over the probe's own frame counts: the probe is the TabView's background,
+    /// Only a scroll view laid over the probe's own frame counts: the probe is the pager's background,
     /// so the pager covers exactly the same rect. Any paging scroll view used to do, and on iPad and Mac
     /// the first one found was the floating tab bar's (`_UIFloatingTabBarCollectionView`, logged
     /// 2026-09-26): the probe can land before the pager's subtree exists, the walk then climbed to the
@@ -7101,7 +7652,7 @@ final class MushafPagerProbe {
     }
 
     /// Whether a finger is on the pager or a deceleration is running, by the scroll view's own flags.
-    /// The one reading a window change may never override (`SurahPageReader.whenPagerRests`).
+    /// The one reading a programmatic turn may never override (`MushafPagerView.Coordinator.show`).
     var isMoving: Bool {
         guard let pager, pager.window != nil else { return false }
         return pager.isTracking || pager.isDragging || pager.isDecelerating
@@ -7117,20 +7668,13 @@ final class MushafPagerProbe {
     }
 
     #if DEBUG
-    /// "-windowTrace": the mounted window on every change, the pager found, and every deferred window
-    /// change with how long it waited (`log show --predicate 'eventMessage CONTAINS "WINDOWTRACE"'`).
+    /// "-windowTrace": the pager found, every host the pager creates, every page shown or landed on, and
+    /// every selection change (`log show --predicate 'eventMessage CONTAINS "WINDOWTRACE"'`).
     static let traceEnabled = ProcessInfo.processInfo.arguments.contains("-windowTrace")
-    private static var lastWindow: [Int] = []
 
     static func trace(_ message: String) {
         guard traceEnabled else { return }
         NSLog("WINDOWTRACE %@", message)
-    }
-
-    static func traceWindow(_ window: [Int], pageIndex: Int) {
-        guard traceEnabled, window != lastWindow else { return }
-        lastWindow = window
-        NSLog("WINDOWTRACE mounted=%@ idx=%d", window.description, pageIndex)
     }
 
     /// "-pagerMotion": one PAGERMOTION line per display frame while the pager moves (its offset in
@@ -7279,7 +7823,7 @@ final class PageZoomScrollView: UIScrollView {
                                                name: Self.resetZoomNotification, object: nil)
     }
 
-    /// The pager destroys page views constantly (`pageWindow`: anything outside the mounted ring
+    /// The pager destroys page views constantly (`MushafPagerView`: any host beyond its reach
     /// goes), and each one registered for `resetZoomNotification` in its init. Without this the
     /// registrations accumulated for every page ever visited: NotificationCenter zeroes its weak
     /// refs so nothing crashed, but the notification is posted on EVERY page turn, so the fan-out
@@ -7306,10 +7850,10 @@ final class PageZoomScrollView: UIScrollView {
             bounces = false
             clipsToBounds = false
         }
-        // The text view normally has this size already (`MushafPageTextView.updateUIView` gives it its box
-        // before its text). A text view's frame change resizes its text container, which throws the page's
-        // whole typesetting away and lays it out again, so a frame that differs only by SwiftUI's pixel
-        // rounding of the same box is left alone.
+        // The page box (`ArabicInkBleedHost`, with the text view inside it) normally has this size already
+        // (`MushafPageTextView.updateUIView` gives it its box before its text). A text view's frame change
+        // resizes its text container, which throws the page's whole typesetting away and lays it out again,
+        // so a frame that differs only by SwiftUI's pixel rounding of the same box is left alone.
         let size = pageView.frame.size
         if abs(size.width - bounds.width) > 0.5 || abs(size.height - bounds.height) > 0.5 {
             pageView.frame = CGRect(origin: .zero, size: bounds.size)
@@ -7690,13 +8234,16 @@ struct MushafPageTextView: UIViewRepresentable {
         tv.isEditable = false
         tv.isSelectable = false
         tv.isScrollEnabled = false
-        // Never scrolls (above), so it doesn't need to clip - and it must not: a justified line ends flush
-        // at the margin, and the tashkeel ink of a line's last letter routinely overhangs its glyph advance.
-        // Clipping sheared those marks at the container edge; letting them draw a few points into the page's
-        // horizontal padding is exactly what the padding is for.
+        // Never scrolls (above), so it doesn't clip its subviews - but `clipsToBounds` was never what
+        // sheared the tashkeel: the text is the view's OWN drawing, rasterised within its bounds whatever
+        // this says. A justified line ends flush at both margins, and the ink of a line-initial alif
+        // wasla (its ṣād) or a line-final mark routinely overhangs the glyph advance, so the view has to
+        // be wider than the column: `ArabicInkBleedHost` (below) makes it so, with the container insets
+        // that keep every line exactly where the fitter put it, and the ink draws into the page's
+        // horizontal padding, which is what the padding is for (Abu, 2026-10-21: "look at hamzatul wasl
+        // its broken").
         tv.clipsToBounds = false
         tv.backgroundColor = .clear
-        tv.textContainerInset = .zero
         tv.textContainer.lineFragmentPadding = 0
         tv.adjustsFontForContentSizeCategory = false
         tv.textContainer.widthTracksTextView = false
@@ -7771,8 +8318,12 @@ struct MushafPageTextView: UIViewRepresentable {
         // The page always ships inside a scroll view; on the fitted page it IS the zoomer (PDF-style
         // persistent pinch zoom), on an overflowing page it is inert (no scroll, no zoom) and just holds
         // the text view for the SwiftUI scroll container around it.
+        // The page box that the scroll view, the zoom and the SwiftUI frame all see; the text view
+        // inside it overhangs by the bleed on each side, and above and below too: the fitted page's
+        // squeezed line box puts its first line's tallest marks above the box (see `verticalBleed`).
+        let host = ArabicInkBleedHost(textView: tv, verticalBleed: ArabicInkBleedHost.bleed)
         let scroll = PageZoomScrollView()
-        scroll.pageView = tv
+        scroll.pageView = host
         scroll.pageNumber = pageNumber
         scroll.backgroundColor = .clear
         scroll.showsVerticalScrollIndicator = false
@@ -7793,15 +8344,16 @@ struct MushafPageTextView: UIViewRepresentable {
             scroll.maximumZoomScale = 1
             scroll.isScrollEnabled = false
         }
-        scroll.addSubview(tv)
+        scroll.addSubview(host)
 
         context.coordinator.textView = tv
+        context.coordinator.pageHost = host
         context.coordinator.scrollView = scroll
         return scroll
     }
 
     func updateUIView(_ scroll: UIScrollView, context: Context) {
-        guard let tv = context.coordinator.textView else { return }
+        guard let tv = context.coordinator.textView, let host = context.coordinator.pageHost else { return }
         context.coordinator.ranges = ranges
         context.coordinator.onTapAyah = onTapAyah
         context.coordinator.onLongPressAyah = onLongPressAyah
@@ -7886,13 +8438,16 @@ struct MushafPageTextView: UIViewRepresentable {
             // resizing, so nothing but the new text is ever typeset. A zoomed page keeps the old order:
             // its frame is the zoom's, and the scroll view resets the zoom when its size changes.
             let box = CGSize(width: width, height: height)
-            if scroll.zoomScale == 1, height > 0, tv.frame.size != box {
+            if scroll.zoomScale == 1, height > 0, host.frame.size != box {
                 if tv.textStorage.length > 0 { tv.textStorage.setAttributedString(NSAttributedString()) }
-                tv.frame = CGRect(origin: .zero, size: box)
+                host.frame = CGRect(origin: .zero, size: box)
+                // The text view's own box NOW, not at the host's next layout pass: the text assigned
+                // below must find its final frame already set, which is the whole point of this order.
+                tv.frame = host.textFrame(in: host.bounds)
             }
             // Re-pin on every real update: the width changes on rotation / size-class changes.
             tv.textContainer.widthTracksTextView = false
-            tv.textContainer.size = tv.frame.size == box
+            tv.textContainer.size = host.frame.size == box
                 ? box
                 : CGSize(width: width, height: .greatestFiniteMagnitude)
             tv.attributedText = tinted
@@ -7916,6 +8471,8 @@ struct MushafPageTextView: UIViewRepresentable {
         static let doubleTapGrace: TimeInterval = 0.25
 
         weak var textView: UITextView?
+        /// The page box around the text view (`ArabicInkBleedHost`): what the scroll view zooms.
+        weak var pageHost: ArabicInkBleedHost?
         weak var scrollView: UIScrollView?
         /// The page's long press, so the right-click interaction can tell a finger's press from a click.
         weak var pressRecognizer: UILongPressGestureRecognizer?
@@ -7930,7 +8487,7 @@ struct MushafPageTextView: UIViewRepresentable {
 
         // MARK: PDF-style zoom (fitted page only - the host enables zooming there)
 
-        func viewForZooming(in scrollView: UIScrollView) -> UIView? { textView }
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { pageHost ?? textView }
 
         /// Bounce and clipping only exist while actually zoomed in: panning a magnified page should feel
         /// like the facsimile's PDFView (and must not slide over the reader's chrome, hence the clip),

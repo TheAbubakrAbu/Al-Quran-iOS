@@ -46,7 +46,11 @@ extension View {
 /// include toggles under it, the Image/Text picker, then Copy and Share. The three surfaces are
 /// deliberately identical, so knowing one is knowing all three.
 struct NameShareSheet: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var islamSettings = IslamSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @Environment(\.presentationMode) private var presentationMode
 
     let name: NameOfAllah
@@ -120,12 +124,13 @@ struct NameShareSheet: View {
             parts.append(name.meaning)
         }
         if flag("shareNameOtherNames", default: false), !name.otherNames.isEmpty {
-            parts.append("Other Names: \(name.otherNames.joined(separator: ", "))")
+            // The Arabic sentence takes the Arabic comma ("،"), not a Latin ", ".
+            parts.append(String(localized: "Other Names: \(name.otherNames.joined(separator: AppLanguage.isArabicScript ? "، " : ", "))"))
         }
         // The First Found entries are Quran references; apps without the Quran have none.
         #if HAS_QURAN
         if flag("shareNameFirstFound", default: false) {
-            parts.append("First Found: \(name.firstFoundShort)")
+            parts.append(String(localized: "First Found: \(name.firstFoundShort.localizedDigits)"))
         }
         #endif
         if flag("shareNameDescription", default: false) {
@@ -146,7 +151,7 @@ struct NameShareSheet: View {
     }
 
     var body: some View {
-        NavigationView {
+        SheetNavigationContainer {
             VStack {
                 Spacer()
 
@@ -170,19 +175,8 @@ struct NameShareSheet: View {
 
                         toggle("Description", $includeDescription, disabled: includeDescription && enabledPartCount == 1)
 
-                        // Image mode only: the face is a property of the drawn card, not of the text.
-                        if includeArabic, actionMode == .image {
-                            Picker("Arabic Font", selection: shareFaceBinding) {
-                                Text("Uthmani").tag(Settings.IslamArabicFace.uthmani)
-                                Text("IndoPak").tag(Settings.IslamArabicFace.indopak)
-                                Text("Hijazi").tag(Settings.IslamArabicFace.hijazi)
-                                Text("Kufi").tag(Settings.IslamArabicFace.kufi)
-                                Text("Basic").tag(Settings.IslamArabicFace.basic)
-                            }
-                            .pickerStyle(SegmentedPickerStyle())
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 2)
-                        }
+                        // The face shapes the card rather than choosing what goes on it: it is in the
+                        // toolbar menu (`optionsMenu`).
                     }
                 }
                 .frame(maxHeight: 200)
@@ -196,8 +190,8 @@ struct NameShareSheet: View {
                 .padding(.vertical, 4)
 
                 HStack(spacing: 12) {
-                    actionButton("Copy") { performCopyOrGenerate() }
-                    actionButton("Share", isAnimating: isSharing) { performShareOrGenerate() }
+                    actionButton(String(localized: "Copy")) { performCopyOrGenerate() }
+                    actionButton(String(localized: "Share"), isAnimating: isSharing) { performShareOrGenerate() }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom)
@@ -211,12 +205,19 @@ struct NameShareSheet: View {
                 }
             }
             .navigationTitle(name.transliteration)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    // The face only matters on the drawn card with Arabic on it.
+                    if includeArabic, actionMode == .image {
+                        optionsMenu
+                    }
+                }
+            }
             .navigationBarTitleDisplayMode(.inline)
             .sheetDismissToolbar()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accentWashedBackground()
         }
-        .navigationViewStyle(.stack)
         .accentColor(settings.accentColor.color)
         .onAppear {
             guard !didInit else { return }
@@ -278,11 +279,13 @@ struct NameShareSheet: View {
                 // The ayah sheet's dark text card. It SCROLLS like the hadith one: a name's
                 // description runs well past an ayah's length.
                 ScrollView {
+                    // The name's English content, its own direction in either interface.
                     Text(composedAttributedText)
                         .font(.body)
                         .textSelection(.enabled)
                         .lineLimit(nil)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .leftToRightContent()
                         .padding()
                 }
                 .background(Color.black)
@@ -301,6 +304,25 @@ struct NameShareSheet: View {
         guard didFinishInitialSetup else { return }
         settings.hapticFeedback()
         generatePreviewImage()
+    }
+
+    /// The card's face, as the toolbar options menu (Design Grammar 6, the ayah share sheet's layout).
+    private var optionsMenu: some View {
+        Menu {
+            Picker("Arabic Font", selection: shareFaceBinding) {
+                Text("Uthmani").tag(Settings.IslamArabicFace.uthmani)
+                Text("IndoPak").tag(Settings.IslamArabicFace.indopak)
+                Text("Hijazi").tag(Settings.IslamArabicFace.hijazi)
+                Text("Kufi").tag(Settings.IslamArabicFace.kufi)
+                Text("Basic").tag(Settings.IslamArabicFace.basic)
+            }
+            .pickerStyle(.menu)
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+        }
+        .fixedMenuOrder()
+        .tint(settings.accentColor.color)
+        .accessibilityLabel("Share options")
     }
 
     @ViewBuilder
@@ -419,7 +441,7 @@ struct NameShareSheet: View {
         let usesCustomFace = shareFace != .basic
         var firstFound = ""
         #if HAS_QURAN
-        if includeFirstFound { firstFound = name.firstFoundShort }
+        if includeFirstFound { firstFound = name.firstFoundShort.localizedDigits }
         #endif
         return RenderInput(
             arabic: arabicText,
@@ -501,13 +523,18 @@ struct NameShareSheet: View {
 
         let cent = NSMutableParagraphStyle(); cent.alignment = .center
         let left = NSMutableParagraphStyle(); left.alignment = .left
+        // The caption lines open on an interface label ("Other Names:"), so they read from the
+        // interface's side; the name's English content keeps `left`.
+        let captionStyle = NSMutableParagraphStyle()
+        captionStyle.alignment = AppLanguage.isRightToLeft ? .right : .left
+        if AppLanguage.isRightToLeft { captionStyle.baseWritingDirection = .rightToLeft }
 
         let heroAttr  = [NSAttributedString.Key.font: heroFont, .foregroundColor: accent, .paragraphStyle: cent] as [NSAttributedString.Key: Any]
         let titleAttr = [NSAttributedString.Key.font: titleFont, .foregroundColor: textColor, .paragraphStyle: cent] as [NSAttributedString.Key: Any]
         let subAttr   = [NSAttributedString.Key.font: bodyFont, .foregroundColor: secondaryColor, .paragraphStyle: cent] as [NSAttributedString.Key: Any]
         let bodyAttr  = [NSAttributedString.Key.font: bodyFont, .foregroundColor: textColor, .paragraphStyle: left] as [NSAttributedString.Key: Any]
-        let capAttr   = [NSAttributedString.Key.font: captionFont, .foregroundColor: secondaryColor, .paragraphStyle: left] as [NSAttributedString.Key: Any]
-        let capAccent = [NSAttributedString.Key.font: captionFont, .foregroundColor: accent, .paragraphStyle: left] as [NSAttributedString.Key: Any]
+        let capAttr   = [NSAttributedString.Key.font: captionFont, .foregroundColor: secondaryColor, .paragraphStyle: captionStyle] as [NSAttributedString.Key: Any]
+        let capAccent = [NSAttributedString.Key.font: captionFont, .foregroundColor: accent, .paragraphStyle: captionStyle] as [NSAttributedString.Key: Any]
         let centAccent = [NSAttributedString.Key.font: bodyFont, .foregroundColor: accent, .paragraphStyle: cent] as [NSAttributedString.Key: Any]
 
         let text = NSMutableAttributedString()
@@ -540,12 +567,12 @@ struct NameShareSheet: View {
         }
         if !input.otherNames.isEmpty {
             sepIfNeeded()
-            append("Other Names: ", capAccent, highlightAllah: false)
+            append(String(localized: "Other Names:") + " ", capAccent, highlightAllah: false)
             append(input.otherNames, capAttr)
         }
         if !input.firstFound.isEmpty {
             sepIfNeeded(input.otherNames.isEmpty ? "\n\n" : "\n")
-            append("First Found: ", capAccent, highlightAllah: false)
+            append(String(localized: "First Found:") + " ", capAccent, highlightAllah: false)
             append(input.firstFound, capAttr, highlightAllah: false)
         }
         if !input.desc.isEmpty {

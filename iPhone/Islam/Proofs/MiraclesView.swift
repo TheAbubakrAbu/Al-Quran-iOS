@@ -3,7 +3,9 @@ import SwiftUI
 import ImageIO
 import UIKit
 
-// Miracles of the Quran: the miracles-of-quran.com library (202 articles across fifteen subjects),
+// Miracles of the Quran: the miracles-of-quran.com library (73 of its 202 articles; the 2026-10-18 review
+// withheld the rest at build time, see WITHHELD in Scripts/build_miracles_pack.py; Milk came back on
+// 2026-10-26 with its letter-count half cut),
 // ported from the Tilawa app by Jamil Hammoudeh, with permission. The data is
 // `Resources/Data/Islam/Miracles.json.xz` (Scripts/build_miracles_pack.py): the site's own prose, which
 // it waives copyright on; third-party excerpts trimmed at import to a short attributed quote that links
@@ -189,20 +191,21 @@ final class MiraclesStore: @unchecked Sendable {
     ///
     /// Chosen on ONE test: how little room the argument leaves for coincidence or hindsight. A claim
     /// scores highly when the Quran's wording is specific rather than poetic, when the fact was
-    /// genuinely unknown in 7th-century Arabia, and when the confirmation is a hard find - an
-    /// excavated city, a mummy, a measured structure - rather than a reading that only works once you
-    /// already know the answer. Archaeology leads because a buried city either is or is not where the
-    /// text said it was; the cosmology and embryology entries follow because their wording is
+    /// genuinely unknown in 7th-century Arabia, and when the confirmation is a hard find rather than a
+    /// reading that only works once you already know the answer. The 2026-10-18 review withheld six
+    /// of the old picks (Ubar, Petra, the mummy, iron, internal mountains, fetal development: see
+    /// WITHHELD in Scripts/build_miracles_pack.py), so the list now leads with the ruler's title in
+    /// Yusuf's and Musa's stories, then the cosmology, embryology and sea entries whose wording is
     /// unusually concrete.
     ///
     /// Deliberately short: a "best of" that runs to forty entries is just the library again. These
     /// are the app's own editorial pick, not the source site's - it publishes no ranking.
     static let strongestSlugs = [
-        "ubar", "petra", "mummy", "haman",
+        "pharaoh", "haman",
         "expanding_universe", "big_bang_crunch", "primordial_smoke",
-        "human_embryo", "fetal_development", "bones",
-        "internal_mountains", "mountains", "internal_waves", "photic_zone",
-        "iron", "fingerprints",
+        "human_embryo", "bones",
+        "mountains", "internal_waves", "photic_zone", "halocline",
+        "fingerprints",
     ]
 
     struct Library {
@@ -356,11 +359,11 @@ struct MiraclesView: View {
     private var query: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     /// Every term has to hit, so "mountain root" finds the one article that "mountain" alone would bury.
-    private static func filter(_ library: MiraclesStore.Library?, query: String) -> [MiracleArticle] {
-        guard let library else { return [] }
+    /// `MiracleCategoryView` runs the same filter over one subject's articles.
+    static func filter(_ articles: [MiracleArticle], query: String) -> [MiracleArticle] {
         let terms = IslamArticles.fold(query).split(separator: " ").map(String.init)
         guard !terms.isEmpty else { return [] }
-        let matched = library.articles.filter { article in terms.allSatisfy { article.searchKey.contains($0) } }
+        let matched = articles.filter { article in terms.allSatisfy { article.searchKey.contains($0) } }
         return SearchRank.sorted(matched, by: query) { [$0.title] }
     }
 
@@ -369,7 +372,7 @@ struct MiraclesView: View {
         filterTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 150_000_000)
             guard !Task.isCancelled else { return }
-            results = Self.filter(library, query: text.trimmingCharacters(in: .whitespacesAndNewlines))
+            results = Self.filter(library?.articles ?? [], query: text.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
@@ -383,17 +386,17 @@ struct MiraclesView: View {
                         systemImage: "sparkle.magnifyingglass",
                         headline: "We will show them Our signs in the horizons and within themselves until it becomes clear to them that it is the truth.",
                         source: "Quran 41:53",
-                        message: "Two hundred short articles arguing that the Quran describes the world as science and history later found it: mountains with roots, the expanding universe, the stages of the embryo. Each argument is the site's own; the meaning of an ayah rests with the classical scholars of tafsir, and a scientific claim can move on. Read them as invitations to reflect.",
+                        message: "Short articles arguing that the Quran describes the world as science and history later found it: mountains with roots, the expanding universe, the stages of the embryo. Each argument is the site's own; the meaning of an ayah rests with the classical scholars of tafsir, and a scientific claim can move on. Articles that rest on counting letters or numbers, or that pull an ayah away from its context, are left out. Read the rest as invitations to reflect.",
                         stats: [
                             ResourceHeroStat("\(library.articles.count)", "articles"),
-                            ResourceHeroStat("\(MiracleCategory.allCases.count)", "fields"),
+                            ResourceHeroStat("\(MiracleCategory.allCases.filter { library.count(in: $0) > 0 }.count)", "fields"),
                             ResourceHeroStat("\(library.strongest.count)", "strongest"),
                         ]
                     ))
 
                     StrongestSection(
                         items: library.strongest,
-                        footer: "Where the Quran's wording is most specific and the confirmation hardest to argue with: an excavated city, a mummy, a measured structure. The app's own pick, not the source's."
+                        footer: "Where the Quran's wording is most specific and the fit with later findings closest: a ruler's title, the stages of the embryo, the darkness of the deep sea. The app's own pick, not the source's, and still a reading rather than tafsir."
                     ) { article in
                         NavigationLink(destination: LazyDestination {
                             MiracleArticleView(article: article)
@@ -404,7 +407,8 @@ struct MiraclesView: View {
 
                     ForEach(MiracleLevel.allCases) { level in
                         Section(header: Text(level.title.uppercased())) {
-                            ForEach(MiracleCategory.allCases.filter { $0.level == level }) { category in
+                            // A subject the review left empty (Mathematics: every article was a counting code) is not listed.
+                            ForEach(MiracleCategory.allCases.filter { $0.level == level && library.count(in: $0) > 0 }) { category in
                                 NavigationLink(destination: LazyDestination {
                                     MiracleCategoryView(category: category)
                                 }) {
@@ -414,6 +418,7 @@ struct MiraclesView: View {
                                         Text("\(library.count(in: category))")
                                             .font(.caption.weight(.semibold).monospacedDigit())
                                             .foregroundStyle(.secondary)
+                                            .hiddenInSimple(.sectionCounts)
                                     }
                                 }
                             }
@@ -471,6 +476,7 @@ struct MiraclesView: View {
                 }
             }
         }
+        .englishArticle()
         .applyConditionalListStyle()
         .aboutSignsDestination($openDoor)
         .navigationTitle("Miracles of the Quran")
@@ -494,7 +500,7 @@ struct MiraclesView: View {
             guard library == nil else { return }
             let loaded = await Task.detached(priority: .userInitiated) { MiraclesStore.shared.library() }.value
             library = loaded
-            results = Self.filter(loaded, query: query)
+            results = Self.filter(loaded?.articles ?? [], query: query)
             #if DEBUG
             // "-miracleArticle <slug>" pushes one article on top of the index, the only headless way in.
             let args = ProcessInfo.processInfo.arguments
@@ -515,37 +521,66 @@ struct MiracleCategoryView: View {
     let category: MiracleCategory
 
     @State private var articles: [MiracleArticle]?
+    @State private var searchText = ""
+    /// The subject's articles matching the settled query: the index's rule, from `.onChange` 150 ms
+    /// after the last keystroke and the articles' arrival, never from the body.
+    @State private var results: [MiracleArticle] = []
+    @State private var filterTask: Task<Void, Never>?
+    @State private var barsCollapsed = false
+
+    private var query: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private func scheduleFilter(_ text: String) {
+        filterTask?.cancel()
+        filterTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else { return }
+            results = MiraclesView.filter(articles ?? [], query: text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ article: MiracleArticle, query: String) -> some View {
+        NavigationLink(destination: LazyDestination {
+            MiracleArticleView(article: article)
+        }) {
+            MiracleArticleRow(article: article, showCategory: false, query: query).equatable()
+        }
+    }
 
     var body: some View {
         let _ = RenderCounter.hit("MiracleCategoryView")
         List {
             if let articles {
-                let levels = MiracleLevel.allCases.map { level in (level, articles.filter { $0.level == level }) }
-                    .filter { !$0.1.isEmpty }
-                if levels.count > 1 {
-                    ForEach(levels, id: \.0) { level, rows in
-                        Section(header: SectionPillHeader(title: level.title.uppercased(), count: rows.count)) {
-                            ForEach(rows) { article in
-                                NavigationLink(destination: LazyDestination {
-                                    MiracleArticleView(article: article)
-                                }) {
-                                    MiracleArticleRow(article: article, showCategory: false, query: "").equatable()
-                                }
+                if query.isEmpty {
+                    let levels = MiracleLevel.allCases.map { level in (level, articles.filter { $0.level == level }) }
+                        .filter { !$0.1.isEmpty }
+                    if levels.count > 1 {
+                        ForEach(levels, id: \.0) { level, rows in
+                            Section(header: SectionPillHeader(title: level.title.uppercased(), count: rows.count)) {
+                                ForEach(rows) { row($0, query: "") }
                             }
                         }
+                    } else {
+                        Section(header: SectionPillHeader(title: "ARTICLES", count: articles.count)) {
+                            ForEach(articles) { row($0, query: "") }
+                        }
                     }
+                    Section(footer: MiracleCreditFooter()) { EmptyView() }
                 } else {
-                    Section(header: SectionPillHeader(title: "ARTICLES", count: articles.count)) {
-                        ForEach(articles) { article in
-                            NavigationLink(destination: LazyDestination {
-                                MiracleArticleView(article: article)
-                            }) {
-                                MiracleArticleRow(article: article, showCategory: false, query: "").equatable()
-                            }
+                    let matches = results
+                    if matches.isEmpty {
+                        Section {
+                            Text("No \(category.title) articles match \"\(query)\". Try a different word, or search the whole library.")
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Section(header: SectionPillHeader(title: "ARTICLES", count: matches.count)) {
+                            ForEach(matches) { row($0, query: query) }
                         }
                     }
                 }
-                Section(footer: MiracleCreditFooter()) { EmptyView() }
             } else {
                 Section {
                     HStack {
@@ -556,18 +591,32 @@ struct MiracleCategoryView: View {
                 }
             }
         }
+        .englishArticle()
         .applyConditionalListStyle()
         .navigationTitle(category.title)
         #if os(iOS)
         .openScreen(.miracleCategory, id: category.rawValue)
         #endif
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: searchText) { text in scheduleFilter(text) }
+        .collapseBarsOnScroll($barsCollapsed)
+        .adaptiveSafeArea(edge: .bottom) {
+            SearchBar(text: AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut),
+                      placeholder: "Search \(category.title)")
+                .minimizedBarStyle(barsCollapsed)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: barsCollapsed)
+                .padding(.horizontal, 24)
+                .padding(.bottom, BottomBarCushion.standard)
+                .background(Color.white.opacity(0.00001))
+        }
         .task {
             guard articles == nil else { return }
             let category = self.category
-            articles = await Task.detached(priority: .userInitiated) {
+            let loaded = await Task.detached(priority: .userInitiated) {
                 MiraclesStore.shared.library()?.articles(in: category) ?? []
             }.value
+            articles = loaded
+            results = MiraclesView.filter(loaded, query: query)
         }
     }
 }
@@ -651,9 +700,9 @@ struct MiracleArticleView: View {
     private var siblingNavigationPair: some View {
         HStack(spacing: 10) {
             siblingNavigationButton(title: "Previous", target: siblings.previous,
-                                    endNote: "First", systemImage: "chevron.left", trailing: false)
+                                    endNote: "First", systemImage: "chevron.backward", trailing: false)
             siblingNavigationButton(title: "Next", target: siblings.next,
-                                    endNote: "Last", systemImage: "chevron.right", trailing: true)
+                                    endNote: "Last", systemImage: "chevron.forward", trailing: true)
         }
     }
 
@@ -755,7 +804,7 @@ struct MiracleArticleView: View {
         let accent = appearance.accent
         let eyebrow = HStack(spacing: 6) {
             Image(systemName: "sparkle")
-            Text("IN SHORT")
+            Text(verbatim: AppLanguage.article("IN SHORT"))
                 .tracking(1.1)
         }
         .font(.caption.weight(.bold))
@@ -834,7 +883,7 @@ struct MiracleArticleView: View {
             }
             .themedListRowBackground()
         }
-        .selectableArticleList()
+        .englishArticle().selectableArticleList()
         #if DEBUG
         // `-miracleScrollToSiblings`: the Previous|Next pair sits under the whole article, and there
         // is no scroll tooling in the simulator, so a screenshot run needs a way to reach it.
@@ -856,7 +905,7 @@ struct MiracleArticleView: View {
                         withAnimation { copied = true }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { withAnimation { copied = false } }
                     } label: {
-                        Label(copied ? "Copied" : "Copy Article", systemImage: copied ? "checkmark" : "doc.on.doc")
+                        Label(AppLanguage.article(copied ? "Copied" : "Copy Article"), systemImage: copied ? "checkmark" : "doc.on.doc")
                     }
                     Button {
                         Settings.shared.hapticFeedback()
@@ -1028,7 +1077,36 @@ struct MiracleProse: View {
         }
     }
 
+    @Environment(\.openURL) private var openURL
+
     var body: some View {
+        #if os(iOS)
+        // Drag-selectable (Abu, 2026-10-19), the same text view the article kit's paragraphs use. The
+        // in-prose links keep working: a tap goes to the page's `openURL` handler, the route the `Text`
+        // form took, and the string's own accent + underline draw them.
+        SelectableAttributedProse(
+            attributed: attributed,
+            textStyle: style == .claim ? .title2 : .body,
+            weight: uiWeight,
+            italic: style == .closer,
+            lineSpacing: 4,   // the `Text` line pitch, see `ArticleParagraph`
+            onLink: { openURL($0) }
+        )
+        #else
+        plainText
+        #endif
+    }
+
+    #if os(iOS)
+    private var uiWeight: UIFont.Weight {
+        switch style {
+        case .claim: return .bold
+        case .lead, .closer: return .semibold
+        case .body: return .regular
+        }
+    }
+    #else
+    private var plainText: some View {
         let base = Text(attributed)
         return (style == .closer ? base.italic() : base)
             .font(font)
@@ -1045,6 +1123,7 @@ struct MiracleProse: View {
         case .closer: return .body.weight(.semibold)
         }
     }
+    #endif
 
     private static func build(text: String, links: [MiracleLink], accent: Color) -> AttributedString {
         var result = AttributedString(text)

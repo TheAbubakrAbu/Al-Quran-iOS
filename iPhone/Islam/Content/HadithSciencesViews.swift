@@ -24,8 +24,8 @@ struct HadithSciencesView: View {
             }
             .themedListRowBackground()
         }
-        .navigationTitle("The Sciences of Hadith")
-        .selectableArticleList(article: "HadithSciencesView")
+        .navigationTitle(AppLanguage.article("The Sciences of Hadith"))
+        .englishArticle().selectableArticleList(article: "HadithSciencesView")
     }
 
     static let sections: [ArticleSection] = [
@@ -56,16 +56,7 @@ struct HadithSciencesView: View {
         ArticleSection("THE CHAIN AND THE TEXT", [
             .markdown("Every hadith has two parts. The **isnad (إِسنَاد)**, also called the **sanad (سَنَد)**, is the chain of narrators: who told whom, back to the Prophet (peace and blessings be upon him). The **matn (مَتن)** is what the chain carries, his words or a description of what he did. Here is the first hadith in Sahih al-Bukhari as it stands in the book, the chain first and then the words:"),
             .hadith("bukhari:1", cite: "Sahih al-Bukhari 1, Sahih Muslim 1907", arabic: 0...80, english: [0...46]),
-            .chain([
-                ArticleChainLink("al-Bukhari", "d. 256 AH, the collector"),
-                ArticleChainLink("al-Humaydi, ‘Abdullah ibn az-Zubayr", "d. 219 AH in Makkah, the foremost student of Ibn ‘Uyaynah"),
-                ArticleChainLink("Sufyan ibn ‘Uyaynah", "d. 198 AH, of Makkah"),
-                ArticleChainLink("Yahya ibn Sa‘id al-Ansari", "d. 144 AH or after, of Madinah"),
-                ArticleChainLink("Muhammad ibn Ibrahim at-Taymi", "d. 120 AH, of Madinah"),
-                ArticleChainLink("‘Alqamah ibn Waqqas al-Laythi", "of Madinah, d. under the caliph ‘Abd al-Malik (65–86 AH)"),
-                ArticleChainLink("‘Umar ibn al-Khattab", "d. 23 AH, speaking from the minbar"),
-                ArticleChainLink("The Prophet ﷺ", ""),
-            ], caption: "The chain of Sahih al-Bukhari 1, read from its Arabic, with death dates from Ibn Hajar’s Taqrib at-Tahdhib"),
+            .isnad("Sahih al-Bukhari 1 and Sahih Muslim 1907, read from the Arabic of both: from the Prophet ﷺ through ‘Umar ibn al-Khattab, ‘Alqamah ibn Waqqas al-Laythi and Muhammad ibn Ibrahim at-Taymi to Yahya ibn Sa‘id al-Ansari, where the chain divides. Al-Bukhari’s road runs through Sufyan ibn ‘Uyaynah and al-Humaydi; Muslim’s through Malik and ‘Abdullah ibn Maslamah al-Qa‘nabi. Death dates from Ibn Hajar’s Taqrib at-Tahdhib.", .bukhariFirst),
             .text("Six men stand between al-Bukhari and the Prophet, and each has an entry in the books of narrators: his teachers, his students, his city, his death, and the critics’ verdict on him. The chain can also be checked from outside. Al-Humaydi, the first man in it, left a book of his own, his Musnad, which survives and records this same hadith through this same chain (Musnad al-Humaydi 28); and Muslim narrates it through Malik, al-Layth, Hammad ibn Zayd, Sufyan, Ibn al-Mubarak and others, all of them from Yahya ibn Sa‘id (Sahih Muslim 1907)."),
             .text("The critics examine the chain link by link and the text against every other report of it; the five conditions below cover both."),
             .door(.article("HadithPreservationView")),
@@ -100,7 +91,7 @@ struct HadithSciencesView: View {
                 ArticleStat("4", "links of the hadith of intentions carried by a single narrator each"),
                 ArticleStat("9", "students of Yahya ibn Sa‘id who relay it in Sahih Muslim alone"),
             ]),
-            .markdown("So ahad is a count, not a weakness. Ibn Hajar records that the demand for two narrators at every level came from the Mu‘tazili Abu ‘Ali al-Jubba’i, and that the very first hadith in al-Bukhari’s book refutes anyone who claims al-Bukhari required it. The highest rank of all is **muttafaq ‘alayh (مُتَّفَق عَلَيه)**, “agreed upon,” a hadith narrated by both al-Bukhari and Muslim, as the hadith of intentions is. Ibn as-Salah explains that the phrase means the agreement of those two imams, and that the Ummah’s agreement follows from it, because the Ummah received their two books with acceptance."),
+            .markdown("So ahad is a count, not a weakness, and Ahl as-Sunnah act on a sahih ahad report in belief as well as in law: al-Bukhari gave a whole book of his Sahih (Akhbar al-Ahad) to accepting the report of a single truthful narrator, and the Prophet sent Mu‘adh alone to call the people of Yemen to the tawhid of Allah (Sahih al-Bukhari 7372). Ibn Hajar records that the demand for two narrators at every level came from the Mu‘tazili Abu ‘Ali al-Jubba’i, and that the very first hadith in al-Bukhari’s book refutes anyone who claims al-Bukhari required it. The highest rank of all is **muttafaq ‘alayh (مُتَّفَق عَلَيه)**, “agreed upon,” a hadith narrated by both al-Bukhari and Muslim, as the hadith of intentions is. Ibn as-Salah explains that the phrase means the agreement of those two imams, and that the Ummah’s agreement follows from it, because the Ummah received their two books with acceptance."),
         ]),
         ArticleSection("WEIGHING THE NARRATORS", [
             .markdown("The study of the men in the chains is **‘ilm ar-rijal (عِلم الرِّجَال)**, the knowledge of the men, and its verdicts are **al-jarh wat-ta‘dil (الجَرح وَالتَّعدِيل)**: jarh, “wounding,” is criticism of a narrator, and ta‘dil, “declaring upright,” is his vindication. Ibn Hajar’s one-line entry on Muhammad ibn Ibrahim at-Taymi, the fourth man in the chain above, shows how much a single verdict holds:"),
@@ -144,7 +135,7 @@ struct HadithSciencesView: View {
         ArticleSection("HOW THIS APP GRADES", [
             .text("Every hadith in the Hadith tab carries its grade line under the text, exactly as the graders gave it and with each grader’s name: al-Albani, Ahmad Shakir, Shu‘ayb al-Arna’ut, Zubair Ali Zai, the Darussalam editors, Bashshar ‘Awwad Ma‘ruf, and others. These are the published verdicts that sunnah.com quotes (see Credits in Settings). The line is part of the hadith, not a display option: it always shows, and it travels with every hadith you share."),
             .text("The two Sahihs carry no grade line, because the Ummah received the books of al-Bukhari and Muslim with acceptance. Where graders disagree, the app does not overrule them: a hadith graded sahih by one scholar and da‘if by another shows both verdicts, and the search filters list it under every grade it was given."),
-            .text("The articles of this library are stricter. They quote only narrations from the two Sahihs, or narrations that most of the graders on the shelf call sahih or hasan, and every citation names its grader; when graders differ, the majority decides. Weak and fabricated reports are left out, however well known."),
+            .text("The articles of this library are stricter. They quote only narrations from the two Sahihs, or narrations the graders on the shelf call sahih or hasan, and every citation names its grader; when graders differ, a narration is quoted only if al-Albani grades it sahih or hasan, and the citation names him. Weak and fabricated reports are left out, however well known."),
             .callout("A grade is a scholar’s verdict on a chain and a text, reached by the rules on this page. The rules are shared; applying them to a particular narrator is expert judgment, which is why two careful scholars can grade the same report differently. What the rules never allow is accepting a report because it is popular, beautiful, or useful to an argument.", title: "What a Grade Is", icon: "scalemass.fill"),
         ]),
         ArticleSection("COMMON QUESTIONS", [
@@ -155,7 +146,7 @@ struct HadithSciencesView: View {
             .markdown("**Why do scholars sometimes grade the same hadith differently?**"),
             .text("Because grading applies shared rules to particular men, and the critics did not always agree about a particular man, or about whether other routes lift a report. Take this hadith:"),
             .hadith("tirmidhi:2260", cite: "Jami` at-Tirmidhi 2260; graded sahih by al-Albani and Ahmad Shakir", arabic: 27...37, english: [0...27]),
-            .text("Its chain runs through ‘Umar ibn Shakir, of whom at-Tirmidhi says only that he was a shaykh of Basrah from whom more than one scholar narrated. Ahmad Shakir and al-Albani grade it sahih, the Darussalam editors hasan, and Zubair Ali Zai da‘if. Three of the four accept it, so this library may quote it, and the Hadith tab shows all four verdicts."),
+            .text("Its chain runs through ‘Umar ibn Shakir, of whom at-Tirmidhi says only that he was a shaykh of Basrah from whom more than one scholar narrated. Ahmad Shakir and al-Albani grade it sahih, the Darussalam editors hasan, and Zubair Ali Zai da‘if. Al-Albani grades it sahih, so this library may quote it, naming him, and the Hadith tab shows all four verdicts."),
             .markdown("**Did the critics check only the chains and never the text?**"),
             .text("No. Freedom from irregularity and from hidden defects is tested on the text as much as on the chain, and the forgeries above were caught through their texts as well as their narrators. What the critics refused was to reject an authentic report merely because it seemed strange to someone: a text was judged by evidence, not by taste."),
             .markdown("**Why do some people reject the hadith altogether, and what is the answer?**"),
@@ -200,8 +191,8 @@ struct HadithPreservationView: View {
             }
             .themedListRowBackground()
         }
-        .navigationTitle("How the Hadith Were Preserved")
-        .selectableArticleList(article: "HadithPreservationView")
+        .navigationTitle(AppLanguage.article("How the Hadith Were Preserved"))
+        .englishArticle().selectableArticleList(article: "HadithPreservationView")
     }
 
     static let sections: [ArticleSection] = [
@@ -269,18 +260,11 @@ struct HadithPreservationView: View {
         ArticleSection("THE EARLY BOOKS THAT SURVIVE", [
             .markdown("Several collections from before the famous six still exist and can be set beside them. Among the oldest is the **Sahifah of Hammam ibn Munabbih (صَحِيفَة هَمَّام بن مُنَبِّه)**, 138 hadiths in Muhammad Hamidullah’s edition, which Hammam, a Successor of San‘a in Yemen, wrote down from Abu Hurayrah. Hamidullah published it in the 1950s from two manuscript copies, one in Damascus and one in Berlin. The same collection reached Imam Muslim through a line of teachers, and he quotes it under Hammam’s own heading, which introduces a written collection and then picks out one hadith from it:"),
             .hadith("muslim:225", cite: "Sahih Muslim 225", arabic: 13...55, english: [0...52]),
-            .chain([
-                ArticleChainLink("Muslim", "d. 261 AH, the collector"),
-                ArticleChainLink("Muhammad ibn Rafi‘", "d. 245 AH, of Nishapur"),
-                ArticleChainLink("‘Abd ar-Razzaq as-San‘ani", "d. 211 AH, author of the Musannaf"),
-                ArticleChainLink("Ma‘mar ibn Rashid", "d. 154 AH, of Basrah, settled in Yemen"),
-                ArticleChainLink("Hammam ibn Munabbih", "d. 132 AH, who wrote the Sahifah"),
-                ArticleChainLink("Abu Hurayrah", "d. 57–59 AH, the Companion"),
-                ArticleChainLink("The Prophet ﷺ", ""),
-            ], caption: "How the Sahifah of Hammam reached Sahih Muslim 225, with death dates from Ibn Hajar’s Taqrib at-Tahdhib"),
+            .isnad("How the Sahifah of Hammam reached both Sahihs: from the Prophet ﷺ through Abu Hurayrah to Hammam ibn Munabbih, who wrote it down, then Ma‘mar ibn Rashid and ‘Abd ar-Razzaq, where it divides: to al-Bukhari through Yahya ibn Musa (Sahih al-Bukhari 2073) and to Muslim through Muhammad ibn Rafi‘ (Sahih Muslim 225). Death dates from Ibn Hajar’s Taqrib at-Tahdhib.", .hammamSahifah),
             .text("On this app’s shelf alone, Hammam’s chain runs through 79 rows of Sahih Muslim and 22 of Sahih al-Bukhari, which receives it from Ma‘mar through more than one student, among them ‘Abd ar-Razzaq and ‘Abdullah ibn al-Mubarak (for example, Sahih al-Bukhari 2073 and 3124). A booklet written by a Companion’s student in the first century, copied as a book of its own, and quoted through the same chain by the great collectors of the third: that is not a two-century silence."),
             .markdown("The second century produced books that survive whole. **Al-Muwatta’ (المُوَطَّأ)** of Malik ibn Anas of Madinah (93–179 AH) gathered the hadith and the practice of Madinah; al-Bukhari called “Malik from Nafi‘ from Ibn ‘Umar” the soundest of all chains, and ash-Shafi‘i said of the Muwatta’, before the two Sahihs existed:"),
             .quote(text: "“I know of no book of knowledge on earth that is more often right than the book of Malik.” (ash-Shafi‘i, related by Ibn as-Salah, who notes he said it before the books of al-Bukhari and Muslim existed)", arabic: "مَا أَعلَمُ فِي الأَرضِ كِتَابًا فِي العِلمِ أَكثَرَ صَوَابًا مِن كِتَابِ مَالِكٍ", dimmed: true),
+            .isnad("Malik from Nafi‘ from Ibn ‘Umar, the chain al-Bukhari called the soundest of all. Carried on to ash-Shafi‘i, Malik’s student, and to Ahmad ibn Hanbal, ash-Shafi‘i’s, the later scholars called it the golden chain (silsilat adh-dhahab).", .goldenChain),
             .markdown("Then came the great collections of the early third century: the **Musannaf** of ‘Abd ar-Razzaq of San‘a (d. 211 AH), which also preserves the older **Jami‘** of his teacher Ma‘mar ibn Rashid; the **Musannaf** of Ibn Abi Shaybah (d. 235 AH); the **Musnad** of al-Humaydi (d. 219 AH), al-Bukhari’s teacher; and the vast **Musnad** of Ahmad ibn Hanbal (d. 241 AH). All of them are in print today, and the compilers of the six books narrate from these men or from their students."),
         ]),
         ArticleSection("THE SIX BOOKS", [
@@ -293,7 +277,7 @@ struct HadithPreservationView: View {
             .bullet("**Sunan Ibn Majah**, by Muhammad ibn Yazid ibn Majah of Qazwin (d. 273 AH)"),
             .text("Only the first two set out to include nothing but sahih hadith. The four Sunan gathered the hadith that jurists use, sound and weaker together, and their authors often said which was which; at-Tirmidhi, as we saw, graded most of his hadith himself. That is why the Sunan carry the graders’ verdicts on this app’s shelf and the two Sahihs do not. Counts of al-Bukhari’s book differ because they count different things:"),
             .stats([
-                ArticleStat("7,563", "numbered narrations in Sahih al-Bukhari, in the numbering this app uses"),
+                ArticleStat("7,277", "narrations in this app’s Sahih al-Bukhari, numbered up to 7,563 in the sunnah.com numbering"),
                 ArticleStat("9,082", "all its Prophetic reports, repeats and chapter-heading reports included, by Ibn Hajar’s count"),
                 ArticleStat("7,397", "its connected hadiths counting repeats, by Ibn Hajar’s count"),
                 ArticleStat("2,602", "its distinct connected hadiths without repeats, by Ibn Hajar’s count"),
@@ -355,8 +339,8 @@ struct HadithRejectorsView: View {
             }
             .themedListRowBackground()
         }
-        .navigationTitle("Answering the Hadith Rejectors")
-        .selectableArticleList(article: "HadithRejectorsView")
+        .navigationTitle(AppLanguage.article("Answering the Hadith Rejectors"))
+        .englishArticle().selectableArticleList(article: "HadithRejectorsView")
     }
 
     static let sections: [ArticleSection] = [
@@ -439,14 +423,8 @@ struct HadithRejectorsView: View {
         ]),
         ArticleSection("THE SAME CHAINS CARRIED THE QURAN", [
             .text("A Quranist knows that his mushaf came through Muhammad (peace and blessings be upon him), which verses belong to it, their order and their pronunciation, only because Muslims passed it on from teacher to student. The reading most of the world recites has a chain like any hadith:"),
-            .chain([
-                ArticleChainLink("Hafs ibn Sulayman", "d. 180 AH, Kufa, whose narration most Muslims recite"),
-                ArticleChainLink("‘Asim ibn Abi an-Najud", "d. 127 AH, the imam of recitation in Kufa"),
-                ArticleChainLink("Abu ‘Abd ar-Rahman as-Sulami", "taught the Quran in Kufa from the rule of ‘Uthman to al-Hajjaj"),
-                ArticleChainLink("‘Uthman, ‘Ali, Ibn Mas‘ud, Ubayy and Zayd", "Companions who read to the Prophet"),
-                ArticleChainLink("The Prophet ﷺ", ""),
-            ], caption: "The chain of the reading of Hafs from ‘Asim"),
-            .text("Its third link, Abu ‘Abd ar-Rahman as-Sulami, also narrates in Sahih al-Bukhari from ‘Uthman (may Allah be pleased with him) that the best of the Muslims are those who learn the Quran and teach it (Sahih al-Bukhari 5027). The Quranist recites on his authority and rejects his hadith. Whether al-Fatihah reads Maliki or Maaliki yawm ad-din, both of them Quran, is known only by chains, which Ibn al-Jazari gathered in an-Nashr."),
+            .isnad("The chain of the reading of ‘Asim: from the Prophet ﷺ through ‘Uthman, ‘Ali, Ibn Mas‘ud, Ubayy and Zayd ibn Thabit, and ‘Asim’s teachers Abu ‘Abd ar-Rahman as-Sulami, Zirr ibn Hubaysh and Abu ‘Amr ash-Shaybani, to ‘Asim in Kufa (d. 127 AH), where it divides into his two narrators: Hafs ibn Sulayman (d. 180 AH), whose narration most Muslims recite, and Shu‘bah.", .hafsReading),
+            .text("One of ‘Asim’s teachers in it, Abu ‘Abd ar-Rahman as-Sulami, also narrates in Sahih al-Bukhari from ‘Uthman (may Allah be pleased with him) that the best of the Muslims are those who learn the Quran and teach it (Sahih al-Bukhari 5027). The Quranist recites on his authority and rejects his hadith. Whether al-Fatihah reads Maliki or Maaliki yawm ad-din, both of them Quran, is known only by chains, which Ibn al-Jazari gathered in an-Nashr."),
             .text("Where that trust is thrown away, the text gives way too: Rashad Khalifa removed two verses that every mushaf and all ten readings contain. And five prayers prayed in public every day since the Prophet’s own mosque are a transmission wider than any single report. Whoever accepts the Quran because multitudes handed it down cannot reject the prayer they handed down the same way."),
             .callout("Everything a Quranist knows about the Quran reached him through the same Muslims, and often the same men, who carried the Sunnah. A method that throws out their reports cannot keep their Quran: **rejecting reliable transmission saws off the branch the Quranist sits on.**", title: "The Branch They Sit On", icon: "exclamationmark.triangle.fill"),
             .door(.article("QiraatView")),

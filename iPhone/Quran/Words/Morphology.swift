@@ -259,8 +259,9 @@ private extension Character {
 /// Root, dictionary form and counts for one tapped word, with the way into every other word of the
 /// same root. Sits in the word card under the meaning; silent when the pack has nothing for the word.
 struct WordMorphologySection: View {
-    @ObservedObject private var settings = Settings.shared
-
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
     let surah: Surah
     let ayah: Ayah
     /// The token index inside the ayah's RAW Hafs text (the index the pack is aligned to).
@@ -292,10 +293,10 @@ struct WordMorphologySection: View {
 
                 HStack(alignment: .top, spacing: 12) {
                     if let rootInfo {
-                        morphologyTile(title: "Root", value: rootInfo.root.letters, count: rootCount)
+                        morphologyTile(title: String(localized: "Root"), value: rootInfo.root.letters, count: rootCount)
                     }
                     if let lemmaInfo {
-                        morphologyTile(title: "Dictionary form", value: lemmaInfo.lemma.text, count: MorphologyStore.shared.occurrences(ofLemma: lemmaInfo.id).count)
+                        morphologyTile(title: String(localized: "Dictionary form"), value: lemmaInfo.lemma.text, count: MorphologyStore.shared.occurrences(ofLemma: lemmaInfo.id).count)
                     }
                 }
 
@@ -304,7 +305,7 @@ struct WordMorphologySection: View {
                     NavigationLink {
                         LazyDestination {
                             RootOccurrencesView(
-                                title: "Root \(rootInfo.root.letters)",
+                                title: String(localized: "Root \(rootInfo.root.letters)"),
                                 locations: locations,
                                 highlight: WordLocation(surah: surah.id, ayah: ayah.id, token: tokenIndex)
                             )
@@ -318,7 +319,7 @@ struct WordMorphologySection: View {
                             Text("\(locations.count)")
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
-                            Image(systemName: "chevron.right")
+                            Image(systemName: "chevron.forward")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.tertiary)
                         }
@@ -376,7 +377,8 @@ struct WordMorphologySection: View {
 /// sheet (the word card) or from the Quran tab's search; with `onOpenAyah` set, tapping a row opens
 /// the ayah in the reader.
 struct RootOccurrencesView: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @ObservedObject private var quranData = QuranData.shared
 
     let title: String
@@ -427,7 +429,7 @@ struct RootOccurrencesView: View {
         let ayahCount = rows.count
 
         List {
-            Section(header: SectionPillHeader(title: "AYAHS", count: shown.count)) {
+            Section(header: SectionPillHeader(title: String(localized: "AYAHS"), count: shown.count)) {
                 ForEach(shown) { row in
                     occurrenceRow(row)
                         .id(row.id)
@@ -442,14 +444,13 @@ struct RootOccurrencesView: View {
             if searchText.isEmpty {
                 Section(footer:
                     Text("\(locations.count) words across \(ayahCount) ayahs. The tinted word carries the root; roots come from the Quranic Arabic Corpus via the Quranic Universal Library.")
-                        .font(.caption2)
                 ) { EmptyView() }
             }
         }
-        .applyConditionalListStyle(disableNowPlayingInset: true)
+        .applyConditionalListStyle()
         .dismissKeyboardOnScroll()
         .adaptiveSafeArea(edge: .bottom) {
-            SearchBar(text: AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut), placeholder: "Search these ayahs")
+            SearchBar(text: AppPerformance.shouldReduceAnimations ? $searchText : $searchText.animation(.easeInOut), placeholder: String(localized: "Search these ayahs"))
                 .padding(.horizontal, 24)
                 .padding(.bottom, BottomBarCushion.standard)
                 .background(Color.white.opacity(0.00001))
@@ -486,8 +487,10 @@ struct RootOccurrencesView: View {
 /// its own words, or a setting it reads, changed (Tilawa Guide, Phase 6 step 8). Wrap call sites in
 /// `.equatable()`.
 struct WordOccurrenceRow: View, Equatable {
-    @ObservedObject private var settings = Settings.shared
-
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     let surah: Surah
     let ayah: Ayah
     /// 0-based token indices of the RAW Hafs text to tint.
@@ -556,7 +559,7 @@ struct WordOccurrenceRow: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("\(surah.nameTransliteration) \(surah.id):\(ayah.id)")
+                Text("\(surah.displayName) \(surah.id):\(ayah.id)")
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(accent)
 
@@ -603,12 +606,15 @@ struct WordOccurrenceRow: View, Equatable {
             .lineLimit(nil)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .trailing)
+            // Arabic keeps the right edge: in the Arabic interface `.trailing` is the left.
+            .environment(\.layoutDirection, .leftToRight)
 
             if let translation {
                 Text(translation)
                     .font(.system(size: englishSize))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .leftToRightContent()
             }
         }
         .padding(.vertical, 6)

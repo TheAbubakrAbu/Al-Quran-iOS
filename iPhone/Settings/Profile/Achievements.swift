@@ -17,9 +17,21 @@ import UIKit
 ///
 /// Progress on a locked badge is still live: an unearned tile shows how far along the underlying
 /// number is right now, which is the only thing that makes rendering a locked tile worthwhile.
+// Each family ships with its domain: the prayer badges with the prayer times (HAS_ADHAN), the Quran,
+// listening and library badges with the Quran (HAS_QURAN), the hadith badges with the Hadith tab
+// (HAS_HADITH); only the dhikr badges are in every app. Every switch below is gated the same way, so
+// Al-Adhan and Al-Quran compile this file as it is.
 enum AlIslamBadge: String, CaseIterable, Identifiable {
+    #if HAS_ADHAN
     // Prayer - streaks, perfect days, lifetime totals, coverage.
+    case firstPrayer, threeDayStreak, weekOfSalah, fortnightOfSalah, monthOfSalah, fiftyDayStreak
+    case steadfast, halfYearOfSalah, yearOfSalah
+    case perfectDay, perfectTen, perfectFifty, perfectHundred, perfectYear
+    case prayers100, prayers500, prayers1000, prayers5000
+    case monthRecorded, yearRecorded, consistency
+    #endif
 
+    #if HAS_QURAN
     // Quran - reading, completion, the planner.
     case openedTheBook, ayahs100, ayahs500
     case juzDone, fiveJuz, tenJuz, halfway, twentyJuz, threeQuarters, khatm
@@ -36,6 +48,13 @@ enum AlIslamBadge: String, CaseIterable, Identifiable {
     case firstNote, annotator, commentator, scribe
     case firstHighlight, highlighter, illuminator, fullPalette
     case keptClose, wellLoved
+    #endif
+
+    #if HAS_HADITH
+    // Hadith
+    case firstHadithBook, hadithReader, hadithShelf, wholeShelf
+    case firstHadithBookmark, hadithScholar, hadithArchivist, hadithFavorites
+    #endif
 
     // Dhikr
     case oneTasbih, dhikrHundred, dhikrFiveHundred, dhikrThousand
@@ -46,129 +65,199 @@ enum AlIslamBadge: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        #if HAS_ADHAN
+        case .firstPrayer:          return String(localized: "First Steps")
+        case .threeDayStreak:       return String(localized: "Getting Going")
+        case .weekOfSalah:          return String(localized: "Week of Salah")
+        case .fortnightOfSalah:     return String(localized: "Fortnight")
+        case .monthOfSalah:         return String(localized: "Month of Salah")
+        case .fiftyDayStreak:       return String(localized: "Fifty Days")
+        case .steadfast:            return String(localized: "Steadfast")
+        case .halfYearOfSalah:      return String(localized: "Half a Year")
+        case .yearOfSalah:          return String(localized: "Year of Salah")
+        case .perfectDay:           return String(localized: "A Perfect Day")
+        case .perfectTen:           return String(localized: "Ten Perfect Days")
+        case .perfectFifty:         return String(localized: "Fifty Perfect Days")
+        case .perfectHundred:       return String(localized: "A Hundred Perfect Days")
+        case .perfectYear:          return String(localized: "A Perfect Year")
+        case .prayers100:           return String(localized: "A Hundred Prayers")
+        case .prayers500:           return String(localized: "Five Hundred Prayers")
+        case .prayers1000:          return String(localized: "A Thousand Prayers")
+        case .prayers5000:          return String(localized: "Five Thousand Prayers")
+        case .monthRecorded:        return String(localized: "A Month Recorded")
+        case .yearRecorded:         return String(localized: "A Year Recorded")
+        case .consistency:          return String(localized: "Consistency")
+        #endif
 
-        case .openedTheBook:        return "Opened the Book"
-        case .ayahs100:             return "A Hundred Ayahs"
-        case .ayahs500:             return "Five Hundred Ayahs"
-        case .juzDone:              return "A Juz' In"
-        case .fiveJuz:              return "Five Juz'"
-        case .tenJuz:               return "Ten Juz'"
-        case .halfway:              return "Halfway"
-        case .twentyJuz:            return "Twenty Juz'"
-        case .threeQuarters:        return "Three Quarters"
-        case .khatm:                return "Khatm"
-        case .firstSurahComplete:   return "First Surah"
-        case .tenSurahsComplete:    return "Ten Surahs"
-        case .thirtySurahsComplete: return "Thirty Surahs"
-        case .sixtySurahsComplete:  return "Sixty Surahs"
-        case .allSurahsComplete:    return "Every Surah Finished"
-        case .browsing:             return "Browsing"
-        case .halfTheSurahs:        return "Half the Surahs"
-        case .everySurahOpened:     return "Every Surah Opened"
-        case .frequentReader:       return "Frequent Reader"
-        case .devotedReader:        return "Devoted Reader"
-        case .planWeek:             return "A Week on Plan"
-        case .planMonth:            return "A Month on Plan"
-        case .planHundred:          return "A Hundred Days on Plan"
+        #if HAS_QURAN
+        case .openedTheBook:        return String(localized: "Opened the Book")
+        case .ayahs100:             return String(localized: "A Hundred Ayahs")
+        case .ayahs500:             return String(localized: "Five Hundred Ayahs")
+        case .juzDone:              return String(localized: "A Juz' In")
+        case .fiveJuz:              return String(localized: "Five Juz'")
+        case .tenJuz:               return String(localized: "Ten Juz'")
+        case .halfway:              return String(localized: "Halfway")
+        case .twentyJuz:            return String(localized: "Twenty Juz'")
+        case .threeQuarters:        return String(localized: "Three Quarters")
+        case .khatm:                return String(localized: "Khatm")
+        case .firstSurahComplete:   return String(localized: "First Surah")
+        case .tenSurahsComplete:    return String(localized: "Ten Surahs")
+        case .thirtySurahsComplete: return String(localized: "Thirty Surahs")
+        case .sixtySurahsComplete:  return String(localized: "Sixty Surahs")
+        case .allSurahsComplete:    return String(localized: "Every Surah Finished")
+        case .browsing:             return String(localized: "Browsing")
+        case .halfTheSurahs:        return String(localized: "Half the Surahs")
+        case .everySurahOpened:     return String(localized: "Every Surah Opened")
+        case .frequentReader:       return String(localized: "Frequent Reader")
+        case .devotedReader:        return String(localized: "Devoted Reader")
+        case .planWeek:             return String(localized: "A Week on Plan")
+        case .planMonth:            return String(localized: "A Month on Plan")
+        case .planHundred:          return String(localized: "A Hundred Days on Plan")
 
-        case .firstListen:          return "First Listen"
-        case .listener:             return "Listener"
-        case .devotedListener:      return "Devoted Listener"
-        case .audiophile:           return "Always Listening"
-        case .earForVoices:         return "An Ear for Voices"
-        case .reciterCollector:     return "Reciter Collector"
+        case .firstListen:          return String(localized: "First Listen")
+        case .listener:             return String(localized: "Listener")
+        case .devotedListener:      return String(localized: "Devoted Listener")
+        case .audiophile:           return String(localized: "Always Listening")
+        case .earForVoices:         return String(localized: "An Ear for Voices")
+        case .reciterCollector:     return String(localized: "Reciter Collector")
 
-        case .firstBookmark:        return "First Bookmark"
-        case .collector:            return "Collector"
-        case .archivist:            return "Archivist"
-        case .curator:              return "Curator"
-        case .firstNote:            return "First Note"
-        case .annotator:            return "Annotator"
-        case .commentator:          return "Commentator"
-        case .scribe:               return "Scribe"
-        case .firstHighlight:       return "First Highlight"
-        case .highlighter:          return "Highlighter"
-        case .illuminator:          return "Illuminator"
-        case .fullPalette:          return "Full Palette"
-        case .keptClose:            return "Kept Close"
-        case .wellLoved:            return "Well Loved"
+        case .firstBookmark:        return String(localized: "First Bookmark")
+        case .collector:            return String(localized: "Collector")
+        case .archivist:            return String(localized: "Archivist")
+        case .curator:              return String(localized: "Curator")
+        case .firstNote:            return String(localized: "First Note")
+        case .annotator:            return String(localized: "Annotator")
+        case .commentator:          return String(localized: "Commentator")
+        case .scribe:               return String(localized: "Scribe")
+        case .firstHighlight:       return String(localized: "First Highlight")
+        case .highlighter:          return String(localized: "Highlighter")
+        case .illuminator:          return String(localized: "Illuminator")
+        case .fullPalette:          return String(localized: "Full Palette")
+        case .keptClose:            return String(localized: "Kept Close")
+        case .wellLoved:            return String(localized: "Well Loved")
+        #endif
 
+        #if HAS_HADITH
+        case .firstHadithBook:      return String(localized: "First Collection")
+        case .hadithReader:         return String(localized: "Hadith Reader")
+        case .hadithShelf:          return String(localized: "Shelf Reader")
+        case .wholeShelf:           return String(localized: "The Whole Shelf")
+        case .firstHadithBookmark:  return String(localized: "First Narration Kept")
+        case .hadithScholar:        return String(localized: "Hadith Scholar")
+        case .hadithArchivist:      return String(localized: "Hadith Archivist")
+        case .hadithFavorites:      return String(localized: "Favorite Collections")
+        #endif
 
-        case .oneTasbih:            return "One Tasbih"
-        case .dhikrHundred:         return "A Hundred Remembrances"
-        case .dhikrFiveHundred:     return "Five Hundred Remembrances"
-        case .dhikrThousand:        return "A Thousand Remembrances"
-        case .dhikrFiveThousand:    return "Five Thousand Remembrances"
-        case .dhikrTenThousand:     return "Ten Thousand Remembrances"
-        case .dhikrHundredThousand: return "A Hundred Thousand Remembrances"
-        case .dhikrThreeDays:       return "Three Days of Dhikr"
-        case .dhikrWeek:            return "A Week of Dhikr"
-        case .dhikrMonth:           return "A Month of Dhikr"
-        case .dhikrHundredDays:     return "A Hundred Days of Dhikr"
+        case .oneTasbih:            return String(localized: "One Tasbih")
+        case .dhikrHundred:         return String(localized: "A Hundred Remembrances")
+        case .dhikrFiveHundred:     return String(localized: "Five Hundred Remembrances")
+        case .dhikrThousand:        return String(localized: "A Thousand Remembrances")
+        case .dhikrFiveThousand:    return String(localized: "Five Thousand Remembrances")
+        case .dhikrTenThousand:     return String(localized: "Ten Thousand Remembrances")
+        case .dhikrHundredThousand: return String(localized: "A Hundred Thousand Remembrances")
+        case .dhikrThreeDays:       return String(localized: "Three Days of Dhikr")
+        case .dhikrWeek:            return String(localized: "A Week of Dhikr")
+        case .dhikrMonth:           return String(localized: "A Month of Dhikr")
+        case .dhikrHundredDays:     return String(localized: "A Hundred Days of Dhikr")
         }
     }
 
     var detail: String {
         switch self {
+        #if HAS_ADHAN
+        case .firstPrayer:          return String(localized: "Mark your first prayer")
+        case .threeDayStreak:       return String(localized: "A 3-day prayer streak")
+        case .weekOfSalah:          return String(localized: "A 7-day prayer streak")
+        case .fortnightOfSalah:     return String(localized: "A 14-day prayer streak")
+        case .monthOfSalah:         return String(localized: "A 30-day prayer streak")
+        case .fiftyDayStreak:       return String(localized: "A 50-day prayer streak")
+        case .steadfast:            return String(localized: "A 100-day prayer streak")
+        case .halfYearOfSalah:      return String(localized: "A 182-day prayer streak")
+        case .yearOfSalah:          return String(localized: "A 365-day prayer streak")
+        case .perfectDay:           return String(localized: "One day with all five prayers on time")
+        case .perfectTen:           return String(localized: "10 days with all five prayers on time")
+        case .perfectFifty:         return String(localized: "50 days with all five prayers on time")
+        case .perfectHundred:       return String(localized: "100 days with all five prayers on time")
+        case .perfectYear:          return String(localized: "365 days with all five prayers on time")
+        case .prayers100:           return String(localized: "Mark 100 prayers")
+        case .prayers500:           return String(localized: "Mark 500 prayers")
+        case .prayers1000:          return String(localized: "Mark 1,000 prayers")
+        case .prayers5000:          return String(localized: "Mark 5,000 prayers")
+        case .monthRecorded:        return String(localized: "30 days in the prayer tracker")
+        case .yearRecorded:         return String(localized: "365 days in the prayer tracker")
+        case .consistency:          return String(localized: "80% coverage over at least 30 days")
+        #endif
 
-        case .openedTheBook:        return "Mark your first ayah read"
-        case .ayahs100:             return "Read 100 ayahs"
-        case .ayahs500:             return "Read 500 ayahs"
-        case .juzDone:              return "Read a thirtieth of the Quran"
-        case .fiveJuz:              return "Read a sixth of the Quran"
-        case .tenJuz:               return "Read a third of the Quran"
-        case .halfway:              return "Read half of the Quran"
-        case .twentyJuz:            return "Read two thirds of the Quran"
-        case .threeQuarters:        return "Read three quarters of the Quran"
-        case .khatm:                return "Complete the Quran"
-        case .firstSurahComplete:   return "Finish a whole surah"
-        case .tenSurahsComplete:    return "Finish 10 surahs"
-        case .thirtySurahsComplete: return "Finish 30 surahs"
-        case .sixtySurahsComplete:  return "Finish 60 surahs"
-        case .allSurahsComplete:    return "Finish all 114 surahs"
-        case .browsing:             return "Open 10 different surahs"
-        case .halfTheSurahs:        return "Open 57 different surahs"
-        case .everySurahOpened:     return "Open all 114 surahs"
-        case .frequentReader:       return "100 surah openings"
-        case .devotedReader:        return "1,000 surah openings"
-        case .planWeek:             return "A 7-day reading-plan streak"
-        case .planMonth:            return "A 30-day reading-plan streak"
-        case .planHundred:          return "A 100-day reading-plan streak"
+        #if HAS_QURAN
+        case .openedTheBook:        return String(localized: "Mark your first ayah read")
+        case .ayahs100:             return String(localized: "Read 100 ayahs")
+        case .ayahs500:             return String(localized: "Read 500 ayahs")
+        case .juzDone:              return String(localized: "Read a thirtieth of the Quran")
+        case .fiveJuz:              return String(localized: "Read a sixth of the Quran")
+        case .tenJuz:               return String(localized: "Read a third of the Quran")
+        case .halfway:              return String(localized: "Read half of the Quran")
+        case .twentyJuz:            return String(localized: "Read two thirds of the Quran")
+        case .threeQuarters:        return String(localized: "Read three quarters of the Quran")
+        case .khatm:                return String(localized: "Complete the Quran")
+        case .firstSurahComplete:   return String(localized: "Finish a whole surah")
+        case .tenSurahsComplete:    return String(localized: "Finish 10 surahs")
+        case .thirtySurahsComplete: return String(localized: "Finish 30 surahs")
+        case .sixtySurahsComplete:  return String(localized: "Finish 60 surahs")
+        case .allSurahsComplete:    return String(localized: "Finish all 114 surahs")
+        case .browsing:             return String(localized: "Open 10 different surahs")
+        case .halfTheSurahs:        return String(localized: "Open 57 different surahs")
+        case .everySurahOpened:     return String(localized: "Open all 114 surahs")
+        case .frequentReader:       return String(localized: "100 surah openings")
+        case .devotedReader:        return String(localized: "1,000 surah openings")
+        case .planWeek:             return String(localized: "A 7-day reading-plan streak")
+        case .planMonth:            return String(localized: "A 30-day reading-plan streak")
+        case .planHundred:          return String(localized: "A 100-day reading-plan streak")
 
-        case .firstListen:          return "Play your first surah"
-        case .listener:             return "50 surahs played"
-        case .devotedListener:      return "500 surahs played"
-        case .audiophile:           return "2,000 surahs played"
-        case .earForVoices:         return "Favorite 3 reciters"
-        case .reciterCollector:     return "Favorite 10 reciters"
+        case .firstListen:          return String(localized: "Play your first surah")
+        case .listener:             return String(localized: "50 surahs played")
+        case .devotedListener:      return String(localized: "500 surahs played")
+        case .audiophile:           return String(localized: "2,000 surahs played")
+        case .earForVoices:         return String(localized: "Favorite 3 reciters")
+        case .reciterCollector:     return String(localized: "Favorite 10 reciters")
 
-        case .firstBookmark:        return "Bookmark your first ayah"
-        case .collector:            return "25 bookmarked ayahs"
-        case .archivist:            return "100 bookmarked ayahs"
-        case .curator:              return "500 bookmarked ayahs"
-        case .firstNote:            return "Write your first note"
-        case .annotator:            return "10 ayahs with notes"
-        case .commentator:          return "50 ayahs with notes"
-        case .scribe:               return "200 ayahs with notes"
-        case .firstHighlight:       return "Highlight your first ayah"
-        case .highlighter:          return "10 highlighted ayahs"
-        case .illuminator:          return "50 highlighted ayahs"
-        case .fullPalette:          return "Use every highlight color"
-        case .keptClose:            return "Favorite 5 surahs"
-        case .wellLoved:            return "Favorite 25 surahs"
+        case .firstBookmark:        return String(localized: "Bookmark your first ayah")
+        case .collector:            return String(localized: "25 bookmarked ayahs")
+        case .archivist:            return String(localized: "100 bookmarked ayahs")
+        case .curator:              return String(localized: "500 bookmarked ayahs")
+        case .firstNote:            return String(localized: "Write your first note")
+        case .annotator:            return String(localized: "10 ayahs with notes")
+        case .commentator:          return String(localized: "50 ayahs with notes")
+        case .scribe:               return String(localized: "200 ayahs with notes")
+        case .firstHighlight:       return String(localized: "Highlight your first ayah")
+        case .highlighter:          return String(localized: "10 highlighted ayahs")
+        case .illuminator:          return String(localized: "50 highlighted ayahs")
+        case .fullPalette:          return String(localized: "Use every highlight color")
+        case .keptClose:            return String(localized: "Favorite 5 surahs")
+        case .wellLoved:            return String(localized: "Favorite 25 surahs")
+        #endif
 
+        #if HAS_HADITH
+        case .firstHadithBook:      return String(localized: "Start reading a hadith book")
+        case .hadithReader:         return String(localized: "Start reading 3 hadith books")
+        case .hadithShelf:          return String(localized: "Start reading 10 hadith books")
+        case .wholeShelf:           return String(localized: "Start reading all 17 hadith books")
+        case .firstHadithBookmark:  return String(localized: "Bookmark your first hadith")
+        case .hadithScholar:        return String(localized: "25 bookmarked hadiths")
+        case .hadithArchivist:      return String(localized: "100 bookmarked hadiths")
+        case .hadithFavorites:      return String(localized: "Favorite 3 hadith collections")
+        #endif
 
-        case .oneTasbih:            return "33 counted on the tasbih"
-        case .dhikrHundred:         return "100 counted on the tasbih"
-        case .dhikrFiveHundred:     return "500 counted on the tasbih"
-        case .dhikrThousand:        return "1,000 counted on the tasbih"
-        case .dhikrFiveThousand:    return "5,000 counted on the tasbih"
-        case .dhikrTenThousand:     return "10,000 counted on the tasbih"
-        case .dhikrHundredThousand: return "100,000 counted on the tasbih"
-        case .dhikrThreeDays:       return "Use the tasbih 3 days in a row"
-        case .dhikrWeek:            return "Use the tasbih 7 days in a row"
-        case .dhikrMonth:           return "Use the tasbih 30 days in a row"
-        case .dhikrHundredDays:     return "Use the tasbih 100 days in a row"
+        case .oneTasbih:            return String(localized: "33 counted on the tasbih")
+        case .dhikrHundred:         return String(localized: "100 counted on the tasbih")
+        case .dhikrFiveHundred:     return String(localized: "500 counted on the tasbih")
+        case .dhikrThousand:        return String(localized: "1,000 counted on the tasbih")
+        case .dhikrFiveThousand:    return String(localized: "5,000 counted on the tasbih")
+        case .dhikrTenThousand:     return String(localized: "10,000 counted on the tasbih")
+        case .dhikrHundredThousand: return String(localized: "100,000 counted on the tasbih")
+        case .dhikrThreeDays:       return String(localized: "Use the tasbih 3 days in a row")
+        case .dhikrWeek:            return String(localized: "Use the tasbih 7 days in a row")
+        case .dhikrMonth:           return String(localized: "Use the tasbih 30 days in a row")
+        case .dhikrHundredDays:     return String(localized: "Use the tasbih 100 days in a row")
         }
     }
 
@@ -176,7 +265,31 @@ enum AlIslamBadge: String, CaseIterable, Identifiable {
     /// glyphs (`medal.fill`, `laurel.leading`, `flag.checkered`) render as a blank box on iOS 15.
     var systemImage: String {
         switch self {
+        #if HAS_ADHAN
+        case .firstPrayer:          return "figure.stand"
+        case .threeDayStreak:       return "arrow.up.right"
+        case .weekOfSalah:          return "calendar"
+        case .fortnightOfSalah:     return "calendar.badge.clock"
+        case .monthOfSalah:         return "calendar.circle.fill"
+        case .fiftyDayStreak:       return "flame"
+        case .steadfast:            return "flame.fill"
+        case .halfYearOfSalah:      return "hourglass"
+        case .yearOfSalah:          return "infinity"
+        case .perfectDay:           return "checkmark.circle"
+        case .perfectTen:           return "checkmark.seal"
+        case .perfectFifty:         return "checkmark.shield"
+        case .perfectHundred:       return "checkmark.seal.fill"
+        case .perfectYear:          return "crown"
+        case .prayers100:           return "circle.grid.2x2.fill"
+        case .prayers500:           return "circle.grid.3x3.fill"
+        case .prayers1000:          return "square.grid.3x3.fill"
+        case .prayers5000:          return "trophy.fill"
+        case .monthRecorded:        return "chart.bar.fill"
+        case .yearRecorded:         return "chart.bar.doc.horizontal"
+        case .consistency:          return "scope"
+        #endif
 
+        #if HAS_QURAN
         case .openedTheBook:        return "book"
         case .ayahs100:             return "text.alignleft"
         case .ayahs500:             return "text.justify"
@@ -223,7 +336,18 @@ enum AlIslamBadge: String, CaseIterable, Identifiable {
         case .fullPalette:          return "paintpalette.fill"
         case .keptClose:            return "heart.fill"
         case .wellLoved:            return "star.fill"
+        #endif
 
+        #if HAS_HADITH
+        case .firstHadithBook:      return "text.book.closed"
+        case .hadithReader:         return "books.vertical.fill"
+        case .hadithShelf:          return "square.stack.3d.up.fill"
+        case .wholeShelf:           return "graduationcap.fill"
+        case .firstHadithBookmark:  return "bookmark.circle"
+        case .hadithScholar:        return "bookmark.circle.fill"
+        case .hadithArchivist:      return "folder.fill"
+        case .hadithFavorites:      return "star.circle.fill"
+        #endif
 
         case .oneTasbih:            return "circle.hexagonpath"
         case .dhikrHundred:         return "circle.dashed"
@@ -242,18 +366,52 @@ enum AlIslamBadge: String, CaseIterable, Identifiable {
     /// The family a badge belongs to, so the cabinet groups them instead of presenting one long
     /// undifferentiated wall of tiles.
     enum Family: String, CaseIterable, Identifiable {
+        #if HAS_ADHAN
+        case prayer = "Prayer"
+        #endif
+        #if HAS_QURAN
         case quran = "Quran"
         case listening = "Listening"
         case library = "Library"
+        #endif
+        #if HAS_HADITH
+        case hadith = "Hadith"
+        #endif
         case dhikr = "Dhikr"
 
         var id: String { rawValue }
 
+        /// The family's name as the reader sees it (the raw value stays English).
+        var title: String {
+            switch self {
+            #if HAS_ADHAN
+            case .prayer:    return String(localized: "Prayer")
+            #endif
+            #if HAS_QURAN
+            case .quran:     return String(localized: "Quran")
+            case .listening: return String(localized: "Listening")
+            case .library:   return String(localized: "Library")
+            #endif
+            #if HAS_HADITH
+            case .hadith:    return String(localized: "Hadith")
+            #endif
+            case .dhikr:     return String(localized: "Dhikr")
+            }
+        }
+
         var systemImage: String {
             switch self {
+            #if HAS_ADHAN
+            case .prayer:    return "safari.fill"
+            #endif
+            #if HAS_QURAN
             case .quran:     return "character.book.closed.ar"
             case .listening: return "headphones"
             case .library:   return "bookmark.fill"
+            #endif
+            #if HAS_HADITH
+            case .hadith:    return "text.book.closed.fill"
+            #endif
             case .dhikr:     return "circle.hexagonpath.fill"
             }
         }
@@ -261,6 +419,16 @@ enum AlIslamBadge: String, CaseIterable, Identifiable {
 
     var family: Family {
         switch self {
+        #if HAS_ADHAN
+        case .firstPrayer, .threeDayStreak, .weekOfSalah, .fortnightOfSalah, .monthOfSalah,
+             .fiftyDayStreak, .steadfast, .halfYearOfSalah, .yearOfSalah,
+             .perfectDay, .perfectTen, .perfectFifty, .perfectHundred, .perfectYear,
+             .prayers100, .prayers500, .prayers1000, .prayers5000,
+             .monthRecorded, .yearRecorded, .consistency:
+            return .prayer
+        #endif
+
+        #if HAS_QURAN
         case .openedTheBook, .ayahs100, .ayahs500,
              .juzDone, .fiveJuz, .tenJuz, .halfway, .twentyJuz, .threeQuarters, .khatm,
              .firstSurahComplete, .tenSurahsComplete, .thirtySurahsComplete, .sixtySurahsComplete,
@@ -277,6 +445,13 @@ enum AlIslamBadge: String, CaseIterable, Identifiable {
              .firstHighlight, .highlighter, .illuminator, .fullPalette,
              .keptClose, .wellLoved:
             return .library
+        #endif
+
+        #if HAS_HADITH
+        case .firstHadithBook, .hadithReader, .hadithShelf, .wholeShelf,
+             .firstHadithBookmark, .hadithScholar, .hadithArchivist, .hadithFavorites:
+            return .hadith
+        #endif
 
         case .oneTasbih, .dhikrHundred, .dhikrFiveHundred, .dhikrThousand,
              .dhikrFiveThousand, .dhikrTenThousand, .dhikrHundredThousand,
@@ -288,10 +463,47 @@ enum AlIslamBadge: String, CaseIterable, Identifiable {
     /// `(progress, goal)` in the badge's own unit. An unearned badge shows how far along it is, which
     /// is the only thing that makes a locked tile worth rendering at all.
     func progress(_ stats: ProfileStats) -> (value: Int, goal: Int) {
+        // A streak badge counts the BEST run, not the current one - a broken streak shouldn't
+        // un-approach a badge you were two days from.
+        #if HAS_ADHAN
+        let streak = max(stats.prayer.currentStreak, stats.prayer.bestStreak)
+        #endif
+        #if HAS_QURAN
         let total = max(1, stats.khatmTotal)
+        #endif
 
         switch self {
+        #if HAS_ADHAN
+        case .firstPrayer:          return (stats.prayer.totalPrayed, 1)
+        case .threeDayStreak:       return (streak, 3)
+        case .weekOfSalah:          return (streak, 7)
+        case .fortnightOfSalah:     return (streak, 14)
+        case .monthOfSalah:         return (streak, 30)
+        case .fiftyDayStreak:       return (streak, 50)
+        case .steadfast:            return (streak, 100)
+        case .halfYearOfSalah:      return (streak, 182)
+        case .yearOfSalah:          return (streak, 365)
+        case .perfectDay:           return (stats.prayer.perfectDays, 1)
+        case .perfectTen:           return (stats.prayer.perfectDays, 10)
+        case .perfectFifty:         return (stats.prayer.perfectDays, 50)
+        case .perfectHundred:       return (stats.prayer.perfectDays, 100)
+        case .perfectYear:          return (stats.prayer.perfectDays, 365)
+        case .prayers100:           return (stats.prayer.totalPrayed, 100)
+        case .prayers500:           return (stats.prayer.totalPrayed, 500)
+        case .prayers1000:          return (stats.prayer.totalPrayed, 1_000)
+        case .prayers5000:          return (stats.prayer.totalPrayed, 5_000)
+        case .monthRecorded:        return (stats.prayer.trackedDays, 30)
+        case .yearRecorded:         return (stats.prayer.trackedDays, 365)
+        case .consistency:
+            // Gated on a month of history: a single perfect day is 100% coverage, and handing out a
+            // "Consistency" badge for that would make the word mean nothing.
+            let pct = stats.prayer.trackedDays >= 30
+                ? Int((stats.prayerCoverageFraction * 100).rounded())
+                : 0
+            return (pct, 80)
+        #endif
 
+        #if HAS_QURAN
         case .openedTheBook:        return (stats.khatmCompleted, 1)
         case .ayahs100:             return (stats.khatmCompleted, 100)
         case .ayahs500:             return (stats.khatmCompleted, 500)
@@ -337,7 +549,18 @@ enum AlIslamBadge: String, CaseIterable, Identifiable {
         case .fullPalette:          return (stats.highlightColorsUsed, AyahHighlightColor.allCases.count)
         case .keptClose:            return (stats.favoriteSurahs, 5)
         case .wellLoved:            return (stats.favoriteSurahs, 25)
+        #endif
 
+        #if HAS_HADITH
+        case .firstHadithBook:      return (stats.hadithBooksStarted, 1)
+        case .hadithReader:         return (stats.hadithBooksStarted, 3)
+        case .hadithShelf:          return (stats.hadithBooksStarted, 10)
+        case .wholeShelf:           return (stats.hadithBooksStarted, 17)
+        case .firstHadithBookmark:  return (stats.hadithBookmarks, 1)
+        case .hadithScholar:        return (stats.hadithBookmarks, 25)
+        case .hadithArchivist:      return (stats.hadithBookmarks, 100)
+        case .hadithFavorites:      return (stats.hadithFavoriteBooks, 3)
+        #endif
 
         case .oneTasbih:            return (stats.dhikrTotal, 33)
         case .dhikrHundred:         return (stats.dhikrTotal, 100)
@@ -390,9 +613,9 @@ struct AchievementAnnouncement: Identifiable, Equatable {
 ///    already qualify for without a single banner. Without that, upgrading would fire eighty
 ///    notifications for work done months ago.
 ///
-/// The seed is also why `performRefresh` refuses to run until the Quran packs have actually
-/// loaded: seeding against half-loaded stores would bank a too-small set and then announce the
-/// real totals as fresh unlocks a second later.
+/// The seed is also why `performRefresh` refuses to run until the Quran packs and the hadith
+/// last-read table have actually loaded: seeding against half-loaded stores would bank a too-small
+/// set and then announce the real totals as fresh unlocks a second later.
 @MainActor
 final class AchievementsStore: ObservableObject {
     static let shared = AchievementsStore()
@@ -484,6 +707,12 @@ final class AchievementsStore: ObservableObject {
         trackingStarted = true
 
         await AppReveal.waitUntilRevealed()
+        #if HAS_HADITH
+        // The hadith last-read table is loaded lazily by whichever screen asks first; the seed needs
+        // it loaded, so ask here rather than letting `ProfileStats.current` kick off its deferred
+        // load and then read the still-empty dictionary in the same pass.
+        HadithStore.shared.loadLastRead()
+        #endif
         try? await Task.sleep(nanoseconds: 2_500_000_000)
 
         #if DEBUG
@@ -516,6 +745,7 @@ final class AchievementsStore: ObservableObject {
     }
 
     private func performRefresh() {
+        #if HAS_QURAN
         let quranData = QuranData.shared
         guard quranData.quran.count >= 114 else {
             // Packs still loading. Retry a bounded number of times - if the Quran never loads, the
@@ -527,6 +757,9 @@ final class AchievementsStore: ObservableObject {
         }
         loadRetries = 0
         sync(stats: ProfileStats.current(settings: .shared, quranData: quranData))
+        #else
+        sync(stats: ProfileStats.current(settings: .shared))
+        #endif
     }
 
     /// Folds the currently-satisfied thresholds into the ledger, announcing whatever is new.
@@ -692,7 +925,8 @@ struct AchievementBannerHost: View {
 }
 
 private struct AchievementBannerCard: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let announcement: AchievementAnnouncement
@@ -722,7 +956,7 @@ private struct AchievementBannerCard: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
 
-                Text(badge.detail)
+                Text(badge.detail.localizedDigits)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -879,15 +1113,32 @@ extension View {
 /// publish re-evaluates a single empty view rather than five tab view trees. The stamp it hashes is
 /// the same one `ProfileSettingsRow` already recomputes on every pass of the Settings list.
 private struct AchievementWatcher: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var hadithSettings = HadithSettings.shared
+    @ObservedObject private var islamSettings = IslamSettings.shared
+    @ObservedObject private var prayerTracker = PrayerTracker.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    #if HAS_QURAN
     @ObservedObject private var quranData = QuranData.shared
+    #endif
     @ObservedObject private var tasbih = TasbihCounters.shared
+    #if HAS_HADITH
+    @ObservedObject private var hadithUserData = HadithUserData.shared
+    @ObservedObject private var hadithStore = HadithStore.shared
+    #endif
 
     private var signature: Int {
         var hasher = Hasher()
         hasher.combine(settings.profileStatsStamp)
+        #if HAS_QURAN
         hasher.combine(quranData.quran.count)
+        #endif
         hasher.combine(tasbih.totalCount)
+        #if HAS_HADITH
+        hasher.combine(hadithUserData.bookmarks.count)
+        hasher.combine(hadithUserData.favoriteSlugs.count)
+        hasher.combine(hadithStore.lastReadByBook.count)
+        #endif
         return hasher.finalize()
     }
 

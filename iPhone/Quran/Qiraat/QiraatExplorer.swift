@@ -640,7 +640,10 @@ enum QiraatExplorerBench {
 /// published as text ship as printed mushafs, and their selectable text is a beta transcription
 /// that the reader turns on knowingly (the same consent the reader's Page Text menu asks for).
 struct QiraatExplorerUnlockSheet: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -732,7 +735,7 @@ struct QiraatPlacePickerSheet: View {
 
     var body: some View {
         let _ = RenderCounter.hit("QiraatPlacePickerSheet")
-        NavigationView {
+        SheetNavigationContainer {
             List {
                 Group {
                     if tab == 0 {
@@ -758,7 +761,7 @@ struct QiraatPlacePickerSheet: View {
             }
             .adaptiveSafeArea(edge: .bottom) {
                 if tab == 1 {
-                    SearchBar(text: $searchText, placeholder: "Search surahs")
+                    SearchBar(text: $searchText, placeholder: String(localized: "Search surahs"))
                         .padding(.horizontal, 24)
                         .padding(.bottom, BottomBarCushion.standard)
                         .background(Color.white.opacity(0.00001))
@@ -769,15 +772,12 @@ struct QiraatPlacePickerSheet: View {
             .sheetDismissToolbar()
             .accentWashedBackground()
         }
-        .navigationViewStyle(.stack)
         .smallMediumSheetPresentation()
     }
 
     private var thisSurahSection: some View {
-        let name = quranData.surah(surahID)?.nameTransliteration ?? "Surah \(surahID)"
-        return Section(header: HStack {
-            Text(name.uppercased())
-            Spacer()
+        let name = quranData.surah(surahID)?.displayName ?? String(localized: "Surah \(surahID)")
+        return Section(header: SectionHeaderLine(name.uppercased()) {
             Text(places.count == 1 ? "1 place" : "\(places.count) places")
         }) {
             if places.isEmpty {
@@ -825,12 +825,14 @@ struct QiraatPlacePickerSheet: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Text(phrase.isEmpty ? "added words" : phrase)
+            Text(phrase.isEmpty ? String(localized: "added words") : phrase)
                 .font(phrase.isEmpty ? .caption : .custom(appearance.quranDisplayFace, size: 20))
                 .arabicFontDesign(custom: !phrase.isEmpty)
                 .foregroundColor(phrase.isEmpty ? .secondary : accent)
                 .multilineTextAlignment(.trailing)
                 .lineLimit(2)
+                // Wrapped lines keep the right edge (`.trailing` is the left in Arabic).
+                .environment(\.layoutDirection, .leftToRight)
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
@@ -856,12 +858,21 @@ struct QiraatPlacePickerSheet: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 30, alignment: .leading)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(surah.nameTransliteration)
-                                .font(.subheadline.weight(surah.id == surahID ? .semibold : .regular))
-                                .foregroundColor(surah.id == surahID ? accent : .primary)
-                            Text(surah.nameEnglish)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            // The Arabic interface names the surah once, in Arabic, where the
+                            // transliteration sits (no meaning line, no trailing Arabic name).
+                            if AppLanguage.isArabicScript {
+                                Text(surah.nameArabic)
+                                    .font(.custom(appearance.quranDisplayFace, size: 18))
+                                    .arabicFontDesign(custom: true)
+                                    .foregroundColor(surah.id == surahID ? accent : .primary)
+                            } else {
+                                Text(surah.nameTransliteration)
+                                    .font(.subheadline.weight(surah.id == surahID ? .semibold : .regular))
+                                    .foregroundColor(surah.id == surahID ? accent : .primary)
+                                Text(surah.nameEnglish)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         Spacer()
                         if let countOf = self.count {
@@ -870,10 +881,12 @@ struct QiraatPlacePickerSheet: View {
                                 .font(.caption2.weight(.semibold))
                                 .foregroundColor(count == 0 ? .secondary : accent)
                         }
-                        Text(surah.nameArabic)
-                            .font(.custom(appearance.quranDisplayFace, size: 18))
-                            .arabicFontDesign(custom: true)
-                            .foregroundColor(.primary)
+                        if !AppLanguage.isArabicScript {
+                            Text(surah.nameArabic)
+                                .font(.custom(appearance.quranDisplayFace, size: 18))
+                                .arabicFontDesign(custom: true)
+                                .foregroundColor(.primary)
+                        }
                     }
                     .contentShape(Rectangle())
                 }

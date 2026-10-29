@@ -145,7 +145,7 @@ enum RiwayahDifferenceFinder {
 
         let hasAudio = QiraatVariantAudioStore.isBundled
             && QiraatVariantAudioStore.shared.pair(tag: tag, surah: surah, ayah: ayah) != nil
-        return Example(surah: surah, ayah: ayah, surahName: surahObject.nameTransliteration,
+        return Example(surah: surah, ayah: ayah, surahName: surahObject.displayName,
                        hafsWords: hafsWords, riwayahWords: riwayahWords,
                        riwayahMeaning: riwayahMeaning, hafsMeaning: hafsMeaning, hasAudio: hasAudio)
     }
@@ -160,7 +160,9 @@ enum RiwayahDifferenceFinder {
 
 /// "WHERE WARSH DIFFERS FROM HAFS": the count of places, the pairs, and the way into the explorer.
 struct RiwayahDifferencesSection: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @Environment(\.appearance) private var appearance
 
     /// The narrator's riwayah tag (`Settings.Riwayah`); never Hafs.
@@ -236,7 +238,7 @@ struct RiwayahDifferencesSection: View {
 
                 NavigationLink(destination: LazyDestination { QiraatExplorerView(surahWalk: tag) }) {
                     Label("Step through every place \(name) differs from Hafs", systemImage: "arrow.left.and.right.text.vertical")
-                        .font(.subheadline.weight(.medium))
+                        .font(.body)
                         .foregroundColor(appearance.accent)
                 }
             }
@@ -254,9 +256,9 @@ struct RiwayahDifferencesSection: View {
 
     private func summaryLine(_ summary: RiwayahDifferenceFinder.Summary) -> String {
         if summary.wordLevel == summary.every {
-            return "Reads \(summary.every.formatted()) ayahs differently from Hafs."
+            return String(localized: "Reads \(summary.every.formatted()) ayahs differently from Hafs.")
         }
-        return "Reads \(summary.wordLevel.formatted()) ayahs differently from Hafs in their wording, and \(summary.every.formatted()) once every vowel and dot is counted."
+        return String(localized: "Reads \(summary.wordLevel.formatted()) ayahs differently from Hafs in their wording, and \(summary.every.formatted()) once every vowel and dot is counted.")
     }
 
     private func load() async {
@@ -280,14 +282,17 @@ struct RiwayahDifferencesSection: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
 
-                    pairLine("Hafs reads", words: example.hafsWords, tag: "", tint: .primary)
-                    pairLine("\(name) reads", words: example.riwayahWords, tag: tag, tint: appearance.accent)
+                    pairLine(String(localized: "Hafs reads"), words: example.hafsWords, tag: "", tint: .primary)
+                    pairLine(String(localized: "\(name) reads"), words: example.riwayahWords, tag: tag, tint: appearance.accent)
 
                     if !example.riwayahMeaning.isEmpty {
                         Text(example.riwayahMeaning)
                             .font(.caption)
                             .foregroundStyle(.primary)
                             .fixedSize(horizontal: false, vertical: true)
+                            // The reading's English rendering keeps the left edge in the Arabic interface.
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .leftToRightContent()
                         if !example.hafsMeaning.isEmpty {
                             Text("Hafs: \(example.hafsMeaning)")
                                 .font(.caption2)
@@ -319,6 +324,8 @@ struct RiwayahDifferencesSection: View {
                 .foregroundColor(tint)
                 .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
+                // Wrapped lines keep the right edge (`.trailing` is the left in Arabic).
+                .environment(\.layoutDirection, .leftToRight)
         }
     }
 }

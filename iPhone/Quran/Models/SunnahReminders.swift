@@ -41,6 +41,12 @@ enum AdhanOpenTarget: Equatable {
     case qibla
 }
 
+/// A narration to open in its book on the Hadith tab: a study sheet's "Open in Book".
+struct HadithOpenTarget: Equatable {
+    let slug: String
+    let idInBook: Int
+}
+
 enum IslamOpenTarget: Equatable {
     case hadithTab
     /// The Islam tab itself, nothing pushed: where About You lands someone who is there to learn,
@@ -78,6 +84,14 @@ final class AppNavigation: ObservableObject {
 
     func openIslam(_ target: IslamOpenTarget) {
         pendingIslam = target
+    }
+
+    /// The Hadith tab's pending narration (a study sheet's "Open in Book", HadithResolvedList.swift):
+    /// MainTabView switches tabs, HadithView opens the book at it and clears it.
+    @Published var pendingHadith: HadithOpenTarget?
+
+    func openHadith(slug: String, idInBook: Int) {
+        pendingHadith = HadithOpenTarget(slug: slug, idInBook: idInBook)
     }
 
     func open(_ target: QuranOpenTarget) {
@@ -124,21 +138,21 @@ struct SunnahReminderPreset: Identifiable {
 
     var openLabel: String {
         switch target {
-        case .tab: return "Open the Quran"
-        case .surah, .ayah: return "Open in Quran"
+        case .tab: return String(localized: "Open the Quran")
+        case .surah, .ayah: return String(localized: "Open in Quran")
         }
     }
 
     static let all: [SunnahReminderPreset] = [
         SunnahReminderPreset(
             id: "wird",
-            title: "Daily Wird",
-            subtitle: "Your daily portion of the Quran",
+            title: String(localized: "Daily Wird"),
+            subtitle: String(localized: "Your daily portion of the Quran"),
             arabicTitle: "الوِردُ اليَومِيّ",
             transliteration: nil,
-            body: "Time for your daily portion of the Quran.",
-            source: "The practice of the Prophet ﷺ and his Companions",
-            grading: "Established practice",
+            body: String(localized: "Time for your daily portion of the Quran."),
+            source: String(localized: "The practice of the Prophet ﷺ and his Companions"),
+            grading: String(localized: "Established practice"),
             link: nil,
             defaultMinutes: 6 * 60, defaultWeekday: nil,
             target: .tab,
@@ -146,11 +160,11 @@ struct SunnahReminderPreset: Identifiable {
         ),
         SunnahReminderPreset(
             id: "mulk",
-            title: "Surat al-Mulk",
-            subtitle: "Each night before sleep",
+            title: String(localized: "Surat al-Mulk"),
+            subtitle: String(localized: "Each night before sleep"),
             arabicTitle: "سُورَةُ المُلك",
             transliteration: "Sūrat al-Mulk",
-            body: "Thirty ayahs that intercede for their reader until he is forgiven: Tabarak alladhi biyadihil-mulk.",
+            body: String(localized: "Thirty ayahs that intercede for their reader until he is forgiven: Tabarak alladhi biyadihil-mulk."),
             source: "Tirmidhi 2891",
             grading: "Hasan (al-Albani)",
             link: HadithLink(slug: "tirmidhi", number: 2891),
@@ -160,11 +174,11 @@ struct SunnahReminderPreset: Identifiable {
         ),
         SunnahReminderPreset(
             id: "kahf",
-            title: "Surat al-Kahf",
-            subtitle: "Every Friday",
+            title: String(localized: "Surat al-Kahf"),
+            subtitle: String(localized: "Every Friday"),
             arabicTitle: "سُورَةُ الكَهف",
             transliteration: "Sūrat al-Kahf",
-            body: "It is Friday: Surat al-Kahf is a light between the two Fridays.",
+            body: String(localized: "It is Friday: Surat al-Kahf is a light between the two Fridays."),
             source: "Al-Hakim, al-Mustadrak 2/368",
             grading: "Sahih (al-Albani, Sahih al-Jami' 6470)",
             link: nil,
@@ -174,11 +188,11 @@ struct SunnahReminderPreset: Identifiable {
         ),
         SunnahReminderPreset(
             id: "baqarah-last-two",
-            title: "Last Two Ayahs of al-Baqarah",
-            subtitle: "At night",
+            title: String(localized: "Last Two Ayahs of al-Baqarah"),
+            subtitle: String(localized: "At night"),
             arabicTitle: "خَوَاتِيمُ سُورَةِ البَقَرَة",
             transliteration: "Khawātīm Sūrat al-Baqarah",
-            body: "Whoever recites the last two ayahs of Surat al-Baqarah at night, they suffice him.",
+            body: String(localized: "Whoever recites the last two ayahs of Surat al-Baqarah at night, they suffice him."),
             source: "Bukhari 5009, Muslim 808",
             grading: "Sahih",
             link: HadithLink(slug: "bukhari", number: 5009),
@@ -188,11 +202,11 @@ struct SunnahReminderPreset: Identifiable {
         ),
         SunnahReminderPreset(
             id: "muawwidhat-morning",
-            title: "Al-Mu'awwidhat in the Morning",
-            subtitle: "Al-Ikhlas, al-Falaq and an-Nas, three times each",
+            title: String(localized: "Al-Mu'awwidhat in the Morning"),
+            subtitle: String(localized: "Al-Ikhlas, al-Falaq and an-Nas, three times each"),
             arabicTitle: "المُعَوِّذَات",
             transliteration: "Al-Muʿawwidhāt",
-            body: "Recite al-Ikhlas, al-Falaq and an-Nas three times each: they suffice you against everything.",
+            body: String(localized: "Recite al-Ikhlas, al-Falaq and an-Nas three times each: they suffice you against everything."),
             source: "Abu Dawud 5082, Tirmidhi 3575",
             grading: "Sahih (al-Albani)",
             link: HadithLink(slug: "abudawud", number: 5082),
@@ -202,11 +216,11 @@ struct SunnahReminderPreset: Identifiable {
         ),
         SunnahReminderPreset(
             id: "muawwidhat-evening",
-            title: "Al-Mu'awwidhat in the Evening",
-            subtitle: "Al-Ikhlas, al-Falaq and an-Nas, three times each",
+            title: String(localized: "Al-Mu'awwidhat in the Evening"),
+            subtitle: String(localized: "Al-Ikhlas, al-Falaq and an-Nas, three times each"),
             arabicTitle: "المُعَوِّذَات",
             transliteration: "Al-Muʿawwidhāt",
-            body: "Recite al-Ikhlas, al-Falaq and an-Nas three times each: they suffice you against everything.",
+            body: String(localized: "Recite al-Ikhlas, al-Falaq and an-Nas three times each: they suffice you against everything."),
             source: "Abu Dawud 5082, Tirmidhi 3575",
             grading: "Sahih (al-Albani)",
             link: HadithLink(slug: "abudawud", number: 5082),
@@ -216,11 +230,11 @@ struct SunnahReminderPreset: Identifiable {
         ),
         SunnahReminderPreset(
             id: "friday-fajr",
-            title: "Friday Fajr Surahs",
-            subtitle: "As-Sajdah and al-Insan",
+            title: String(localized: "Friday Fajr Surahs"),
+            subtitle: String(localized: "As-Sajdah and al-Insan"),
             arabicTitle: "السَّجدَة وَالإِنسَان",
             transliteration: "As-Sajdah wa al-Insān",
-            body: "The Prophet ﷺ recited as-Sajdah and al-Insan in the Fajr prayer of Friday.",
+            body: String(localized: "The Prophet ﷺ recited as-Sajdah and al-Insan in the Fajr prayer of Friday."),
             source: "Bukhari 891, Muslim 879",
             grading: "Sahih",
             link: HadithLink(slug: "bukhari", number: 891),
@@ -230,11 +244,11 @@ struct SunnahReminderPreset: Identifiable {
         ),
         SunnahReminderPreset(
             id: "al-imran-night",
-            title: "Last Ten Ayahs of Ali 'Imran",
-            subtitle: "When you wake at night",
+            title: String(localized: "Last Ten Ayahs of Ali 'Imran"),
+            subtitle: String(localized: "When you wake at night"),
             arabicTitle: "خَوَاتِيمُ آلِ عِمرَان",
             transliteration: "Khawātīm Āl ʿImrān",
-            body: "The Prophet ﷺ recited the last ten ayahs of Ali 'Imran when he woke at night.",
+            body: String(localized: "The Prophet ﷺ recited the last ten ayahs of Ali 'Imran when he woke at night."),
             source: "Bukhari 4569, Muslim 256",
             grading: "Sahih",
             link: HadithLink(slug: "bukhari", number: 4569),
@@ -481,7 +495,9 @@ final class SunnahReminderStore: ObservableObject {
         }
         let stale = ids.filter { $0.hasPrefix(Self.identifierPrefix) }
         center.removePendingNotificationRequests(withIdentifiers: stale)
-        let requests = enabledPresets.map(request(for:))
+        // Allow Notifications off: the stale ones still go, nothing is added; the presets keep their
+        // switches for when it comes back on (`Settings.notificationsEnabledDidChange` re-arms).
+        let requests = Settings.shared.notificationsEnabled ? enabledPresets.map(request(for:)) : []
         for request in requests {
             try? await center.add(request)
         }
@@ -517,8 +533,15 @@ final class SunnahReminderStore: ObservableObject {
     /// transliteration under it, and the target the tap opens.
     static func content(for preset: SunnahReminderPreset) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
-        content.title = preset.arabicTitle.map { "\(preset.title) · \($0)" } ?? preset.title
-        content.body = preset.transliteration.map { "\(preset.body)\n\($0)" } ?? preset.body
+        // In Arabic the localized title already IS the Arabic name ("سورة الملك"): no second Arabic
+        // title beside it, and no Latin transliteration under the body.
+        if AppLanguage.isArabicScript {
+            content.title = preset.title
+            content.body = preset.body
+        } else {
+            content.title = preset.arabicTitle.map { "\(preset.title) · \($0)" } ?? preset.title
+            content.body = preset.transliteration.map { "\(preset.body)\n\($0)" } ?? preset.body
+        }
         content.sound = .default
         content.threadIdentifier = threadIdentifier
         content.userInfo = [
@@ -536,9 +559,9 @@ final class SunnahReminderStore: ObservableObject {
         components.minute = minutes % 60
         let time = Calendar.current.date(from: components).map { Self.timeFormatter.string(from: $0) } ?? ""
         if let weekday = weekday(for: preset) {
-            return "Every \(Self.weekdayName(weekday)) at \(time)"
+            return String(localized: "Every \(Self.weekdayName(weekday)) at \(time)")
         }
-        return "Every day at \(time)"
+        return String(localized: "Every day at \(time)")
     }
 
     static func weekdayName(_ weekday: Int) -> String {
@@ -561,6 +584,7 @@ final class SunnahReminderStore: ObservableObject {
 /// two cadences, each with its time, its hadith, and a door to what it is about.
 struct SunnahRemindersView: View {
     @ObservedObject private var store = SunnahReminderStore.shared
+    @ObservedObject private var adhanSettings = AdhanSettings.shared
 
     @State private var permissionDenied = false
 
@@ -584,7 +608,13 @@ struct SunnahRemindersView: View {
                 .padding(.vertical, 4)
 
                 if permissionDenied {
-                    Label("Notifications are off for \(AppIdentifiers.appName) in iPhone Settings, so these reminders cannot arrive.", systemImage: "bell.slash")
+                    Label("Notifications are off for \(AppIdentifiers.displayName) in iPhone Settings, so these reminders cannot arrive.", systemImage: "bell.slash")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !adhanSettings.notificationsEnabled {
+                    Label("Allow Notifications is off in Notification Settings, so these reminders cannot arrive until it is on.", systemImage: "bell.slash")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -607,7 +637,6 @@ struct SunnahRemindersView: View {
 
             Section(footer:
                 Text("Reminders repeat on their own, even when the app has not been opened for a while. The Quran Planner on the Quran tab has its own daily reminder for a paced reading plan.")
-                    .font(.caption2)
             ) { EmptyView() }
         }
         .applyConditionalListStyle()
@@ -735,7 +764,7 @@ private struct SunnahReminderRow: View {
                             previewArmed = true
                             DispatchQueue.main.asyncAfter(deadline: .now() + 6) { previewArmed = false }
                         } label: {
-                            Label(previewArmed ? "Arriving in 5 s" : "Preview", systemImage: "bell")
+                            Label(previewArmed ? String(localized: "Arriving in 5 s").localizedDigits : String(localized: "Preview"), systemImage: "bell")
                         }
                         .buttonStyle(.plain)
                         .disabled(previewArmed)

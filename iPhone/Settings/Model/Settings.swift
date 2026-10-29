@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreLocation
+import UserNotifications
 import WidgetKit
 import Combine
 import os
@@ -15,7 +16,7 @@ let logger = Logger(subsystem: AppIdentifiers.bundleIdentifier, category: "Setti
 
 /// The single source of truth for all user settings.
 ///
-/// **Why everything lives in this one file:** `@AppStorage` / `@Published` are stored property wrappers, and
+/// **Why everything lives in this one file:** `@Setting` / `@Published` are stored property wrappers, and
 /// Swift only allows stored properties in a type's primary declaration - never in an extension. So the
 /// settings themselves can't be physically moved into separate Quran/Adhan files; the *behavior* that uses
 /// them is what's split out, into `SettingsAdhan.swift` (prayer times, notifications, location) and
@@ -23,8 +24,8 @@ let logger = Logger(subsystem: AppIdentifiers.bundleIdentifier, category: "Setti
 ///
 /// The declarations below are grouped, in order, into the four buckets:
 ///   1. **App Group** - `@Published`, mirrored into `appGroupUserDefaults` so widgets/extensions see them.
-///   2. **App Storage - Adhan/Prayer** - `@AppStorage` prayer state, notifications, travel, calculation.
-///   3. **App Storage - Quran** - `@AppStorage` reciter, favorites, sajdah/muqatta'at, bookmarks, khatm.
+///   2. **App Storage - Adhan/Prayer** - `@Setting` prayer state, notifications, travel, calculation.
+///   3. **App Storage - Quran** - `@Setting` reciter, favorites, sajdah/muqatta'at, bookmarks, khatm.
 ///   4. **App Storage - Arabic/Names + appearance/misc** - fonts, themes, haptics, color scheme.
 /// Keep new settings in the matching section (and storage mechanism) so the split stays clean.
 /// The last-read position, split out of `Settings`: a reading pause writes it every 0.8 s, and every
@@ -150,6 +151,7 @@ enum AdhanWidgetKind: String, CaseIterable {
     case SimpleSkyWidget
     case PrayerListSmallSkyWidget
     case PrayersSkyWidget
+    case PrayerTilesSkyWidget
     case Prayers2SkyWidget
     case FastingCountdownSkyWidget
     case PrayerGlanceWidget
@@ -162,6 +164,7 @@ enum AdhanWidgetKind: String, CaseIterable {
     case SimpleWidget
     case PrayerListSmallWidget
     case PrayersWidget
+    case PrayerTilesWidget
     case Prayers2Widget
     case FastingCountdownWidget
     case PrayerProgressRingWidget
@@ -179,7 +182,7 @@ enum AdhanWidgetKind: String, CaseIterable {
     case HijriDateArabicLockWidget
 }
 
-final class Settings: ObservableObject {
+final class Settings: ObservableObject, SettingsHost {
     #if DEBUG
     private static var publishTrace: AnyCancellable?
     private static var publishTraceCount = 0
@@ -263,12 +266,16 @@ final class Settings: ObservableObject {
     }()
 
     private init() {
-        // Before any screen reads its own key: carries the legacy single Advanced switch over.
+        // Before any screen reads its own key: carries the legacy single Advanced switch over, then
+        // drops the seven per-screen switches retired on 2026-10-25.
         Settings.migrateAdvancedSettings()
+        Settings.migrateRetiredAdvancedSwitches()
         // Likewise for the grid switches: each screen keeps what it shows today.
         Settings.migrateGridModes()
         // And the one Help Shortcuts switch, which became the per-tab `helpDoorsHidden` set.
         Settings.migrateHelpShortcuts()
+        // And the three Show Last ... switches, retired on 2026-10-25: the cards are always on.
+        Settings.migrateHistoryCardSwitches()
 
         let storedAccent = AccentColor(rawValue: appGroupUserDefaults?.string(forKey: "accentColor") ?? AppIdentifiers.mainColorString) ?? AppIdentifiers.mainColor
         self.accentColor = storedAccent
@@ -284,7 +291,7 @@ final class Settings: ObservableObject {
             UserDefaults.standard.set(false, forKey: "alIslamGlow")
         }
 
-        // Every publish (a `@Published` write or an `@AppStorage` write - both route through
+        // Every publish (a `@Published` write or a `@Setting` write - both route through
         // `objectWillChange`) invalidates the render-signature memo. Off-main publishes are a bug
         // elsewhere, but must not race the main-only cache, so they hop.
         // `objectWillChange` fires BEFORE the new value is stored (that is what "will" means), so
@@ -400,6 +407,11 @@ final class Settings: ObservableObject {
         if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-mushafPDFAppearance"),
            ProcessInfo.processInfo.arguments.indices.contains(idx + 1) {
             UserDefaults.standard.set(ProcessInfo.processInfo.arguments[idx + 1], forKey: "mushafPDFAppearance")
+        }
+        // `-mushafHafsPDFEdition alislam|islamweb` picks the Hafs facsimile edition.
+        if let idx = ProcessInfo.processInfo.arguments.firstIndex(of: "-mushafHafsPDFEdition"),
+           ProcessInfo.processInfo.arguments.indices.contains(idx + 1) {
+            UserDefaults.standard.set(ProcessInfo.processInfo.arguments[idx + 1], forKey: "mushafHafsPDFEdition")
         }
         // "-publishStacks": log the call stack of every 40th Settings publish (a layout-loop probe).
         if ProcessInfo.processInfo.arguments.contains("-publishStacks") {
@@ -538,8 +550,10 @@ final class Settings: ObservableObject {
                     // (the split above drops empty pieces).
                     case "displayQiraah": shared.displayQiraah = kv[1]
                     // The Arabic Text settings page's switches, flipped the way their Toggles flip them
-                    // (the bindings there carry `.animation(.easeInOut)`, so the write runs inside the
-                    // same transaction a tap would). For watching what the settings SHEET does when a
+                    // (an animated transaction, as a tap on a `SettingsToggle` makes one; the probe's is
+                    // not FLAGGED the way SettingsControls.swift flags the real one, since this file
+                    // compiles into the widgets, so the reader behind the sheet animates too, as it does
+                    // on iOS 16). For watching what the settings SHEET does when a
                     // switch inside it moves: 2026-09-15, "Show Arabic Quran Text" off collapsed the sheet
                     // on iPad/Mac.
                     case "showArabicText", "beginnerMode", "showTajweedColors", "highlightAllahNames",
@@ -673,6 +687,27 @@ final class Settings: ObservableObject {
         }
     }
 
+    // MARK: - SettingsHost
+
+    #if DEBUG
+    /// The key of the `@Setting` write a publish is for, for `-publishTrace` (nil for a `@Published`
+    /// write or a manual send).
+    private static var debugChangingKey: String?
+    #endif
+
+    /// A `@Setting` is about to change: one publish, before the write (what `objectWillChange`
+    /// means), and only when the value moved (the wrapper checks). This is the ONLY publish a stored
+    /// setting makes: no defaults-observer echo, nothing for a foreign key, nothing for an unchanged
+    /// write (Performance Guide, section 18).
+    func settingWillChange(_ key: String) {
+        #if DEBUG
+        Self.debugChangingKey = key
+        defer { Self.debugChangingKey = nil }
+        #endif
+        SettingsSlices.willChange(key)
+        objectWillChange.send()
+    }
+
     #if DEBUG
     /// `-publishTrace`: log the caller of every publish (four frames), to find out WHICH write it was.
     private static let debugPublishTraceEnabled = ProcessInfo.processInfo.arguments.contains("-publishTrace")
@@ -681,7 +716,7 @@ final class Settings: ObservableObject {
         if Self.debugPublishTraceEnabled {
             let frames = Thread.callStackSymbols.dropFirst(6).prefix(6)
                 .map { $0.split(separator: " ", omittingEmptySubsequences: true).dropFirst(3).joined(separator: " ") }
-            NSLog("PUBLISH TRACE %@", frames.joined(separator: " <- "))
+            NSLog("PUBLISH TRACE %@ <- %@", Self.debugChangingKey ?? "(published)", frames.joined(separator: " <- "))
         }
         let wasIdle = debugPublishCount == 0
         debugPublishCount += 1
@@ -820,8 +855,8 @@ final class Settings: ObservableObject {
     }
 
     /// The other half of a bulk write: `UserDefaults` (and, for a restore, the app group and the
-    /// Documents files) were just written raw, underneath every `didSet`. `@AppStorage` reads the
-    /// new values by itself; what a raw write skips is each property's SIDE EFFECTS, and this
+    /// Documents files) were just written raw, underneath every `didSet`. `@Setting` reads the
+    /// store through, so the new values show by themselves; what a raw write skips is each property's SIDE EFFECTS, and this
     /// replays them once, together, then tells the stores outside this file to reload.
     ///
     /// `includingPreferences` re-reads the app-group-only preferences (accent, madhab, calculation,
@@ -867,6 +902,7 @@ final class Settings: ObservableObject {
         // The watch learns of every CHANGED key from this publish (the per-key sync diffs the next
         // snapshot and stamps what moved). A key the write REMOVED stays as it was on the watch: the
         // protocol reads an absent key as "no opinion", never as a delete (guide, section 6d).
+        SettingsSlices.willChangeAll()
         objectWillChange.send()
         #if HAS_ADHAN
         updateDates()
@@ -1018,7 +1054,7 @@ final class Settings: ObservableObject {
         }
     }
 
-    /// The `@AppStorage` keys that are ALSO mirrored into the app group, because the widget and the
+    /// The `@Setting` keys that are ALSO mirrored into the app group, because the widget and the
     /// complication compute in their own processes and read them there. Each property's `didSet`
     /// keeps its mirror; a raw `UserDefaults` write (a watch sync apply, a restore) goes underneath
     /// the `didSet`, so whoever writes raw calls `remirrorAppGroupPreferences()` afterwards.
@@ -1067,7 +1103,7 @@ final class Settings: ObservableObject {
     }
 
     /// Restores every *preference* (appearance, prayer, and Quran options) to its default while keeping the
-    /// user's content. We wipe the app's standard-defaults domain - which clears all the `@AppStorage`
+    /// user's content. We wipe the app's standard-defaults domain - which clears all the `@Setting`
     /// preferences in one shot - but first snapshot the content keys and write them back afterward, then
     /// reset the app-group-backed `@Published` preferences (accent, calculation, madhab, traveling, Hijri
     /// offset) to their defaults via their setters so the shared store + widgets update too. Location and
@@ -1086,9 +1122,13 @@ final class Settings: ObservableObject {
         "favoriteReciterIDsData", "favoriteQiraahTagsData",
         "favoriteEnglishTranslationIDsData", "savedSajdahAyahIDsData", "savedBrokenLetterAyahIDsData",
         "lastReadSurah", "lastReadAyah", "lastReadTimestamp", "lastListenedAyahData", "lastListenedSurahData",
+        // Where the page reader was left (`MushafResumePosition`): a position, like last read.
+        "mushafResumeSurah", "mushafResumeAyah",
         "quranSearchHistoryData",
         // The reading and listening histories under the Quran tab's rows.
         "quranListeningHistoryData", "quranReadingHistoryData", "quranAyahListeningHistoryData",
+        // The ranges played from the Custom Range sheet (its Recent Ranges rows).
+        "customRangeHistoryData",
         // Lit themes and passages: chosen one by one, like bookmarks.
         "themeHighlightsLit", "themeHighlightsAllSections", "themeHighlightsSections",
         // The prayer tracker and menses-pause record: months of marks and exempt days - the most
@@ -1106,7 +1146,9 @@ final class Settings: ObservableObject {
         // The Reading Test's ladder: which tiers are passed, and where Find My Level placed the
         // learner. Weeks of work, not a preference. The tajweed course's ticks and the letter
         // quiz's best streak are the same kind of thing.
-        "readingTestProgress", "readingTestPlacement", "tajweedLessonsDone", "letterQuizBestStreak",
+        "readingTestProgress", "readingTestPlacement", "readingTestMissed", "readingTestSpeedBest",
+        "tajweedTestProgress", "tajweedTestPlacement", "tajweedTestMissed", "tajweedTestSpeedBest",
+        "tajweedLessonsDone", "letterQuizBestStreak",
         // Where each dua collection was left, the Islam tab's favorites, and the reminders the user
         // wrote (the Sunnah presets' switches are preferences; a custom reminder is authored).
         "duaSessionProgressData", "favoriteIslamResources", "customReminders",
@@ -1136,6 +1178,7 @@ final class Settings: ObservableObject {
         // Location, and everything computed from it (standard defaults and the app group).
         "currentLocation", "homeLocationData", "favoriteLocations", "prayersData", "currentPrayerData",
         "nextPrayerData", "currentCountryCode", "lastLocationFixAt", "cityAnchorLatitude", "cityAnchorLongitude",
+        "currentLocationLabelLanguage", "homeLocationLabelLanguage",
         "travelingMode", "travelTurnOffAutomatic", "travelTurnOnAutomatic",
         "calculationAutoAnsweredCountryCode", "calculationAutoAnsweredMethod", "calculationAutoChanged",
         "calculationAutoDetectedCountryCode", "calculationAutoDetectedMethod", "calculationAutoPreviousMethod",
@@ -1151,10 +1194,13 @@ final class Settings: ObservableObject {
         // retired at launch (`migrateHelpShortcuts`).
         "showHelpShortcuts",
         "didAdoptMinshawiAdhanDefault", "ReciterDownloadManagerDedupeVersion", "hadithLastRead", "groupBySurah",
-        "advancedSettingsPerScreenMigrated", "gridModesPerScreenMigrated",
+        "advancedSettingsPerScreenMigrated", "advancedSwitchesTrimmed", "gridModesPerScreenMigrated", "historyCardSwitchesRemoved",
         // What was last scheduled, played or drawn here.
         "lastCalculationNotificationAt", "lastTravelingNotificationAt", "lastScheduledHijriYear",
         "extraRemindersArmedSignature", "foregroundAdhanLastPlayedMoment", "adhanClipStamps",
+        // The Quran Planner reminder as this phone last scheduled it, kept so Allow Notifications can
+        // re-add it (`QuranPlannerReminder.rearmIfKept`); its time and switch are the preferences.
+        "quranPlannerReminderLast",
         "dailyWidgetsWrittenDay", "quranWidgetSnapshot", "dailyWidgetSnapshot", "mushaf.lastPageGeometry",
         // Whether a recitation is playing on this phone right now, mirrored into the app group for the
         // Control Center toggle (`QuranPlayer.mirrorPlaybackStateForControls`): live state, and a restore
@@ -1176,11 +1222,16 @@ final class Settings: ObservableObject {
         "appReviewAskDates", "appReviewSessionCount", "timeSpent",
         // Retired keys an older build left in the domain; nothing reads them now (`arabicGridMode`: the
         // pre-4.6.0 alphabet switch the per-screen `gridModeArabicRaw` replaced; `shouldShowRateAlert`:
-        // the old review latch, migrated once by AppReview and never read again).
+        // the old review latch, migrated once by AppReview and never read again; the seven
+        // `advancedSettings_<screen>` switches of the screens that lost theirs on 2026-10-25;
+        // `showJuzJumpGrid`: the fold of the JUMP TO JUZ card the juz rail replaced on 2026-10-27).
         "foregroundAdhanLastPlayedID", "gridMode", "islamGridMode", "namesGridMode", "arabicGridMode",
-        "shouldShowRateAlert",
+        "shouldShowRateAlert", "showJuzJumpGrid",
+    ] + AdvancedScreen.retiredStorageKeys + [
         // Today's picks: tomorrow they are wrong anyway.
         "hijriDate", "ayahOfTheDayHiddenDate", "ayahOfTheDayOverride", "hadithOfTheDayHiddenDate", "hadithOfTheDayOverride", "hadithOfTheDayResolved",
+        // DEBUG screenshot overrides read back from the launch arguments (`-fakeHeading`, QiblaView).
+        "fakeHeading",
     ]
 
     /// Whole families that are device-only: the watch sync's bookkeeping, and the backup's own
@@ -1231,10 +1282,12 @@ final class Settings: ObservableObject {
             }
         }
 
-        // Key by key, THEN the domain: a per-key removal fires KVO for that key, which is what the
-        // `@AppStorage` wrappers in this file observe; the domain removal alone posts none (measured
-        // 2026-09-21 with an observer on two keys). The domain removal still runs, as the sweep for
-        // anything the snapshot above did not see.
+        // Key by key, THEN the domain. The per-key removal used to be what re-rendered the app (the
+        // old `@AppStorage` wrappers observed their keys; the domain removal alone posts no KVO,
+        // measured 2026-09-21). A `@Setting` observes nothing: the one publish comes from
+        // `storedContentWasReplaced` below. The per-key pass stays, since a view's own `@AppStorage`
+        // (`SimpleTrimGate`) still watches its key, and the domain removal still runs as the sweep
+        // for anything the snapshot above did not see.
         for key in domain.keys where preserved[key] == nil {
             standard.removeObject(forKey: key)
         }
@@ -1334,6 +1387,7 @@ final class Settings: ObservableObject {
     }
 
     @Published var accentColor: AccentColor {
+        willSet { SettingsSlices.willChange("accentColor") }
         didSet {
             guard Self.isAppProcess else { return }
             appGroupUserDefaults?.setValue(accentColor.rawValue, forKey: "accentColor")
@@ -1356,6 +1410,7 @@ final class Settings: ObservableObject {
 
     /// Hex ("RRGGBB") backing `AccentColor.custom`'s primary stop, set via the Appearance color picker.
     @Published var customAccentColorHex: String {
+        willSet { SettingsSlices.willChange("customAccentColorHex") }
         didSet {
             guard Self.isAppProcess else { return }
             appGroupUserDefaults?.setValue(customAccentColorHex, forKey: "customAccentColorHex")
@@ -1366,6 +1421,7 @@ final class Settings: ObservableObject {
     /// Hex ("RRGGBB") of the user-picked app background, used when the "custom" color theme is active. Kept
     /// `@Published` (not `@AppStorage`) so dragging the color picker updates the background live everywhere.
     @Published var customBackgroundColorHex: String {
+        willSet { SettingsSlices.willChange("customBackgroundColorHex") }
         didSet {
             guard Self.isAppProcess else { return }
             appGroupUserDefaults?.setValue(customBackgroundColorHex, forKey: "customBackgroundColorHex")
@@ -1374,17 +1430,61 @@ final class Settings: ObservableObject {
     }
 
 
+    /// The one switch over every notification the app sends: Notification Settings, "Allow Notifications"
+    /// (Abu, 2026-10-26: "a notification setting to turn off all notifications"). Off, no kind schedules
+    /// anything (the prayers and the adhan, nagging, the Islamic dates, the Sunnah, Quran and planner
+    /// reminders, the auto-change banners), whatever is pending is cleared, and the app neither asks for
+    /// the system permission nor nags about it; every per-kind choice stays as it was, so turning it back
+    /// on restores the same schedule. `notificationsEnabledDidChange` (below) lists the gates.
+    @Setting("notificationsEnabled") var notificationsEnabled: Bool = true {
+        didSet { self.notificationsEnabledDidChange() }
+    }
+
+    /// Posted on the main queue after `notificationsEnabled` changes, for the schedulers this file
+    /// does not name: the Quran reminders and the planner re-arm from it (Al-IslamApp.swift).
+    static let notificationsEnabledDidChangeNotification = Notification.Name("Settings.notificationsEnabledDidChange")
+
+    /// (Here rather than in SettingsAdhan.swift, 2026-10-29: Al-Quran has the switch but not that file.)
+    /// `notificationsEnabled` flipped (Notification Settings, "Allow Notifications"). Off: every pending
+    /// request goes, this scheduler's and the reminders' alike, and so does what is already in Notification
+    /// Center. On: the prayer pass runs again and the reminder kinds re-arm from the choices that were
+    /// kept. While it is off, the gates that keep a later pass from scheduling anything are
+    /// `schedulePrayerTimeNotifications`, `postAutoChangeNotification`, `notificationAuthorizationResult`
+    /// (no prompt, no "Notifications Off" dialog), `SunnahReminderStore.rearm`, `ExtraRemindersStore.rebuild`
+    /// and `QuranPlannerReminder`, which keeps a copy of its request for the switch to bring back.
+    func notificationsEnabledDidChange() {
+        guard Settings.isAppProcess else { return }
+        #if os(iOS) || os(watchOS)
+        if notificationsEnabled {
+            #if HAS_ADHAN
+            scheduleNotifications(deferred: true)
+            #endif
+        } else {
+            // A pass already handed to `notificationBuildQueue` is superseded first: it was still current
+            // and added its requests after the clearing below, bringing the adhans back under a switch
+            // that reads off (the watch's hand-over path does the same).
+            #if HAS_ADHAN
+            _ = Self.nextNotificationPassGeneration()
+            #endif
+            let center = UNUserNotificationCenter.current()
+            center.removeAllPendingNotificationRequests()
+            center.removeAllDeliveredNotifications()
+        }
+        #endif
+        NotificationCenter.default.post(name: Self.notificationsEnabledDidChangeNotification, object: nil)
+    }
+
     // MARK: - [Al-Quran] Quran - @AppStorage
 
     /// Big vs. small in-app Now Playing player. An in-app UI preference, not shared with the widget/watch.
-    @AppStorage("nowPlayingExpanded") var nowPlayingExpanded: Bool = false
+    @Setting("nowPlayingExpanded") var nowPlayingExpanded: Bool = false
 
-    @AppStorage("reciter") var reciter: String = "Muhammad Al-Minshawi (Murattal)"
+    @Setting("reciter") var reciter: String = "Muhammad Al-Minshawi (Murattal)"
 
     /// Disambiguates reciters that share the same display name (qiraah / surah base URL).
-    @AppStorage("reciterId") var reciterId: String = ""
+    @Setting("reciterId") var reciterId: String = ""
 
-    @AppStorage("favoriteReciterIDsData") private var favoriteReciterIDsData = Data() {
+    @Setting("favoriteReciterIDsData") private var favoriteReciterIDsData = Data() {
         didSet { bumpContentGeneration() }
     }
     /// Memoized like `favoriteSurahs`: `isReciterFavorite` runs inside a `.filter` over the whole
@@ -1411,7 +1511,7 @@ final class Settings: ObservableObject {
     }
 
     #if HAS_QURAN
-    @AppStorage("favoriteQiraahTagsData") private var favoriteQiraahTagsData = Data()
+    @Setting("favoriteQiraahTagsData") private var favoriteQiraahTagsData = Data()
     private static var favoriteQiraahTagsCache: (data: Data, value: [String])?
     var favoriteQiraahTags: [String] {
         get {
@@ -1431,7 +1531,7 @@ final class Settings: ObservableObject {
     }
     #endif
 
-    @AppStorage("favoriteEnglishTranslationIDsData") private var favoriteEnglishTranslationIDsData = Data()
+    @Setting("favoriteEnglishTranslationIDsData") private var favoriteEnglishTranslationIDsData = Data()
     private static var favoriteEnglishTranslationIDsCache: (data: Data, value: [String])?
     var favoriteEnglishTranslationIDs: [String] {
         get {
@@ -1456,7 +1556,7 @@ final class Settings: ObservableObject {
     // Saved user flags: sajdah ayahs and broken-letter (muqatta'at) ayahs.
     // Both memoized on the stored bytes (the `favoriteSurahsCache` shape): every ayah row read one of
     // these per body pass, and each read was a JSON decode into a fresh Set.
-    @AppStorage("savedSajdahAyahIDsData") private var savedSajdahAyahIDsData = Data()
+    @Setting("savedSajdahAyahIDsData") private var savedSajdahAyahIDsData = Data()
     private static var savedSajdahAyahIDsCache: (data: Data, value: Set<String>)?
     var savedSajdahAyahIDs: Set<String> {
         get {
@@ -1470,12 +1570,12 @@ final class Settings: ObservableObject {
         set {
             let encoded = (try? Self.encoder.encode(Array(newValue))) ?? Data()
             Self.savedSajdahAyahIDsCache = (encoded, newValue)
-            // The @AppStorage write publishes; no second send.
+            // The @Setting write publishes; no second send.
             savedSajdahAyahIDsData = encoded
         }
     }
 
-    @AppStorage("savedBrokenLetterAyahIDsData") private var savedBrokenLetterAyahIDsData = Data()
+    @Setting("savedBrokenLetterAyahIDsData") private var savedBrokenLetterAyahIDsData = Data()
     private static var savedBrokenLetterAyahIDsCache: (data: Data, value: Set<String>)?
     var savedBrokenLetterAyahIDs: Set<String> {
         get {
@@ -1493,9 +1593,9 @@ final class Settings: ObservableObject {
         }
     }
 
-    @AppStorage("reciteType") var reciteType: String = "Continue to Next"
+    @Setting("reciteType") var reciteType: String = "Continue to Next"
 
-    @AppStorage("favoriteSurahsData") private var favoriteSurahsData = Data() {
+    @Setting("favoriteSurahsData") private var favoriteSurahsData = Data() {
         didSet { bumpContentGeneration() }
     }
     /// Decoded-favorites memo. These getters are read from every surah row's body and from
@@ -1518,22 +1618,22 @@ final class Settings: ObservableObject {
         }
     }
 
-    @AppStorage("khatmCompletedAyahsData") var khatmCompletedAyahsData = Data() {
+    @Setting("khatmCompletedAyahsData") var khatmCompletedAyahsData = Data() {
         didSet { bumpContentGeneration() }
     }
-    @AppStorage("automaticKhatmCompletion") var automaticKhatmCompletion = true
+    @Setting("automaticKhatmCompletion") var automaticKhatmCompletion = true
     /// The Quran Planner's plan (goal + per-day bookkeeping), iOS-only UI in QuranPlannerView.swift.
     /// Declared here because extensions can't add stored properties; harmless on the other targets.
-    @AppStorage("quranPlanData") var quranPlanData = Data() {
+    @Setting("quranPlanData") var quranPlanData = Data() {
         didSet { bumpContentGeneration() }
     }
     /// The Revision plan (QuranRevisionPlan.swift): the set, the cycle and its per-day bookkeeping.
-    @AppStorage("quranRevisionPlanData") var quranRevisionPlanData = Data() {
+    @Setting("quranRevisionPlanData") var quranRevisionPlanData = Data() {
         didSet { bumpContentGeneration() }
     }
     /// The current cycle's revised ayahs (surah * 1000 + ayah), the khatm set's shape: loaded on first
     /// use into `revisionRevisedCache`, written through a debounce (QuranRevisionPlan.swift).
-    @AppStorage("quranRevisionRevisedData") var quranRevisionRevisedData = Data() {
+    @Setting("quranRevisionRevisedData") var quranRevisionRevisedData = Data() {
         didSet { bumpContentGeneration() }
     }
     var revisionCacheLoaded = false
@@ -1583,29 +1683,29 @@ final class Settings: ObservableObject {
     // Raw storage only; the typed `bookmarkedAyahs: [BookmarkedAyah]` accessor lives in SettingsQuran.swift
     // so this core file names no Quran model type (ports to sibling apps without the Quran module). Not
     // `private` so that extension can reach it.
-    @AppStorage("bookmarkedAyahsData") var bookmarkedAyahsData = Data() {
+    @Setting("bookmarkedAyahsData") var bookmarkedAyahsData = Data() {
         didSet { bumpContentGeneration() }
     }
 
-    @AppStorage("showBookmarks") var showBookmarks = true
-    @AppStorage("showFavorites") var showFavorites = true
+    @Setting("showBookmarks") var showBookmarks = true
+    @Setting("showFavorites") var showFavorites = true
 
     /// Reads a surah as swipeable mushaf pages instead of a scrolling ayah list. Toggled from the Quran tab's
     /// toolbar, but only takes effect inside SurahView - the surah browse list itself is unchanged.
-    @AppStorage("quranPageMode") var quranPageMode = false
+    @Setting("quranPageMode") var quranPageMode = false
     /// Reading mode sets each mushaf page the way its printed mushaf does: every line breaks where the
     /// displayed riwayah's print breaks it (`MushafPrintLineTable`), at the largest size whose widest
     /// printed line fits the screen. Off, the page renders at the chosen font size and scrolls.
-    @AppStorage("mushafFitPage") var mushafFitPage = true
+    @Setting("mushafFitPage") var mushafFitPage = true
     /// Page mode: open the mushaf as a two-page spread when the page area is wider than it is tall,
     /// on any device (`SurahPageReader.spreadActive` holds the rule). Read by the
     /// reader only; the composed text does not depend on it, so it is in no render signature.
-    @AppStorage("mushafTwoPageSpread") var mushafTwoPageSpread = true
+    @Setting("mushafTwoPageSpread") var mushafTwoPageSpread = true
 
     /// What page mode draws as each page's BODY text. "arabic" (default) is the mushaf itself; the English
     /// options replace the page's text wholesale - same canonical page boundaries, same fit-to-page - with
     /// the transliteration, The Clear Quran, or Saheeh International. Headings follow the page's language.
-    @AppStorage("mushafPageLanguage") var mushafPageLanguage: String = MushafPageLanguage.arabic.rawValue
+    @Setting("mushafPageLanguage") var mushafPageLanguage: String = MushafPageLanguage.arabic.rawValue
 
     var resolvedMushafPageLanguage: MushafPageLanguage {
         let base = MushafPageLanguage(rawValue: mushafPageLanguage) ?? .arabic
@@ -1622,26 +1722,34 @@ final class Settings: ObservableObject {
     /// How the printed-mushaf PDF is lit: "auto" (default) follows the app's light/dark appearance, so a
     /// dark app shows the print inverted without being asked; "light"/"night" pin it either way. The
     /// invert is hue-preserving (the green border stays green). Raw `MushafPDFAppearance` value.
-    @AppStorage("mushafPDFAppearance") var mushafPDFAppearance: String = MushafPDFAppearance.auto.rawValue
+    @Setting("mushafPDFAppearance") var mushafPDFAppearance: String = MushafPDFAppearance.auto.rawValue
+    /// Which Hafs facsimile the printed mushaf shows (`MushafHafsPDFEdition` raw value): the app's own
+    /// Madinah-layout edition by default, the Islamweb volume, or the scanned Madinah print. Only Hafs
+    /// has more than one bundled; the page menu lists the editions this build actually carries.
+    @Setting("mushafHafsPDFEdition") var mushafHafsPDFEdition: String = MushafHafsPDFEdition.alIslam.rawValue
+
+    var resolvedMushafHafsPDFEdition: MushafHafsPDFEdition {
+        MushafHafsPDFEdition(rawValue: mushafHafsPDFEdition) ?? .alIslam
+    }
     /// Shows the spelled-out pronunciation aid above muqatta'at ayahs (e.g. أَلِفۡ لَآم مِيٓمۡ). Off by default.
-    @AppStorage("showMuqattaatHelper") var showMuqattaatHelper = false
+    @Setting("showMuqattaatHelper") var showMuqattaatHelper = false
 
-    @AppStorage("shareShowAyahInformation") var showAyahInformation: Bool = true
-    @AppStorage("shareShowSurahInformation") var showSurahInformation: Bool = false
+    @Setting("shareShowAyahInformation") var showAyahInformation: Bool = true
+    @Setting("shareShowSurahInformation") var showSurahInformation: Bool = false
 
-    @AppStorage("beginnerMode") var beginnerMode: Bool = false
+    @Setting("beginnerMode") var beginnerMode: Bool = false
 
     // Raw storage only; the typed `quranSortMode`/`quranSortDirection` accessors (and `groupBySurah`) live
     // in SettingsQuran.swift so this core file names no Quran sort enum. The defaults are the enum cases'
     // raw values written as literals (QuranSortMode.surah / QuranSortDirection.ascending) - a rawValue
     // change to either case must be mirrored here.
-    @AppStorage("quranSortMode") var quranSortModeRaw: String = "surah"
-    @AppStorage("quranSortDirection") var quranSortDirectionRaw: String = "ascending"
+    @Setting("quranSortMode") var quranSortModeRaw: String = "surah"
+    @Setting("quranSortDirection") var quranSortDirectionRaw: String = "ascending"
     /// In Khatm mode, the Surah/Juz toggle (which replaces the Asc/Desc control). When on, surahs are grouped
     /// under juz headers, each surah shown once in the juz it *starts* in - so juz that no surah opens (e.g.
     /// juz 2, 5) appear empty.
-    @AppStorage("khatmGroupByJuz") var khatmGroupByJuz: Bool = false
-    @AppStorage("searchForSurahs") var searchForSurahs: Bool = true
+    @Setting("khatmGroupByJuz") var khatmGroupByJuz: Bool = false
+    @Setting("searchForSurahs") var searchForSurahs: Bool = true
     // Silent-letter-insensitive Arabic ayah search is ALWAYS on (was `ignoreSilentLettersInQuranSearch`,
     // a toggle removed by request - the recitation-style fold is strictly additive, so there is no
     // reason to turn it off). The old UserDefaults key is simply orphaned.
@@ -1672,7 +1780,7 @@ final class Settings: ObservableObject {
     /// Debounced last-read bookkeeping for the mushaf pager.
     ///
     /// Recording the last-read position used to run inline on EVERY page turn, and it is expensive twice over:
-    /// the `@AppStorage` writes fire `objectWillChange` (re-rendering every Settings-observing view, including
+    /// the `@Setting` writes fire `objectWillChange` (re-rendering every Settings-observing view, including
     /// all mounted pages), and `refreshQuranWidgets()` does a synchronous widget-snapshot disk write plus
     /// `WidgetCenter.reloadAllTimelines()`. None of that needs to happen mid-flip - only where the reader
     /// *stops* matters - so page turns note the position here and the write settles once the flipping pauses.
@@ -1734,7 +1842,7 @@ final class Settings: ObservableObject {
         set { setSurahCountsData(newValue, forKey: "surahPlayCountsData") }
     }
     private func setSurahCountsData(_ data: Data, forKey key: String) {
-        objectWillChange.send()
+        settingWillChange(key)
         UserDefaults.standard.set(data, forKey: key)
         bumpContentGeneration()
     }
@@ -1791,19 +1899,21 @@ final class Settings: ObservableObject {
         if let data = try? Self.encoder.encode(counts) { surahPlayCountsData = data }
     }
 
-    /// When off, the app neither saves nor shows the "Last Read Ayah" / "Last Listened Surah" sections.
-    @AppStorage("saveLastReadAyah") var saveLastReadAyah: Bool = true
-    @AppStorage("saveLastListenedSurah") var saveLastListenedSurah: Bool = true
-    /// When off, the app neither saves nor shows the "Last Listened Ayah" section.
-    @AppStorage("saveLastListenedAyah") var saveLastListenedAyah: Bool = true
+    /// Whether the app saves and shows the Last Read Ayah / Last Listened Surah / Last Listened Ayah
+    /// cards. Always on since 2026-10-25: their switches left Quran Settings and the cards' Delete
+    /// Forever went with them (`migrateHistoryCardSwitches` turned any that were off back on). Kept
+    /// as settings because the player, the tab, the widgets and the watch all read them.
+    @Setting("saveLastReadAyah") var saveLastReadAyah: Bool = true
+    @Setting("saveLastListenedSurah") var saveLastListenedSurah: Bool = true
+    @Setting("saveLastListenedAyah") var saveLastListenedAyah: Bool = true
     /// When on, the Quran tab shows the daily "Ayah of the Day" card.
-    @AppStorage("showAyahOfTheDay") var showAyahOfTheDay: Bool = true
+    @Setting("showAyahOfTheDay") var showAyahOfTheDay: Bool = true
     /// When on, the Hadith tab shows the daily "Hadith of the Day" tile (2026-09-21, the Ayah of the
     /// Day card's "Delete Forever" and its settings toggle, for the hadith).
-    @AppStorage("showHadithOfTheDay") var showHadithOfTheDay: Bool = true
+    @Setting("showHadithOfTheDay") var showHadithOfTheDay: Bool = true
     /// Day key for which the Hadith of the Day tile has been hidden via "Hide for Today".
-    @AppStorage("hadithOfTheDayHiddenDate") var hadithOfTheDayHiddenDate: String = ""
-    @AppStorage("showWordOfTheDay") var showWordOfTheDay: Bool = true
+    @Setting("hadithOfTheDayHiddenDate") var hadithOfTheDayHiddenDate: String = ""
+    @Setting("showWordOfTheDay") var showWordOfTheDay: Bool = true
     /// Stable yyyy-MM-dd key for a date: the daily boundary (DailyRollover.swift), the activity log and
     /// the Ayah of the Day all key on it. Here, not in SettingsQuran.swift, because the daily boundary
     /// and the activity log ship in every app and the Quran model does not.
@@ -1830,10 +1940,10 @@ final class Settings: ObservableObject {
     }
     /// The Reminder of the Day presented once a day when the app opens (from the second day on).
     /// Day key (yyyy-MM-dd) for which the Ayah of the Day card has been hidden via "Hide for Today".
-    @AppStorage("ayahOfTheDayHiddenDate") var ayahOfTheDayHiddenDate: String = ""
+    @Setting("ayahOfTheDayHiddenDate") var ayahOfTheDayHiddenDate: String = ""
     /// A shuffled replacement for TODAY's Ayah of the Day, as "dayKey|surahID|ayahID". Stale days no
     /// longer match the key and are ignored, so the deterministic pick quietly resumes tomorrow.
-    @AppStorage("ayahOfTheDayOverride") var ayahOfTheDayOverride: String = ""
+    @Setting("ayahOfTheDayOverride") var ayahOfTheDayOverride: String = ""
 
     // The TYPED accessors over these two stores (`lastListenedAyah` / `lastListenedSurah`) live in
     // SettingsQuran.swift: they name Quran model types, and this core file stays free of every domain's
@@ -1850,7 +1960,7 @@ final class Settings: ObservableObject {
     }
 
     func setLastListenedAyahData(_ data: Data?, publish: Bool) {
-        if publish { objectWillChange.send() }
+        if publish { settingWillChange("lastListenedAyahData") }
         if let data {
             UserDefaults.standard.set(data, forKey: "lastListenedAyahData")
         } else {
@@ -1862,7 +1972,7 @@ final class Settings: ObservableObject {
     var lastListenedSurahData: Data? {
         get { UserDefaults.standard.data(forKey: "lastListenedSurahData") }
         set {
-            objectWillChange.send()
+            settingWillChange("lastListenedSurahData")
             if let newValue {
                 UserDefaults.standard.set(newValue, forKey: "lastListenedSurahData")
             } else {
@@ -1872,7 +1982,7 @@ final class Settings: ObservableObject {
     }
 
     /// Which qiraah/riwayah to show for Arabic text. Empty or "Hafs" = Hafs an Asim (default). Transliteration and translations only apply to Hafs.
-    @AppStorage("displayQiraah") var displayQiraah: String = "" {
+    @Setting("displayQiraah") var displayQiraah: String = "" {
         didSet {
             guard oldValue != displayQiraah else { return }
             warmRiwayahPacks()
@@ -1897,13 +2007,13 @@ final class Settings: ObservableObject {
     #endif
 
     /// When on, SurahView shows a qiraat picker above the search bar to compare riwayat in that view.
-    @AppStorage("qiraatComparisonMode") var qiraatComparisonMode: Bool = false
+    @Setting("qiraatComparisonMode") var qiraatComparisonMode: Bool = false
 
 
     /// When on, ReciterListView reveals non-Hafs qiraat reciters.
     /// Hiding riwayah/qiraah also switches comparison mode off: comparison is a riwayah feature, and
     /// leaving it on would keep riwayah pickers in the reader after the user asked for none of it.
-    @AppStorage("showOtherQiraatReciters") var showOtherQiraatReciters: Bool = false {
+    @Setting("showOtherQiraatReciters") var showOtherQiraatReciters: Bool = false {
         didSet {
             guard oldValue != showOtherQiraatReciters else { return }
             if !showOtherQiraatReciters && qiraatComparisonMode {
@@ -1917,7 +2027,7 @@ final class Settings: ObservableObject {
     /// and not yet verified word-by-word, so it stays opt-in and never appears in
     /// comparison mode while off. Turning it off also drops a selected beta riwayah back
     /// to Hafs, so no unverified text can be left on screen by a stale setting.
-    @AppStorage("betaQiraatEnabled") var betaQiraatEnabled: Bool = false {
+    @Setting("betaQiraatEnabled") var betaQiraatEnabled: Bool = false {
         didSet {
             guard oldValue != betaQiraatEnabled else { return }
             // The beta switch changes which ayahs "exist" in a beta riwayah (`existsInQiraah`).
@@ -1936,16 +2046,16 @@ final class Settings: ObservableObject {
     }
 
     /// The beta notice has been shown and accepted once; further picks skip the dialog.
-    @AppStorage("acceptedBetaQiraatNotice") var acceptedBetaQiraatNotice: Bool = false
+    @Setting("acceptedBetaQiraatNotice") var acceptedBetaQiraatNotice: Bool = false
 
     /// One wording for the beta warning, shown by the toggle and every selection dialog.
-    static let betaQiraatNotice = """
+    static let betaQiraatNotice = String(localized: """
         These twelve riwayat were digitized by machine from a printed mushaf and have \
         not yet been checked word by word. Their ayah numbering and surah divisions are \
         verified, but individual marks or letters may still be wrong. Please do not rely \
         on them for memorization or recitation; use Hafs or another verified riwayah \
         for that.
-        """
+        """)
 
     /// Shared expand/collapse state for qiraah details in Quran settings and reciter lists.
     var showQiraahDetails: Bool {
@@ -2012,7 +2122,7 @@ final class Settings: ObservableObject {
     #if HAS_QURAN
     /// Hidden riwayah tajweed rules, by rule KEY ("idgham", "silah_meem", ...), comma-joined.
     /// Keys are meaning-stable across riwayat, so hiding "idgham" hides it in every riwayah.
-    @AppStorage("riwayahTajweedHiddenRules") var riwayahTajweedHiddenRules: String = ""
+    @Setting("riwayahTajweedHiddenRules") var riwayahTajweedHiddenRules: String = ""
 
     var riwayahTajweedHiddenRuleSet: Set<String> {
         // Keyed on the raw string (one short compare) instead of re-splitting per ayah row and per
@@ -2038,7 +2148,7 @@ final class Settings: ObservableObject {
     /// The reader's own tajweed rule colors, for Hafs and every riwayah: "key=RRGGBB" comma-joined and
     /// key-sorted (`TajweedColorOverrides` owns the format and the keys). Changed only from a rule's
     /// long-description card in the Tajweed Legend.
-    @AppStorage("tajweedCustomColors") var tajweedCustomColors: String = ""
+    @Setting("tajweedCustomColors") var tajweedCustomColors: String = ""
 
     #if HAS_QURAN
     /// Sets (`hex` = "RRGGBB") or clears (nil) one rule's custom color. The stored string publishes,
@@ -2059,22 +2169,34 @@ final class Settings: ObservableObject {
     }
     #endif
 
-    @AppStorage("showArabicText") var showArabicText: Bool = true
+    @Setting("showArabicText") var showArabicText: Bool = true
     /// ON by default, like the tajweed colors (user rule): the divine name reads red out of the box.
     /// A user who explicitly turned it off has a stored false, which this default never overrides.
-    @AppStorage("highlightAllahNames") var highlightAllahNames: Bool = true
+    @Setting("highlightAllahNames") var highlightAllahNames: Bool = true
 
     /// Keep the ayah's actions sheet open UNDER whatever it opens (tafsir, the range picker, Select
     /// Text...), instead of closing it first (Abu, 2026-09-19: "maybe I still want the other sheet to
     /// be there cause I plan on doing something else with it"). Off keeps the old swap, which is the
     /// lighter feel on a small screen; on stacks them, so dismissing the second returns to the first.
-    @AppStorage("keepAyahSheetOpen") var keepAyahSheetOpen: Bool = false
+    @Setting("keepAyahSheetOpen") var keepAyahSheetOpen: Bool = false
+
+    /// Play This Ayah and Repeat Ayah start the recitation WITHOUT closing the ayah's actions sheet
+    /// (Abu, 2026-10-25: "sometimes when its playing i want to read the big sheet"). Off by default,
+    /// which keeps the old close: the reader is where the highlight moves. Play From Ayah is deliberately
+    /// not one of them since 2026-10-26 (Abu: "play from ayah shouldn't count for keeping sheet opened,
+    /// only repeat and play this ayah"), nor is Play Custom Range; both close the sheet as they always have.
+    @Setting("keepAyahSheetOpenOnPlay") var keepAyahSheetOpenOnPlay: Bool = false
+
+    /// Holds the display awake while the ayah's actions sheet is on screen (Abu, 2026-10-25: "if that
+    /// ayah screen is there dont turn off screen"). Off by default. Counted with the reader's own
+    /// recitation hold, see `ScreenWakeLock`.
+    @Setting("ayahSheetKeepsScreenOn") var ayahSheetKeepsScreenOn: Bool = false
 
     /// The Arabic size of the ayah preview card inside a sheet, as a MULTIPLIER of the reader's own
     /// size, remembered across launches (Abu, 2026-09-19: "+/- button next to plain text that is app
     /// storage that remembers how big I want it"). 1.0 is the reader's size, which is what the card
     /// used before the control existed.
-    @AppStorage("ayahPreviewCardScale") var ayahPreviewCardScale: Double = 1.0
+    @Setting("ayahPreviewCardScale") var ayahPreviewCardScale: Double = 1.0
 
     /// The step the card's +/- buttons move by, and the range they clamp to. A quarter step is big
     /// enough to feel on one tap and small enough that the ends take a few.
@@ -2089,53 +2211,53 @@ final class Settings: ObservableObject {
     /// bundled glosses are indexed against its wording, and another riwayah's words would not line
     /// up (see `WordByWordStore`, which the iOS settings screen unloads when both word switches
     /// are off).
-    @AppStorage("wordByWordMeanings") var wordByWordMeanings: Bool = true
+    @Setting("wordByWordMeanings") var wordByWordMeanings: Bool = true
     /// Word-by-word INLINE: the reader lays the ayah out word by word with each word's English
     /// meaning directly beneath it (the study layout). Shares the gloss pack and the Hafs-only gate
     /// with `wordByWordMeanings` but is INDEPENDENT of it: the layout draws with the tap switch
     /// off, and then its words simply do not open a card.
-    @AppStorage("wordByWordInline") var wordByWordInline: Bool = false
+    @Setting("wordByWordInline") var wordByWordInline: Bool = false
     /// Which of the two word-by-word lines the study layout writes under each word. Translation is on
     /// out of the box because it is what "word by word" means to most readers; transliteration is off
     /// so the default row stays two lines tall, and either may run without the other (both off is not
     /// reachable - the settings screen disables the last one still on, since a layout with no lines
     /// under the words is just the ayah with gaps in it).
-    @AppStorage("wordByWordInlineTranslation") var wordByWordInlineTranslation: Bool = true
-    @AppStorage("wordByWordInlineTransliteration") var wordByWordInlineTransliteration: Bool = false
+    @Setting("wordByWordInlineTranslation") var wordByWordInlineTranslation: Bool = true
+    @Setting("wordByWordInlineTransliteration") var wordByWordInlineTransliteration: Bool = false
     /// ON by default: the colors are the fastest way to read correctly, and word-by-word (also
     /// default-on) leans on them - the tapped word's card names the rules its colors show.
-    @AppStorage("showTajweedColors") var showTajweedColors: Bool = true
-    @AppStorage("showTajweedTafkhim") var showTajweedTafkhim: Bool = true
-    @AppStorage("showTajweedQalqalah") var showTajweedQalqalah: Bool = true
-    @AppStorage("showTajweedLamShamsiyah") var showTajweedLamShamsiyah: Bool = true
-    @AppStorage("showTajweedSukoonJazm") var showTajweedDroppedLetter: Bool = true
-    @AppStorage("showTajweedBareNuunMeem") var showTajweedIdghamBiGhunnahLight: Bool = true
-    @AppStorage("showTajweedIdghamBiGhunnahHeavy") var showTajweedIdghamBiGhunnahHeavy: Bool = true
-    @AppStorage("showTajweedGeneralGhunnah") var showTajweedGeneralGhunnah: Bool = true
-    @AppStorage("showTajweedIkhfaa") var showTajweedIkhfaa: Bool = true
-    @AppStorage("showTajweedIqlab") var showTajweedIqlab: Bool = true
-    @AppStorage("showTajweedIdghamBilaGhunnah") var showTajweedIdghamBilaGhunnah: Bool = true
-    @AppStorage("showTajweedHamzatWaslSilent") var showTajweedHamzatWaslSilent: Bool = true
-    @AppStorage("showTajweedMaddNatural2") var showTajweedMaddNatural2: Bool = true
-    @AppStorage("showTajweedMaddNaturalMiniature") var showTajweedMaddNaturalMiniature: Bool = true
-    @AppStorage("showTajweedMadd246") var showTajweedMaddAaridLisSukoon: Bool = true
-    @AppStorage("showTajweedMaddNecessary6") var showTajweedMaddNecessary6: Bool = true
-    @AppStorage("showTajweedMaddSeparated") var showTajweedMaddSeparated: Bool = true
-    @AppStorage("showTajweedMaddConnected") var showTajweedMaddConnected: Bool = true
-    @AppStorage("cleanArabicText") var cleanArabicText: Bool = false
-    @AppStorage("removeArabicDots") var removeArabicDots: Bool = false
+    @Setting("showTajweedColors") var showTajweedColors: Bool = true
+    @Setting("showTajweedTafkhim") var showTajweedTafkhim: Bool = true
+    @Setting("showTajweedQalqalah") var showTajweedQalqalah: Bool = true
+    @Setting("showTajweedLamShamsiyah") var showTajweedLamShamsiyah: Bool = true
+    @Setting("showTajweedSukoonJazm") var showTajweedDroppedLetter: Bool = true
+    @Setting("showTajweedBareNuunMeem") var showTajweedIdghamBiGhunnahLight: Bool = true
+    @Setting("showTajweedIdghamBiGhunnahHeavy") var showTajweedIdghamBiGhunnahHeavy: Bool = true
+    @Setting("showTajweedGeneralGhunnah") var showTajweedGeneralGhunnah: Bool = true
+    @Setting("showTajweedIkhfaa") var showTajweedIkhfaa: Bool = true
+    @Setting("showTajweedIqlab") var showTajweedIqlab: Bool = true
+    @Setting("showTajweedIdghamBilaGhunnah") var showTajweedIdghamBilaGhunnah: Bool = true
+    @Setting("showTajweedHamzatWaslSilent") var showTajweedHamzatWaslSilent: Bool = true
+    @Setting("showTajweedMaddNatural2") var showTajweedMaddNatural2: Bool = true
+    @Setting("showTajweedMaddNaturalMiniature") var showTajweedMaddNaturalMiniature: Bool = true
+    @Setting("showTajweedMadd246") var showTajweedMaddAaridLisSukoon: Bool = true
+    @Setting("showTajweedMaddNecessary6") var showTajweedMaddNecessary6: Bool = true
+    @Setting("showTajweedMaddSeparated") var showTajweedMaddSeparated: Bool = true
+    @Setting("showTajweedMaddConnected") var showTajweedMaddConnected: Bool = true
+    @Setting("cleanArabicText") var cleanArabicText: Bool = false
+    @Setting("removeArabicDots") var removeArabicDots: Bool = false
 
-    @AppStorage("showTransliteration") var showTransliteration: Bool = false
-    @AppStorage("showEnglishSaheeh") var showEnglishSaheeh: Bool = true
-    @AppStorage("showEnglishMustafa") var showEnglishMustafa: Bool = false
-    @AppStorage("copyAyahArabic") var copyAyahArabic: Bool = true
-    @AppStorage("copyAyahTransliteration") var copyAyahTransliteration: Bool = false
-    @AppStorage("copyAyahEnglishSaheeh") var copyAyahEnglishSaheeh: Bool = false
-    @AppStorage("copyAyahEnglishMustafa") var copyAyahEnglishMustafa: Bool = false
-    @AppStorage("showPageJuzDividers") var showPageJuzDividers: Bool = true
-    @AppStorage("showFullSurahRow") var showFullSurahRow: Bool = false
+    @Setting("showTransliteration") var showTransliteration: Bool = false
+    @Setting("showEnglishSaheeh") var showEnglishSaheeh: Bool = true
+    @Setting("showEnglishMustafa") var showEnglishMustafa: Bool = false
+    @Setting("copyAyahArabic") var copyAyahArabic: Bool = true
+    @Setting("copyAyahTransliteration") var copyAyahTransliteration: Bool = false
+    @Setting("copyAyahEnglishSaheeh") var copyAyahEnglishSaheeh: Bool = false
+    @Setting("copyAyahEnglishMustafa") var copyAyahEnglishMustafa: Bool = false
+    @Setting("showPageJuzDividers") var showPageJuzDividers: Bool = true
+    @Setting("showFullSurahRow") var showFullSurahRow: Bool = false
 
-    @AppStorage("quranSearchHistoryData") private var quranSearchHistoryData = Data()
+    @Setting("quranSearchHistoryData") private var quranSearchHistoryData = Data()
     /// Memoized: the Quran search bar reads this per render while focused (per keystroke).
     private static var quranSearchHistoryCache: (data: Data, value: [String])?
     var quranSearchHistory: [String] {
@@ -2157,7 +2279,7 @@ final class Settings: ObservableObject {
 
     #if HAS_HADITH
     // The Hadith tab's recent searches - the Quran search history's exact twin (chips over the search bar).
-    @AppStorage("hadithSearchHistoryData") private var hadithSearchHistoryData = Data()
+    @Setting("hadithSearchHistoryData") private var hadithSearchHistoryData = Data()
     /// Memoized like `favoriteSurahs`: the chips row stays mounted and reads this on every render pass.
     private static var hadithSearchHistoryCache: (data: Data, value: [String])?
     var hadithSearchHistory: [String] {
@@ -2197,31 +2319,31 @@ final class Settings: ObservableObject {
         #endif
     }()
 
-    @AppStorage("englishFontSize") var englishFontSize: Double = (Double(UIFont.preferredFont(forTextStyle: .body).pointSize) * Settings.readerDefaultScale).rounded()
+    @Setting("englishFontSize") var englishFontSize: Double = (Double(UIFont.preferredFont(forTextStyle: .body).pointSize) * Settings.readerDefaultScale).rounded()
     
     // MARK: - [Al-Hadith] Hadith display
 
     /// Which parts of a hadith render in the Hadith tab (both default on; hiding one gives a pure-Arabic or
     /// pure-English reading experience).
-    @AppStorage("showHadithArabic") var showHadithArabic = true
-    @AppStorage("showHadithEnglish") var showHadithEnglish = true
+    @Setting("showHadithArabic") var showHadithArabic = true
+    @Setting("showHadithEnglish") var showHadithEnglish = true
     /// Hadith's own "Highlight Allah" toggle, split from the Quran's `highlightAllahNames` so the two
     /// readers can differ. Seeded from the Quran toggle once in `init` so the split changes nothing
     /// until the user actually flips it.
     /// ON by default, matching the Quran toggle's new default (user rule).
-    @AppStorage("highlightAllahNamesHadith") var highlightAllahNamesHadith: Bool = true
+    @Setting("highlightAllahNamesHadith") var highlightAllahNamesHadith: Bool = true
     /// The Islam tab's own "Highlight Allah" toggle (Abu, 2026-09-20): the duas, the dhikr, the
     /// tasbih, the daily cards and the quotes on the article pages. A third switch for the same
     /// reason the hadith one exists, each area of the app decides for itself; ON by default like the
     /// other two. Set in Islam Settings, Arabic Text.
-    @AppStorage("highlightAllahNamesIslam") var highlightAllahNamesIslam: Bool = true
+    @Setting("highlightAllahNamesIslam") var highlightAllahNamesIslam: Bool = true
     /// Islam Settings -> Text Size (Abu, 2026-09-25: "for settings in Islam have a text size"): the
     /// Dynamic Type size the whole Islam tab renders at, as an index into `IslamTextSize.steps`.
     /// -1 (the default) follows the device's own text size. See `islamTextSize()`.
-    @AppStorage("islamTextSize") var islamTextSize: Int = -1
+    @Setting("islamTextSize") var islamTextSize: Int = -1
     /// Hadith text sizes, independent of the Quran's own sliders.
-    @AppStorage("hadithArabicFontSize") var hadithArabicFontSize: Double = (Double(UIFont.preferredFont(forTextStyle: .body).pointSize + 4) * Settings.readerDefaultScale).rounded()
-    @AppStorage("hadithEnglishFontSize") var hadithEnglishFontSize: Double = (Double(UIFont.preferredFont(forTextStyle: .body).pointSize) * Settings.readerDefaultScale).rounded()
+    @Setting("hadithArabicFontSize") var hadithArabicFontSize: Double = (Double(UIFont.preferredFont(forTextStyle: .body).pointSize + 4) * Settings.readerDefaultScale).rounded()
+    @Setting("hadithEnglishFontSize") var hadithEnglishFontSize: Double = (Double(UIFont.preferredFont(forTextStyle: .body).pointSize) * Settings.readerDefaultScale).rounded()
 
     // MARK: - [Islam tab] Arabic letters & 99 Names
     
@@ -2230,16 +2352,16 @@ final class Settings: ObservableObject {
     /// owns its own choice since 2026-10-10: this one used to be the app-wide fallback the Alphabet,
     /// the 99 Names, the Islam tab and Settings followed until each was set, so flipping the Quran tab
     /// (or a Scroll To Surah, which wrote it off) rearranged screens nobody had touched.
-    @AppStorage("quranGridMode") var gridMode = true
+    @Setting("quranGridMode") var gridMode = true
     
     /// Per-screen grid choices (Arabic Alphabet / 99 Names / Islam tab / Settings; the Hadith tab, its
     /// chapters and the Quran tab own theirs). 1 grid, 0 list, -1 not written yet, which is grid, the
     /// default (`migrateGridModes` writes every one of them once).
-    @AppStorage("gridModeArabicRaw") var gridModeArabicRaw: Int = -1
-    @AppStorage("gridModeNamesRaw") var gridModeNamesRaw: Int = -1
-    @AppStorage("gridModeIslamRaw") var gridModeIslamRaw: Int = -1
+    @Setting("gridModeArabicRaw") var gridModeArabicRaw: Int = -1
+    @Setting("gridModeNamesRaw") var gridModeNamesRaw: Int = -1
+    @Setting("gridModeIslamRaw") var gridModeIslamRaw: Int = -1
     /// The Settings tab's own grid button (2026-09-26), the same -1 default as its siblings.
-    @AppStorage("gridModeSettingsRaw") var gridModeSettingsRaw: Int = -1
+    @Setting("gridModeSettingsRaw") var gridModeSettingsRaw: Int = -1
 
     var arabicGridMode: Bool {
         get { gridModeArabicRaw != 0 }
@@ -2255,6 +2377,13 @@ final class Settings: ObservableObject {
         get { gridModeIslamRaw != 0 }
         set { gridModeIslamRaw = newValue ? 1 : 0 }
     }
+
+    /// The Islam tab's resources split into subject sections (Learn, Remembrance, Tools, Faith & Proofs,
+    /// Ask AI), the default since 2026-10-26 (Abu: "by default for al islam tab group by subject"), or
+    /// all of them in one ISLAMIC RESOURCES section (the default from 2026-10-18 until then: "add an
+    /// option to not group for islamic resources ... make that default where it is one section"). The
+    /// ⋯ More menu switches it.
+    @Setting("islamGroupResources") var islamGroupResources: Bool = true
 
     var settingsGridMode: Bool {
         get { gridModeSettingsRaw != 0 }
@@ -2300,13 +2429,16 @@ final class Settings: ObservableObject {
         defaults.removeObject(forKey: "showHelpShortcuts")
     }
     
-    @AppStorage("THEfontArabic") var fontArabic: String = "KFGQPCHAFSUthmanicScript-Regula"
-    @AppStorage("fontArabicSize") var fontArabicSize: Double = (Double(UIFont.preferredFont(forTextStyle: .title1).pointSize) * Settings.readerDefaultScale).rounded()
-    @AppStorage("useFontArabic") var useFontArabic = true
+    @Setting("THEfontArabic") var fontArabic: String = "KFGQPCHAFSUthmanicScript-Regula"
+    @Setting("fontArabicSize") var fontArabicSize: Double = (Double(UIFont.preferredFont(forTextStyle: .title1).pointSize) * Settings.readerDefaultScale).rounded()
+    @Setting("useFontArabic") var useFontArabic = true
     /// Raw storage for `arabicScriptStyle` (see SettingsQuran). Empty means the reader has never
     /// chosen, which resolves to Madani - the effective default. A value written here is always an
     /// explicit choice and is honored as one, so the old "automatic" saves still mean Automatic.
-    @AppStorage("quranArabicScriptStyle") var arabicScriptStyleRaw: String = ""
+    @Setting("quranArabicScriptStyle") var arabicScriptStyleRaw: String = ""
+    /// Raw storage for `waslSignStyle` (WaslSigns.swift): which hamzat al-wasl notation the Quran
+    /// shows. Empty means the reader never chose, which is Follow the Print.
+    @Setting("quranWaslSign") var waslSignRaw: String = ""
 
     /// The Arabic face for the NON-Quran Arabic screens (Hadith, Adhkar, Duas, 99 Names, Arabic Alphabet).
     /// Independent of the Quran's own font picker. Kufi and Hijazi are the same faces the Quran picker
@@ -2341,26 +2473,26 @@ final class Settings: ObservableObject {
         var historyCaption: String {
             switch self {
             case .uthmani:
-                return "Uthmani is the Naskh of the Madinah Mushaf, the hand of the calligrapher Uthman Taha as digitized by the King Fahd Complex. Naskh was systematized in Baghdad by Ibn Muqla in the 4th century AH (10th century CE), became the main script of the mushaf from about the 5th century AH (11th century CE), and was perfected by the Ottoman masters of Istanbul; nearly every printed mushaf today, from Cairo to Madinah, uses it."
+                return String(localized: "Uthmani is the Naskh of the Madinah Mushaf, the hand of the calligrapher Uthman Taha as digitized by the King Fahd Complex. Naskh was systematized in Baghdad by Ibn Muqla in the 4th century AH (10th century CE), became the main script of the mushaf from about the 5th century AH (11th century CE), and was perfected by the Ottoman masters of Istanbul; nearly every printed mushaf today, from Cairo to Madinah, uses it.")
             case .indopak:
-                return "Indopak is the mushaf hand of the Indian subcontinent: a Naskh shaped by Nastaliq, the Persian script developed in Iran in the 8th and 9th centuries AH (14th and 15th centuries CE) and credited to Mir Ali Tabrizi. It came east with the Mughals and became the standard printed mushaf of India, Pakistan and Bangladesh, and of South Asian communities everywhere."
+                return String(localized: "Indopak is the mushaf hand of the Indian subcontinent: a Naskh shaped by Nastaliq, the Persian script developed in Iran in the 8th and 9th centuries AH (14th and 15th centuries CE) and credited to Mir Ali Tabrizi. It came east with the Mughals and became the standard printed mushaf of India, Pakistan and Bangladesh, and of South Asian communities everywhere.")
             case .hijazi:
-                return "Hijazi is the hand of the earliest mushafs, written in the Hijaz (Makkah and Madinah) in the 1st century AH (7th century CE) by the generation of the Companions, most likely including Uthman's own copies. Tall alifs leaning to the right, no dots or vowels, and words that run on across lines: the Birmingham and Sanaa manuscripts are written in it. Kufi overtook it within about a century."
+                return String(localized: "Hijazi is the hand of the earliest mushafs, written in the Hijaz (Makkah and Madinah) in the 1st century AH (7th century CE) by the generation of the Companions, most likely including Uthman's own copies. Tall alifs leaning to the right, no dots or vowels, and words that run on across lines: the Birmingham and Sanaa manuscripts are written in it. Kufi overtook it within about a century.")
             case .kufi:
-                return "Kufi is the angular script named after Kufa in Iraq (founded 17 AH, 638 CE). It grew out of Hijazi late in the 1st century AH (7th century CE), spells out the mosaics of the Dome of the Rock (72 AH, 691 CE), and was the script of the Quran for some three centuries across the Abbasid world, from Baghdad to Cairo and Qayrawan: wide parchment pages, vowels as coloured dots. When Naskh took over the text in the 5th century AH (11th century CE) it lived on in headings and inscriptions. This face is a modern digitization, Noto Kufi Arabic."
+                return String(localized: "Kufi is the angular script named after Kufa in Iraq (founded 17 AH, 638 CE). It grew out of Hijazi late in the 1st century AH (7th century CE), spells out the mosaics of the Dome of the Rock (72 AH, 691 CE), and was the script of the Quran for some three centuries across the Abbasid world, from Baghdad to Cairo and Qayrawan: wide parchment pages, vowels as coloured dots. When Naskh took over the text in the 5th century AH (11th century CE) it lived on in headings and inscriptions. This face is a modern digitization, Noto Kufi Arabic.")
             case .basic:
-                return "Basic is Apple's standard Arabic system font (SF Arabic) in the app's rounded design: a modern screen face with no historical script behind it, the same look as the rest of iOS."
+                return String(localized: "Basic is Apple's standard Arabic system font (SF Arabic) in the app's rounded design: a modern screen face with no historical script behind it, the same look as the rest of iOS.")
             }
         }
     }
 
     /// The one thing every Arabic face shares, shown under each face's caption: the letters are the
     /// Uthmani rasm whichever hand writes them.
-    static let uthmaniRasmCaption = "Every face writes the same Uthmani rasm: the consonantal text compiled within a year or two of the death of the Prophet (peace be upon him), under Abu Bakr in 12 AH (633 CE), and standardized by Uthman in the copies he sent to the main cities around 25 AH (645 CE), which is why it is called the Uthmani rasm. Only the hand the letters are written in changes."
+    static let uthmaniRasmCaption = String(localized: "Every face writes the same Uthmani rasm: the consonantal text compiled within a year or two of the death of the Prophet (peace be upon him), under Abu Bakr in 12 AH (633 CE), and standardized by Uthman in the copies he sent to the main cities around 25 AH (645 CE), which is why it is called the Uthmani rasm. Only the hand the letters are written in changes.")
 
     /// Raw storage for `islamArabicFace`. Empty means "not chosen yet" - the legacy two-way
     /// Quranic-vs-Basic toggle (`useFontArabic`) seeds the richer choice on first read.
-    @AppStorage("islamArabicFontFace") var islamArabicFaceRaw: String = ""
+    @Setting("islamArabicFontFace") var islamArabicFaceRaw: String = ""
 
     var islamArabicFace: IslamArabicFace {
         get {
@@ -2393,6 +2525,8 @@ final class Settings: ObservableObject {
     // MARK: - [Islam tab] Arabic Alphabet screen size
     
     static let randomReciterName = "Random Reciter"
+    /// What the reader sees for `randomReciterName`, which stays English because it is stored and compared.
+    static var randomReciterDisplayName: String { String(localized: "Random Reciter") }
     static let hafsUthmaniFontName = "KFGQPCHAFSUthmanicScript-Regula"
 
     #if canImport(UIKit)
@@ -2457,9 +2591,9 @@ final class Settings: ObservableObject {
 
         var label: String {
             switch self {
-            case .light: return "Light Marks"
-            case .bold: return "Bold Marks"
-            case .dots: return "Dot Vowels"
+            case .light: return String(localized: "Light Marks")
+            case .bold: return String(localized: "Bold Marks")
+            case .dots: return String(localized: "Dot Vowels")
             }
         }
     }
@@ -2483,17 +2617,17 @@ final class Settings: ObservableObject {
     /// the number of Dynamic-Type steps the Arabic reads ABOVE the size the screen already reads at (see
     /// `arabicLetterTypeSize(steps:above:)`), applied as a floor so text only ever grows from the device
     /// size, and the custom Arabic glyphs (built with `relativeTo:`) grow along with every other label.
-    @AppStorage("arabicLetterSizeIndex") var arabicLetterSizeIndex: Int = 0
+    @Setting("arabicLetterSizeIndex") var arabicLetterSizeIndex: Int = 0
 
     /// Hides the English readings ("ba", "bi", "bu") under the tashkeel glyphs on the Arabic Alphabet screens, so
     /// the marks can be practised from the Arabic alone rather than read off the transliteration.
-    @AppStorage("hideEnglishInArabicLetters") var hideEnglishInArabicLetters: Bool = false
+    @Setting("hideEnglishInArabicLetters") var hideEnglishInArabicLetters: Bool = false
 
     /// Writes the WITH HAMZA practice syllables with the Uthmani sukoon (U+06E1) instead of the plain
     /// one (U+0652), so learners can practise the exact mark shape the mushaf prints. Persisted (unlike
     /// the Tashkeel screen's ephemeral picker): letter screens are opened one at a time, and re-flipping
     /// the script on every letter would get old fast.
-    @AppStorage("quranicSukoonInLetterPractice") var quranicSukoonInLetterPractice: Bool = false
+    @Setting("quranicSukoonInLetterPractice") var quranicSukoonInLetterPractice: Bool = false
 
     /// How many steps the slider has (its range is `0...arabicLetterSizeSteps`).
     ///
@@ -2532,11 +2666,11 @@ final class Settings: ObservableObject {
     // Raw storage only; the typed `favoriteLetters: [LetterData]` accessor + toggles live next to the
     // `LetterData` type in ArabicLetters.swift, so this core file names no letter model type. Not `private`
     // so that extension can reach it.
-    @AppStorage("favoriteLetterData") var favoriteLetterData = Data()
+    @Setting("favoriteLetterData") var favoriteLetterData = Data()
 
     /// Pinned Islam-tab resources, stored as the destination enum's raw values, comma-joined (a dozen short
     /// identifiers - a Codable blob would be ceremony).
-    @AppStorage("favoriteIslamResources") private var favoriteIslamResourcesRaw = ""
+    @Setting("favoriteIslamResources") private var favoriteIslamResourcesRaw = ""
 
     func isIslamResourceFavorite(_ id: String) -> Bool {
         // The Islam root asks this for every one of ~170 destinations per body pass, several times per
@@ -2558,7 +2692,7 @@ final class Settings: ObservableObject {
         favoriteIslamResourcesRaw = ids.joined(separator: ",")
     }
 
-    @AppStorage("favoriteNameNumbersData") private var favoriteNameNumbersData = Data()
+    @Setting("favoriteNameNumbersData") private var favoriteNameNumbersData = Data()
     /// Memoized on the blob: `isNameFavorite` reads this per row, and each read was a JSON decode.
     private static var favoriteNameNumbersCache: (data: Data, value: [Int])?
     var favoriteNameNumbers: [Int] {
@@ -2575,7 +2709,7 @@ final class Settings: ObservableObject {
         }
     }
 
-    @AppStorage("showDescription") var showDescription = false
+    @Setting("showDescription") var showDescription = false
 
     func toggleNameFavorite(number: Int) {
         withAnimation {
@@ -2793,9 +2927,9 @@ final class Settings: ObservableObject {
         return set
     }()
 
-    // MARK: - [Shared] App-wide appearance & misc @AppStorage
+    // MARK: - [Shared] App-wide appearance & misc @Setting
 
-    @AppStorage("THEfirstLaunch") var firstLaunch = true
+    @Setting("THEfirstLaunch") var firstLaunch = true
 
     // About You (2026-09-20): the one question the app asks everyone, new or not, once: raised
     // Muslim, revert, just getting started, or learning about Islam (`UserBackground`,
@@ -2803,7 +2937,7 @@ final class Settings: ObservableObject {
     // install and straight after the launch screen for everyone who already had the app, which is
     // why "seen" is a version and not a Bool: bump `aboutYouCurrentVersion` and it is asked again.
     static let aboutYouCurrentVersion = 1
-    @AppStorage("aboutYouVersionSeen") var aboutYouVersionSeen: Int = 0
+    @Setting("aboutYouVersionSeen") var aboutYouVersionSeen: Int = 0
     #if HAS_ICLOUD_BACKUP
     /// The iCloud Backup offer (CloudOfferView), the stage after About You: shown once to everyone,
     /// versioned the same way. Device-only: a restored device has not been offered anything. Under
@@ -2811,45 +2945,91 @@ final class Settings: ObservableObject {
     /// About You is asked again after a reset because its answer IS a preference; whether to back
     /// up was answered, and a device already backing up must not be offered to start.
     static let cloudOfferCurrentVersion = 1
-    @AppStorage("cloudBackup.offerVersionSeen") var cloudOfferVersionSeen: Int = 0
+    @Setting("cloudBackup.offerVersionSeen") var cloudOfferVersionSeen: Int = 0
     #endif
     /// Raw `UserBackground`; "" until answered, and again if the reader chooses not to say.
-    @AppStorage("userBackground") var userBackgroundRaw: String = ""
+    @Setting("userBackground") var userBackgroundRaw: String = ""
     /// The Islam tab's Start Here guide, put away by the reader (About You brings it back).
-    @AppStorage("startHereHidden") var startHereHidden: Bool = false
+    @Setting("startHereHidden") var startHereHidden: Bool = false
     /// The Start Here steps already opened, comma separated.
-    @AppStorage("startHereVisited") var startHereVisitedRaw: String = ""
+    @Setting("startHereVisited") var startHereVisitedRaw: String = ""
     /// The Need a Hand? section on each tab (HelpDoors.swift): a few questions, each with the setting
     /// that answers it. Two sets of raw `HelpDoorArea`s, comma separated, so a tab that is in neither
     /// shows its questions: the tabs whose section is put away entirely (each tab's settings page
     /// brings it back, Look and Feel does all four), and the tabs whose section is folded down to its
     /// header (the arrow beside NEED A HAND?).
-    @AppStorage("helpDoorsHidden") var helpDoorsHiddenRaw: String = ""
-    @AppStorage("helpDoorsCollapsed") var helpDoorsCollapsedRaw: String = ""
+    @Setting("helpDoorsHidden") var helpDoorsHiddenRaw: String = ""
+    @Setting("helpDoorsCollapsed") var helpDoorsCollapsedRaw: String = ""
+    /// The tabs' foldable sections (TabSections.swift: the Adhan tab's PRAYER TRACKER and AT A GLANCE
+    /// so far). The reader's own choice per section, "adhan.glance:1,adhan.tracker:0" (a section with
+    /// no entry follows its default: shown, or Simple Mode's rule where it has one), and the sections
+    /// folded down to their header, comma separated.
+    @Setting("tabSectionChoices") var tabSectionChoicesRaw: String = ""
+    @Setting("tabSectionsCollapsed") var tabSectionsCollapsedRaw: String = ""
 
     // The tab the app opens on (Abu, 2026-09-21: "would be cool to also be able to choose whether one
     // wants adhan quran hadith or islam to be the start"). Raw `LaunchTab` (SettingsView.swift). It
     // is Adhan, as it has always been, until someone chooses otherwise. `launchTabChosen` records
     // that the picker in Settings was used. The welcome's "Open the app on the Islam tab" switch read
     // it; that switch is gone (2026-09-25), so nothing reads it now, but the stored flag is kept.
-    @AppStorage("launchTab") var launchTabRaw: String = "adhan"
-    @AppStorage("launchTabChosen") var launchTabChosen: Bool = false
+    @Setting("launchTab") var launchTabRaw: String = "adhan"
+    @Setting("launchTabChosen") var launchTabChosen: Bool = false
 
-    @AppStorage("hapticOn") var hapticOn: Bool = true
+    @Setting("hapticOn") var hapticOn: Bool = true
+
+    /// When the display may not sleep on its own (Abu, 2026-10-27: "have a setting to always keep the
+    /// display on in the app or at least for Quran ... always keep app open, only on Quran, never
+    /// (default)"). Raw `KeepScreenOn`; read by `ScreenWakeLock`, which also keeps its narrower holds
+    /// (the moving recitation highlight, the ayah sheet's own switch) whatever this says.
+    @Setting("keepScreenOn") var keepScreenOnRaw: String = KeepScreenOn.never.rawValue
+
+    enum KeepScreenOn: String, CaseIterable, Identifiable {
+        case never, quran, always
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .never: return String(localized: "Never")
+            case .quran: return String(localized: "In the Quran")
+            case .always: return String(localized: "Always")
+            }
+        }
+
+        /// The choices this app offers: "In the Quran" only where there is a Quran reader to hold
+        /// the screen (Al-Adhan, which shares this file, has none).
+        static var offered: [KeepScreenOn] {
+            #if HAS_QURAN
+            return allCases
+            #else
+            return [.never, .always]
+            #endif
+        }
+    }
+
+    var keepScreenOn: KeepScreenOn {
+        get { KeepScreenOn(rawValue: keepScreenOnRaw).flatMap { KeepScreenOn.offered.contains($0) ? $0 : nil } ?? .never }
+        set { keepScreenOnRaw = newValue.rawValue }
+    }
 
     /// The switch behind a settings screen's second half (Abu, 2026-09-22: "make nagging mode much
     /// simpler ... only have an option to make it more customizable ... by default should be simple,
-    /// do the same with prayer notifications and all settings in the app"), now ONE PER SCREEN
+    /// do the same with prayer notifications and all settings in the app"), ONE PER SCREEN
     /// (Abu, 2026-09-22: "dont do one general advanced settings there, do that for each one - if it
     /// needs advanced mode then show it there"). Off, that screen keeps to its essentials and ends
     /// with `AdvancedSettingsSection(screen:)`, its own switch; on, that screen shows every option
     /// and no other screen changes. The hidden options keep whatever value they hold: hiding a
     /// control never changes what the app does, only what the screen shows.
     ///
+    /// Two screens keep one (2026-10-25, Abu: "get rid of it all except for certain places"):
+    /// Prayer Calculation and Nagging Mode, whose second halves are long and niche. The seven other
+    /// screens that had one showed everything from that day; each hid between one and five rows,
+    /// and their pages are sectioned well enough to read without a gate.
+    ///
     /// `advancedSettings` is the legacy single key. It is read ONCE, as the starting value every
     /// screen's own key inherits (see `AdvancedScreen.storageKey` / `migrateAdvancedSettings`), so
     /// anyone who had the old switch on still sees every option on first launch after the update.
-    @AppStorage("advancedSettings") var advancedSettings: Bool = false
+    @Setting("advancedSettings") var advancedSettings: Bool = false
 
     /// Simple Mode: the same idea as the per-screen Advanced switch, turned on the APP'S OWN CHROME
     /// rather than its settings screens (Abu, 2026-10-07: "i want complicated and cluttered and
@@ -2866,57 +3046,65 @@ final class Settings: ObservableObject {
     ///
     /// 2026-10-10 (Abu: "right now its worthless"): the only-door rule became a MOVE, not a veto.
     /// Anything hidden from a tab stays one tap away, in that tab's ⋯ More menu or in Settings, and a
-    /// short list of details is dropped outright. The rules and the catalog of every trim are in
-    /// docs/Simple Mode Guide.md and atop iPhone/Helpers/UI/SimpleMode.swift. New installs choose it
-    /// on the splash's second step (Full preselected); existing installs are never asked.
-    @AppStorage("simpleMode") var simpleMode: Bool = false
+    /// short list of details is dropped outright. The rules are in Docs/Product/Simple Mode Guide.md;
+    /// the catalog of every trim is `SimpleTrim` in iPhone/Settings/Model/SimpleTrims.swift, which views
+    /// read through `hides(_:)` and `hiddenInSimple(_:)`. New installs choose it on the splash's second
+    /// step (Full preselected); existing installs are never asked.
+    ///
+    /// The one action the switch takes (rule 9, Docs/Product/Simple Mode v2 Design.md): turning it ON
+    /// folds both Advanced switches off (`foldAllAdvancedSettings()`), once, on the
+    /// off-to-on edge. Turning it off restores nothing, and a switch turned back on while Simple Mode
+    /// is on (by hand, or by search's `revealAllAdvancedSettings()`) stays on. The flip comes from a
+    /// Toggle or the splash, never from a view body; a `-seedBool` launch writes the key directly and
+    /// folds nothing.
+    @Setting("simpleMode") var simpleMode: Bool = false {
+        didSet {
+            guard simpleMode, !oldValue else { return }
+            foldAllAdvancedSettings()
+        }
+    }
 
     /// Test Mode (Abu, 2026-10-11): the readers hide the Quran's text until an ayah is tapped, for
     /// reciting from memory. The switch lives in both readers' play menus and on its own settings page
     /// (`QuranTestModeSettingsView`); the session state is `QuranTestMode`. These four are its options.
     ///
-    /// What it hides: `QuranTestHiding` raw value. The default hides the recitation (the Arabic and its
-    /// transliteration) and leaves the translations as the cue.
-    @AppStorage("quranTestModeHides") var quranTestModeHides: String = "arabic"
+    /// What it hides: `QuranTestHiding` raw value. The default hides every line of the ayah (Abu,
+    /// 2026-10-25: "hide everything by default, not just Arabic"); Arabic Only keeps the translations
+    /// as the cue.
+    @Setting("quranTestModeHides") var quranTestModeHides: String = "everything"
     /// What a tap shows: `QuranTestReveal` raw value. By default the tapped ayah and every ayah before
     /// it in its surah (Abu, 2026-10-11: "by default test mode should show that ayah and all ayahs before").
-    @AppStorage("quranTestModeReveals") var quranTestModeReveals: String = "throughSelected"
+    @Setting("quranTestModeReveals") var quranTestModeReveals: String = "throughSelected"
     /// The ayah being recited shows itself, by the same rule a tap follows (Abu: "reveal as its recited").
-    @AppStorage("quranTestModeRevealsRecited") var quranTestModeRevealsRecited: Bool = true
+    @Setting("quranTestModeRevealsRecited") var quranTestModeRevealsRecited: Bool = true
     /// Test Mode turns itself off once the last reader closes (Abu: "probably off when I leave the
     /// reader"); off, it stays on, across launches too, until it is switched off.
-    @AppStorage("quranTestModeEndsOnLeave") var quranTestModeEndsOnLeave: Bool = true
+    @Setting("quranTestModeEndsOnLeave") var quranTestModeEndsOnLeave: Bool = true
     /// Whether Test Mode was on, read back at launch only while `quranTestModeEndsOnLeave` is off.
-    @AppStorage("quranTestModeOn") var quranTestModeStoredOn: Bool = false
+    @Setting("quranTestModeOn") var quranTestModeStoredOn: Bool = false
 
     /// A settings screen that keeps a second half behind its own Advanced switch. Every screen that
-    /// hides nothing is simply absent from this list and carries no ADVANCED section.
+    /// hides nothing is simply absent from this list and carries no ADVANCED section. Two since
+    /// 2026-10-25; the seven screens retired that day are `retiredStorageKeys`.
     enum AdvancedScreen: String, CaseIterable, Identifiable {
-        /// Al-Adhan Settings, the prayer-times root (custom prayer names).
-        case prayerSettings
         /// Prayer Calculation (custom angles, the high latitude rule, the notes).
         case prayerCalculation
-        /// Notification Settings, the notifications root (alert tone, silent-mode adhan, date reminder).
-        case notifications
-        /// Prayer Notifications (each prayer's own switch and prenotification time).
-        case prayerNotifications
         /// Nagging Mode (repeat interval, last calls, per-prayer starts, its own tone and wording).
         case naggingMode
-        /// Al-Quran → Recitation (what happens after a surah ends).
-        case quranRecitation
-        /// Al-Quran → Reading View (surah details, daily rollover, the last cards, dividers, Keep Sheet Open).
-        case quranReadingView
-        /// Al-Quran → Arabic Text (the mark styles, the script style, Clean Arabic, the qiraah details).
-        case quranArabicText
-        /// Islam → Arabic Alphabet (the two practice switches).
-        case islamAlphabet
-        /// Islam → Libraries (the daily features' Fajr rollover).
-        case islamLibraries
 
         var id: String { rawValue }
 
         /// Its own `UserDefaults` key. Namespaced so nothing collides with the legacy single key.
         var storageKey: String { "advancedSettings_\(rawValue)" }
+
+        /// The keys of the seven switches retired on 2026-10-25 (Prayer Settings, Notifications,
+        /// Quran Recitation, Reading View and Arabic Text, Islam Alphabet and Libraries), removed once
+        /// by `migrateRetiredAdvancedSwitches` and classed device-only so a backup never carries them.
+        static let retiredStorageKeys: [String] = [
+            "advancedSettings_prayerSettings", "advancedSettings_notifications", "advancedSettings_quranRecitation",
+            "advancedSettings_quranReadingView", "advancedSettings_quranArabicText", "advancedSettings_islamAlphabet",
+            "advancedSettings_islamLibraries",
+        ]
     }
 
     /// True while `screen` is showing its second half.
@@ -2926,7 +3114,7 @@ final class Settings: ObservableObject {
 
     func setAdvanced(_ screen: AdvancedScreen, _ on: Bool) {
         guard advanced(screen) != on else { return }
-        objectWillChange.send()
+        settingWillChange("advancedSettings")
         UserDefaults.standard.set(on, forKey: screen.storageKey)
     }
 
@@ -2948,6 +3136,15 @@ final class Settings: ObservableObject {
         }
     }
 
+    /// Turns every screen's switch off: Simple Mode's one action, run by `simpleMode`'s `didSet` when it
+    /// turns on (rule 9, Docs/Product/Simple Mode v2 Design.md). It changes only what the settings
+    /// screens show, so rule 1 holds: every hidden option keeps its value and keeps applying.
+    func foldAllAdvancedSettings() {
+        for screen in AdvancedScreen.allCases {
+            setAdvanced(screen, false)
+        }
+    }
+
     /// True while at least one screen is showing its second half - what a breadcrumb reads to decide
     /// whether to warn that a result is behind an Advanced switch.
     var anyAdvancedSettings: Bool {
@@ -2955,7 +3152,7 @@ final class Settings: ObservableObject {
     }
 
     /// One-time carry-over of the legacy single switch: someone who had Advanced Settings on before
-    /// this update keeps seeing every option, on every screen, without hunting for eleven switches.
+    /// this update keeps seeing every option, on both screens, without hunting for the switches.
     static func migrateAdvancedSettings() {
         let defaults = UserDefaults.standard
         let doneKey = "advancedSettingsPerScreenMigrated"
@@ -2967,14 +3164,43 @@ final class Settings: ObservableObject {
         }
     }
 
-    @AppStorage("defaultView") var defaultView: Bool = true
+    /// One-time removal of the seven per-screen switches retired on 2026-10-25 (Abu: "get rid of it
+    /// all except for certain places"): nothing reads them, and a key nothing reads is one the backup
+    /// audit would otherwise keep asking about.
+    static func migrateRetiredAdvancedSwitches() {
+        let defaults = UserDefaults.standard
+        let doneKey = "advancedSwitchesTrimmed"
+        guard !defaults.bool(forKey: doneKey) else { return }
+        defaults.set(true, forKey: doneKey)
+        for key in AdvancedScreen.retiredStorageKeys {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    /// One-time retirement of the Show Last Listened Surah / Ayah and Show Last Read Ayah switches
+    /// (Abu, 2026-10-25: "get rid of all of those settings, too many things"). The cards are always on
+    /// now and nothing on screen can turn them off, so a switch somebody had off, or a card they had
+    /// deleted "forever" from its menu, comes back once; left off, it would have stayed off with no
+    /// way back. The keys stay (`saveLastReadAyah` and the two listen keys): the player, the tab and
+    /// the widgets still read them, and the watch still receives them.
+    static func migrateHistoryCardSwitches() {
+        let defaults = UserDefaults.standard
+        let doneKey = "historyCardSwitchesRemoved"
+        guard !defaults.bool(forKey: doneKey) else { return }
+        defaults.set(true, forKey: doneKey)
+        for key in ["saveLastReadAyah", "saveLastListenedSurah", "saveLastListenedAyah"] {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    @Setting("defaultView") var defaultView: Bool = true
 
     /// Classic Look: the chrome from before iOS 26 (material pills, opaque bars) instead of Liquid
     /// Glass on systems that have it. Every app-drawn glass surface routes through
     /// `ConditionalGlassEffect`, which reads the resolved flag from the appearance snapshot
     /// (`AppearanceEnvironment.liquidGlass`); the system's own tab bar, navigation bars and sheets
     /// keep the system look, which only the build-time `UIDesignRequiresCompatibility` key changes.
-    @AppStorage("classicLook") var classicLook: Bool = false
+    @Setting("classicLook") var classicLook: Bool = false
 
     /// The Appearance toggle's sense: ON means Liquid Glass, OFF means the Classic Look. The STORED key
     /// stays `classicLook` so existing installs, the iCloud manifest and the `-classicLook` launch
@@ -2988,18 +3214,18 @@ final class Settings: ObservableObject {
 
     /// Switch to the Classic Look automatically while Low Power Mode is on. Glass is a per-surface
     /// backdrop pass; on the reduced tier the classic fallback is a flat fill, the cheapest thing there is.
-    @AppStorage("classicLookInLowPower") var classicLookInLowPower: Bool = true
+    @Setting("classicLookInLowPower") var classicLookInLowPower: Bool = true
 
     /// The soft accent-colored radial wash at the top of every list (see `washedListBackground`).
-    @AppStorage("showAccentGlow") var showAccentGlow: Bool = true
+    @Setting("showAccentGlow") var showAccentGlow: Bool = true
 
     /// Colors that wash with Al-Islam's brand yellow-and-green instead of the accent. ON by default -
     /// it IS the app's signature look on the default accent - and auto-disabled the moment the accent
     /// leaves the default (see `accentColor.didSet`); from there only the Appearance toggle brings it
     /// back.
-    @AppStorage("alIslamGlow") var alIslamGlow: Bool = true
+    @Setting("alIslamGlow") var alIslamGlow: Bool = true
 
-    @AppStorage("colorSchemeString") var colorSchemeString: String = "system"
+    @Setting("colorSchemeString") var colorSchemeString: String = "system"
     var colorScheme: ColorScheme? {
         get {
             colorSchemeFromString(colorSchemeString)

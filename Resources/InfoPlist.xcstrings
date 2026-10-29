@@ -1,0 +1,54 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "CFBundleDisplayName" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Al-Quran"
+          }
+        },
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "القرآن"
+          }
+        },
+        "ur" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "القرآن"
+          }
+        }
+      },
+      "comment" : "Bundle display name: the name under the icon",
+      "extractionState" : "extracted_with_value"
+    },
+    "NSPhotoLibraryAddUsageDescription" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Used to save wallpapers you choose to your Photo Library."
+          }
+        },
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "لحفظ الخلفيات التي تختارها في مكتبة الصور."
+          }
+        },
+        "ur" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "آپ کے منتخب کردہ وال پیپرز فوٹو لائبریری میں محفوظ کرنے کے لیے۔"
+          }
+        }
+      },
+      "comment" : "Privacy: Photo Library Additions Usage Description",
+      "extractionState" : "extracted_with_value"
+    }
+  },
+  "version" : "1.0"
+}

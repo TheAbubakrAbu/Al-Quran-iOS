@@ -4,15 +4,12 @@ struct SurahsHeader: View {
     @ObservedObject var quranData = QuranData.shared
 
     @State private var randomSurah: Surah?
-    /// Simple Mode drops the count and the shuffle (docs/Simple Mode Guide.md); Random Surah moves to
-    /// the tab's More menu.
-    @AppStorage("simpleMode") private var simpleMode = false
 
     var headerText: String
     /// The glyph leading the title; REVELATION ORDER passes its own.
     var icon: String
 
-    init(text: String = "SURAHS", icon: String = "book.fill") {
+    init(text: String = String(localized: "SURAHS"), icon: String = "book.fill") {
         headerText = text
         self.icon = icon
     }
@@ -25,11 +22,12 @@ struct SurahsHeader: View {
             Spacer()
 
             goToSurah
-            // The count pill sits left of the shuffle, the section-header family's order.
-            if !simpleMode {
-                CountPill(count: quranData.quran.count)
-                randomSurahLink
-            }
+            // The count pill sits left of the shuffle, the section-header family's order. Simple Mode
+            // drops the count (CountPill hides itself) and the shuffle; Random Surah moves to the
+            // tab's More menu.
+            CountPill(count: quranData.quran.count)
+            randomSurahLink
+                .hiddenInSimple(.surahShuffle)
             #endif
         }
         .onAppear {
@@ -72,10 +70,11 @@ struct SurahsHeader: View {
 struct JuzHeader: View {
     @ObservedObject var quranData = QuranData.shared
     #if os(iOS)
-    @ObservedObject var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     #endif
-    /// Simple Mode drops the count and the shuffle, as `SurahsHeader` does; the info button stays.
-    @AppStorage("simpleMode") private var simpleMode = false
 
     let juz: Juz
 
@@ -84,31 +83,48 @@ struct JuzHeader: View {
     @State private var showInfo = false
     #endif
 
+    /// Every surah the juz runs through, except in the two lists that file a surah under the juz it
+    /// opens in (Simple Juz, Khatm's Juz grouping): there it counts the rows beneath the header, so
+    /// juz 2 and 5 no longer claim a surah over an empty section.
     private var surahCount: Int {
-        quranData.surahs(inJuz: juz.id).count
+        #if os(iOS)
+        if settings.quranSortMode == .simpleJuz || settings.quranSortMode == .khatm {
+            return quranData.quran.filter { ($0.firstJuz ?? $0.ayahs.first?.juz) == juz.id }.count
+        }
+        #endif
+        return quranData.surahs(inJuz: juz.id).count
     }
 
     var body: some View {
         HStack {
-            SectionIconHeader("JUZ \(juz.id)", icon: "square.grid.3x3.fill")
+            SectionIconHeader(String(localized: "JUZ \(juz.id)"), icon: "square.grid.3x3.fill")
                 .lineLimit(1)
 
-            Text("- \(juz.nameTransliteration.uppercased()) - \(Settings.shared.cleanedQuranArabic(juz.nameArabic))")
-                .font(.footnote)
-                .lineLimit(1)
-                .minimumScaleFactor(0.5)
+            // The Arabic interface names the juz once, in Arabic.
+            Group {
+                if AppLanguage.isArabicScript {
+                    Text(verbatim: "- \(juz.displayName)")
+                } else {
+                    Text("- \(juz.nameTransliteration.uppercased()) - \(Settings.shared.cleanedQuranArabic(juz.nameArabic))")
+                }
+            }
+            .font(.footnote)
+            .lineLimit(1)
+            .minimumScaleFactor(0.5)
 
             #if os(iOS)
             Spacer()
 
-            if !simpleMode {
+            // Simple Mode drops the count and the shuffle, as `SurahsHeader` does; the info button stays.
+            if surahCount > 0 {
                 surahCountBadge
             }
             infoButton
             // Khatm's Juz grouping is about tracking a full read-through, so the random "shuffle to a surah"
             // jump doesn't belong there - hide it in khatm mode.
-            if settings.quranSortMode != .khatm, !simpleMode {
+            if settings.quranSortMode != .khatm {
                 randomSurahLink
+                    .hiddenInSimple(.sectionShuffles)
             }
             #endif
         }
@@ -130,7 +146,7 @@ struct JuzHeader: View {
     #if os(iOS)
     private var infoMessage: String {
         let stats = quranData.juzStats(for: juz)
-        return """
+        return String(localized: """
         \(Settings.shared.cleanedQuranArabic(juz.nameArabic))
 
         Ayahs: \(stats.ayahCount)
@@ -140,7 +156,7 @@ struct JuzHeader: View {
 
         Starts: Surah \(juz.startSurah):\(juz.startAyah)
         Ends: Surah \(juz.endSurah):\(juz.endAyah)
-        """
+        """)
     }
 
     private var surahCountBadge: some View {
@@ -152,6 +168,7 @@ struct JuzHeader: View {
             .padding(.vertical, 4)
             .conditionalGlassEffect()
             .accessibilityLabel("\(surahCount) surahs")
+            .hiddenInSimple(.sectionCounts)
     }
 
     private var infoButton: some View {
@@ -166,14 +183,17 @@ struct JuzHeader: View {
         .buttonStyle(.plain)
         .foregroundStyle(settings.accentColor.color)
         // Anchored to the info button itself, so the dialog pops from where the tap happened.
+        // In Arabic the message's first line already names the juz in Arabic: the title is the number.
         .confirmationDialog(
-            "Juz \(juz.id) - \(juz.nameTransliteration)",
+            AppLanguage.isArabicScript ? String(localized: "Juz \(juz.id)") : String(localized: "Juz \(juz.id) - \(juz.nameTransliteration)"),
             isPresented: $showInfo,
             titleVisibility: .visible
         ) {
             Button("Copy Info") {
                 settings.hapticFeedback()
-                UIPasteboard.general.string = "Juz \(juz.id) - \(juz.nameTransliteration)\n\(infoMessage)"
+                UIPasteboard.general.string = AppLanguage.isArabicScript
+                    ? String(localized: "Juz \(juz.id)") + "\n" + infoMessage
+                    : String(localized: "Juz \(juz.id) - \(juz.nameTransliteration)\n\(infoMessage)")
             }
             Button("OK") {}
         } message: {
@@ -211,7 +231,7 @@ struct PageHeader: View {
 
     var body: some View {
         HStack {
-            SectionIconHeader("PAGE \(page)", icon: "doc.text.fill")
+            SectionIconHeader(String(localized: "PAGE \(page)"), icon: "doc.text.fill")
                 .lineLimit(1)
 
             Spacer()
@@ -220,7 +240,11 @@ struct PageHeader: View {
 }
 
 struct SurahSectionHeader: View {
-    @ObservedObject var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     // Player state is only READ on watchOS (the wrist playback button). Observing it on iOS re-rendered
     // this header on every play/pause/ayah-advance publish for a body that never looks at it.
     #if os(watchOS)
@@ -353,7 +377,10 @@ struct SurahSectionHeader: View {
 }
 
 struct HeaderRow: View {
-    @ObservedObject var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     /// Actions only (`playBismillah`): observing the player re-ran this row's three highlighted
     /// snippets on every ayah advance while a surah played from its start (Phase 10.4).
     private var quranPlayer: QuranPlayer { .shared }
@@ -391,6 +418,7 @@ struct HeaderRow: View {
                 )
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity, alignment: .center)
+                .leftToRightContent()
                 .padding(.vertical, 4)
             }
 
@@ -405,6 +433,7 @@ struct HeaderRow: View {
                 )
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity, alignment: .center)
+                .leftToRightContent()
                 .padding(.vertical, 4)
             }
         }

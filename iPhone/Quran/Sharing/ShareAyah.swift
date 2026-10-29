@@ -9,7 +9,11 @@ import SwiftUI
 private let qiraahSmartComparisonKey = "qiraahSmartComparison"
 
 struct ShareAyahSheet: View {
-    @ObservedObject private var settings = Settings.shared
+    private let settings = Settings.shared
+    @ObservedObject private var appearanceSettings = AppearanceSettings.shared
+    @ObservedObject private var quranContent = QuranContent.shared
+    @ObservedObject private var quranDisplay = QuranDisplay.shared
+    @ObservedObject private var systemSettings = SystemSettings.shared
     @ObservedObject private var quranData = QuranData.shared
 
     @Environment(\.presentationMode) private var presentationMode
@@ -89,7 +93,47 @@ struct ShareAyahSheet: View {
         guard let alignment = QiraahComparison.alignment(surahID: surahNumber, tag: tag, quranData: quranData) else {
             return ayahNumber
         }
-        return alignment.riwayahNumberForHafs[anchorHafsAyah] ?? ayahNumber
+        // Unnumbered there (`anchorUnnumberedInShareQiraah`): the Hafs ayah, read as Hafs.
+        return alignment.riwayahNumberForHafs[anchorHafsAyah] ?? anchorHafsAyah
+    }
+
+    /// Smart matching finds the tapped words unnumbered in the share riwayah: its alignment maps their
+    /// Hafs ayah to nothing (the basmalah in the Madani count of al-Fatiha), which `QiraahAyahResolver`
+    /// calls unavailable. The sheet then shares the Hafs words, its fallback for any ayah a riwayah
+    /// does not have, rather than that riwayah's unrelated ayah under the same number (Warsh 1:1's
+    /// al-hamd under the basmalah's translation).
+    private var anchorUnnumberedInShareQiraah: Bool {
+        guard smartAyahMatching else { return false }
+        let tag = Settings.Riwayah.canonicalTag(shareQiraah)
+        guard !tag.isEmpty,
+              let alignment = QiraahComparison.alignment(surahID: surahNumber, tag: tag, quranData: quranData) else { return false }
+        return alignment.riwayahNumberForHafs[anchorHafsAyah] == nil
+    }
+
+    /// The riwayah the shared Arabic (and its riwayah line) is read in: the sheet's, or Hafs for the
+    /// case above.
+    private var arabicQiraah: String {
+        anchorUnnumberedInShareQiraah ? Settings.Riwayah.hafsTag : shareQiraah
+    }
+
+    /// The rest of a split ayah: the share riwayah's ayahs after `ayah` that carry the same ONE Hafs
+    /// ayah (al-Fatiha's last ayah is two in the Madani count), shared after it as
+    /// `QiraahAyahResolver` joins them, so the Arabic covers the whole translation. Empty elsewhere.
+    private var arabicSplitTail: [Ayah] {
+        guard smartAyahMatching, let surah, let first = ayah else { return [] }
+        let tag = Settings.Riwayah.canonicalTag(arabicQiraah)
+        guard !tag.isEmpty,
+              let alignment = QiraahComparison.alignment(surahID: surahNumber, tag: tag, quranData: quranData) else { return [] }
+        let anchor = anchorHafsAyah
+        var tail: [Ayah] = []
+        var last = first.id
+        while alignment.hafsRangeForRiwayah[last + 1] == anchor...anchor,
+              let piece = surah.ayahs.first(where: { $0.id == last + 1 }),
+              piece.existsInQiraah(tag, surahID: surahNumber) {
+            tail.append(piece)
+            last += 1
+        }
+        return tail
     }
 
     private var ayah: Ayah? { surah?.ayahs.first(where: { $0.id == resolvedAyahNumber }) }
@@ -160,11 +204,15 @@ struct ShareAyahSheet: View {
         ayah: Ayah,
         cleanArabic: Bool,
         hideArabicDots: Bool,
-        qiraahOverride: String? = nil
+        qiraahOverride: String? = nil,
+        tail: [Ayah] = []
     ) -> String {
         // The full dotted text (`removeDots: false`), then this card's own switches: the reader's
-        // global Hide Dots must not decide for the share sheet's.
-        var base = ayah.displayArabicText(surahId: surah.id, clean: false, removeDots: false, qiraahOverride: qiraahOverride)
+        // global Hide Dots must not decide for the share sheet's. `tail` is the rest of a split ayah
+        // (`arabicSplitTail`), joined after it.
+        var base = ([ayah] + tail)
+            .map { $0.displayArabicText(surahId: surah.id, clean: false, removeDots: false, qiraahOverride: qiraahOverride) }
+            .joined(separator: " ")
         if cleanArabic {
             if surah.id == 1 && ayah.id == 1 && Ayah.opensWithTaawwudh(base) {
                 base = Ayah.bismillahCleanArabic
@@ -204,8 +252,8 @@ struct ShareAyahSheet: View {
     // and text preview, so the two share surfaces render the names identically.
     /// `color`: the share card passes its backdrop's own Allah ink (`ShareBackdrop.Palette.allah`).
     static func applyAllahHighlight(to attributed: NSMutableAttributedString, source: String, enabled: Bool,
-                                    color: UIColor = .red) {
-        ShareAllahInk.apply(to: attributed, source: source, enabled: enabled, color: color)
+                                    color: UIColor = .red, plainColor: UIColor? = nil) {
+        ShareAllahInk.apply(to: attributed, source: source, enabled: enabled, color: color, plainColor: plainColor)
     }
 
     private static func allahHighlightedAttributedString(
@@ -282,7 +330,9 @@ struct ShareAyahSheet: View {
                 attributed.addAttribute(NSAttributedString.Key.foregroundColor, value: textColor, range: range)
             }
         }
-        Self.applyAllahHighlight(to: attributed, source: displayText, enabled: settings.highlightAllahNames, color: allahColor)
+        // Every plain run is `textColor` by now, so any other color on the name is a tajweed rule's.
+        Self.applyAllahHighlight(to: attributed, source: displayText, enabled: settings.highlightAllahNames,
+                                 color: allahColor, plainColor: textColor)
         return attributed
     }
 
@@ -316,7 +366,8 @@ struct ShareAyahSheet: View {
                 ayah: ayah,
                 cleanArabic: effectiveCleanArabic,
                 hideArabicDots: effectiveHideArabicDots,
-                qiraahOverride: shareQiraah
+                qiraahOverride: arabicQiraah,
+                tail: arabicSplitTail
             )
             appendBlock(
                 label: header,
@@ -372,18 +423,18 @@ struct ShareAyahSheet: View {
 
         // Note
         if includeNote, let note = noteText {
-            appendBlock(label: "Note", text: note)
+            appendBlock(label: String(localized: "Note"), text: note)
         }
 
         // Qiraah type (optional) - one line: Riwayah: English - Arabic
         if settings.showQiraahDetails && shareSettings.includeQiraah {
-            let labels = Self.qiraahLabels(displayQiraah: shareQiraah)
-            appendBlock(label: nil, text: "Riwayah: \(labels.english) – \(labels.arabic)")
+            let labels = Self.qiraahLabels(displayQiraah: arabicQiraah)
+            appendBlock(label: nil, text: String(localized: "Riwayah: \(labels.english) – \(labels.arabic)"))
         }
 
         if settings.showSurahInformation {
             if settings.showQiraahDetails && shareSettings.includeQiraah, !s.isEmpty { s += "\n" } else { sepIfNeeded() }
-            s += "\(surah.ayahCountLabel()) – \(surah.pageCountLabel) – \(surah.type.capitalized) \(surah.type == "makkan" ? "🕋" : "🕌")"
+            s += "\(surah.ayahCountLabel()) – \(surah.pageCountLabel) – \(surah.type.capitalized.localizedDisplay) \(surah.type == "makkan" ? "🕋" : "🕌")"
         }
 
         return s
@@ -411,23 +462,158 @@ struct ShareAyahSheet: View {
         return (option.label, option.arabic)
     }
 
-    /// The caption under the riwayah picker: names the resolved number when smart matching moved it,
-    /// explains the numbering drift otherwise.
-    private var riwayahFooterText: String {
-        if !ayahExistsInShareQiraah {
-            return "This ayah is not separate in this riwayah; its words are part of a neighboring ayah, so the Hafs text is shown."
-        }
-        if smartAyahMatching {
-            if resolvedAyahNumber != ayahNumber {
-                return "Smart Ayah Matching: these words sit at ayah \(resolvedAyahNumber) in this riwayah (ayah numbering differs between riwayat), so that ayah is shared."
+    /// The card's appearance and its information lines, as the toolbar options menu (Design Grammar
+    /// 6, the Qiraah Comparison sheet's layout; Abu, 2026-10-27): the face, tajweed and the two
+    /// cleanup switches for the Arabic, the ayah and surah information, and which riwayah the Arabic
+    /// is taken from. What to INCLUDE (Arabic, transliteration, the translations, the note) stays in
+    /// the list under the preview, since those are flipped while watching it. Before, twelve rows
+    /// scrolled in a 200 pt box between the preview and the buttons.
+    private var optionsMenu: some View {
+        Menu {
+            if shareSettings.arabic {
+                if actionMode == .image {
+                    // The face is a property of the drawn card, not of the text.
+                    Picker("Arabic Font", selection: shareArabicFontBinding) {
+                        Text("Uthmani").tag(Settings.hafsUthmaniFontName)
+                        Text("Indopak").tag(Settings.indopakFontName)
+                        Text("Hijazi").tag(Settings.hijaziFontName)
+                        Text("Kufi").tag(Settings.kufiFontName)
+                        Text("Basic").tag(Settings.systemArabicFontName)
+                    }
+                    .pickerStyle(.menu)
+                }
+                // `.automatic`, not the app's padded switch: inside a menu that style draws
+                // double-height rows with stray checkmarks (see the memory note on menu toggles).
+                if actionMode == .image && isHafsShare {
+                    Toggle(isOn: Binding(
+                        get: { shareSettings.showTajweed },
+                        set: { shareSettings = updatedShareSettings(showTajweed: $0) }
+                    )) {
+                        Label("Show Tajweed", systemImage: "paintpalette")
+                    }
+                    .toggleStyle(.automatic)
+                }
+                Toggle(isOn: $shareSettings.cleanArabic) {
+                    Label("Hide Tashkeel and Signs", systemImage: "textformat")
+                }
+                .toggleStyle(.automatic)
+                if canShowHideArabicDotsToggle {
+                    Toggle(isOn: Binding(
+                        get: { shareSettings.hideArabicDots },
+                        set: { shareSettings = updatedShareSettings(hideArabicDots: $0) }
+                    )) {
+                        Label("Hide Arabic Dots", systemImage: "circle.dotted")
+                    }
+                    .toggleStyle(.automatic)
+                }
+                Divider()
             }
-            return "Ayah numbering can differ between riwayat: no ayah is ever missing, but some are joined or split differently. Smart Ayah Matching follows the words, so the matching ayah is shared even where numbering differs."
+            Toggle(isOn: $quranDisplay.showAyahInformation) {
+                Label("Show Ayah Information", systemImage: "number")
+            }
+            .toggleStyle(.automatic)
+            Toggle(isOn: $quranDisplay.showSurahInformation) {
+                Label("Show Surah Information", systemImage: "text.book.closed")
+            }
+            .toggleStyle(.automatic)
+            if settings.showQiraahDetails {
+                Divider()
+                Toggle(isOn: includeQiraahBinding) {
+                    Label("Show Riwayah/Qiraah", systemImage: "character.book.closed.fill.ar")
+                }
+                .toggleStyle(.automatic)
+                // Which riwayah the shared Arabic is taken from.
+                Picker("Riwayah", selection: $shareQiraah) {
+                    ForEach(Settings.Riwayah.textOptions, id: \.tag) { option in
+                        Text(AppLanguage.isArabicScript ? option.displayLabel(omitsDefaultSuffix: true) : option.label)
+                            .tag(option.tag)
+                    }
+                }
+                .pickerStyle(.menu)
+                // The same words across riwayat (anchored through Hafs, like the comparison sheet)
+                // vs. whatever verse sits at the raw tapped number. Only shown once the picker has
+                // moved off the riwayah the ayah was tapped under: on the same riwayah the resolution
+                // is the identity.
+                if shareQiraahDiffersFromOrigin {
+                    Toggle(isOn: $smartAyahMatching) {
+                        Label("Smart Ayah Matching", systemImage: "wand.and.stars")
+                        Text("Follow the same words where the numbering differs")
+                    }
+                    .toggleStyle(.automatic)
+                }
+            }
+        } label: {
+            Image(systemName: "slider.horizontal.3")
         }
-        return "Ayah numbering can differ between riwayat: no ayah is ever missing, but some are joined or split differently (for example, \"Alif Lam Meem\" and \"Dhalika al-Kitab...\" form a single ayah in most qiraat). With Smart Ayah Matching off, the exact tapped number is shared as-is."
+        .fixedMenuOrder()
+        .tint(settings.accentColor.color)
+        .accessibilityLabel("Share options")
+    }
+
+    /// The face of the shared card; every Hijazi mark style reads as "Hijazi", and picking "Hijazi"
+    /// means the mark style the reader is on (or the default one).
+    private var shareArabicFontBinding: Binding<String> {
+        Binding(
+            get: {
+                Settings.pickerFaceName(for: Settings.normalizedArabicFontName(
+                    shareSettings.shareArabicFont.isEmpty ? settings.fontArabic : shareSettings.shareArabicFont
+                ))
+            },
+            set: { val in
+                let chosen = val == Settings.hijaziFontName ? Settings.currentHijaziFontName : val
+                let normalizedFont = Settings.normalizedArabicFontName(chosen)
+                storedShareArabicFont = normalizedFont
+                shareSettings = ShareSettings(
+                    arabic: shareSettings.arabic,
+                    transliteration: shareSettings.transliteration,
+                    englishSaheeh: shareSettings.englishSaheeh,
+                    englishMustafa: shareSettings.englishMustafa,
+                    includeQiraah: shareSettings.includeQiraah,
+                    shareArabicFont: normalizedFont,
+                    cleanArabic: shareSettings.cleanArabic,
+                    hideArabicDots: shareSettings.hideArabicDots,
+                    showTajweed: shareSettings.showTajweed
+                )
+            }
+        )
+    }
+
+    /// Show Riwayah/Qiraah. On Hafs the flip IS the saved preference. On any other riwayah the flip
+    /// is session-only: the next riwayah change re-resolves it, and the Hafs preference stays untouched.
+    private var includeQiraahBinding: Binding<Bool> {
+        Binding(
+            get: { shareSettings.includeQiraah },
+            set: { newValue in
+                if !Settings.isNonHafsQiraah(shareQiraah) {
+                    shareIncludeRiwayah = newValue
+                }
+                shareSettings = updatedShareSettings(includeQiraah: newValue)
+            }
+        )
+    }
+
+    /// The caption under the preview while the shared Arabic is Hafs's text standing in for the share
+    /// riwayah's. The riwayah picker's footer said so until the options moved into the toolbar menu
+    /// (2026-10-27); after that a card could read "Riwayah: Warsh" over Hafs words with nothing on
+    /// screen saying why. Two ways in: smart matching finds the tapped words unnumbered in that
+    /// riwayah (`anchorUnnumberedInShareQiraah`, the basmalah in the Madani count of al-Fatiha: the
+    /// card's riwayah line then names Hafs, so the caption names the riwayah that was picked), or the
+    /// ayah served has no text of its own there, merged into a neighbor, and `textArabic` falls back
+    /// to Hafs (Smart Ayah Matching off on a number that riwayah lacks). Nil while no Arabic is shared.
+    private var hafsFallbackNotice: String? {
+        guard shareSettings.arabic, Settings.isNonHafsQiraah(shareQiraah) else { return nil }
+        if anchorUnnumberedInShareQiraah {
+            let riwayah = Settings.Riwayah.option(for: shareQiraah).displayLabel(omitsDefaultSuffix: true)
+            return String(localized: "\(riwayah) does not count these words as an ayah, so the Hafs text is shown.")
+        }
+        if !ayahExistsInShareQiraah {
+            return String(localized: "This ayah is not separate in this riwayah; its words are part of a neighboring ayah, so the Hafs text is shown.")
+        }
+        return nil
     }
 
     var body: some View {
-        NavigationView {
+        SheetNavigationContainer {
             VStack {
                 Spacer()
 
@@ -457,6 +643,10 @@ struct ShareAyahSheet: View {
                         Text(shareAttributedText)
                             .font(.body)
                             .textSelection(.enabled)
+                            // With a transliteration or a translation in it the preview reads left to
+                            // right in the Arabic interface too, as the shared text does; Arabic alone
+                            // follows the interface.
+                            .leftToRightContent(shareSettings.transliteration || shareSettings.englishSaheeh || shareSettings.englishMustafa)
                             .padding()
                             .background(Color.black)
                             .cornerRadius(24)
@@ -470,6 +660,18 @@ struct ShareAyahSheet: View {
                 .scaleEffect(isSharing ? 0.98 : 1)
                 .animation(.easeInOut, value: actionMode)
                 .animation(.easeInOut, value: isSharing)
+
+                // Hafs's words standing in for the share riwayah's (`hafsFallbackNotice`), under the
+                // preview in both modes: the copied text carries the same Arabic as the card.
+                if let notice = hafsFallbackNotice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 24)
+                        .transition(.opacity)
+                }
 
                 Spacer()
 
@@ -507,150 +709,13 @@ struct ShareAyahSheet: View {
                         if noteText != nil {
                             Toggle("Include Note", isOn: $includeNote.animation(.easeInOut))
                                 .tint(settings.accentColor.color)
-                                .scaleEffect(0.8)
-                                .padding(.horizontal, -24)
-                                .padding(.vertical, 2)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 4)
                         }
 
-                        if shareSettings.arabic {
-                            if actionMode == .image {
-                                Picker("Arabic Font", selection: Binding(
-                                    get: {
-                                        // Every Hijazi mark style reads as "Hijazi" in a segmented picker.
-                                        Settings.pickerFaceName(for: Settings.normalizedArabicFontName(
-                                            shareSettings.shareArabicFont.isEmpty ? settings.fontArabic : shareSettings.shareArabicFont
-                                        ))
-                                    },
-                                    set: { val in
-                                        // "Hijazi" means the mark style the reader is on (or the default one).
-                                        let chosen = val == Settings.hijaziFontName ? Settings.currentHijaziFontName : val
-                                        let normalizedFont = Settings.normalizedArabicFontName(chosen)
-                                        storedShareArabicFont = normalizedFont
-                                        shareSettings = ShareSettings(
-                                            arabic: shareSettings.arabic,
-                                            transliteration: shareSettings.transliteration,
-                                            englishSaheeh: shareSettings.englishSaheeh,
-                                            englishMustafa: shareSettings.englishMustafa,
-                                            includeQiraah: shareSettings.includeQiraah,
-                                            shareArabicFont: normalizedFont,
-                                            cleanArabic: shareSettings.cleanArabic,
-                                            hideArabicDots: shareSettings.hideArabicDots,
-                                            showTajweed: shareSettings.showTajweed
-                                        )
-                                    }
-                                ).animation(.easeInOut)) {
-                                    Text("Uthmani").tag(Settings.hafsUthmaniFontName)
-                                    Text("Indopak").tag(Settings.indopakFontName)
-                                    Text("Hijazi").tag(Settings.hijaziFontName)
-                                    Text("Kufi").tag(Settings.kufiFontName)
-                                    Text("Basic").tag(Settings.systemArabicFontName)
-                                }
-                                .pickerStyle(SegmentedPickerStyle())
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 2)
-                            }
-
-                            if actionMode == .image && isHafsShare {
-                                Toggle("Show Tajweed", isOn: Binding(
-                                    get: { shareSettings.showTajweed },
-                                    set: { shareSettings = updatedShareSettings(showTajweed: $0) }
-                                ).animation(.easeInOut))
-                                .tint(settings.accentColor.color)
-                                .scaleEffect(0.8)
-                                .padding(.horizontal, -24)
-                                .padding(.vertical, 2)
-                            }
-
-                            Toggle("Hide Tashkeel and Diacretics", isOn: $shareSettings.cleanArabic.animation(.easeInOut))
-                                .tint(settings.accentColor.color)
-                                .scaleEffect(0.8)
-                                .padding(.horizontal, -24)
-                                .padding(.vertical, 2)
-
-                            if canShowHideArabicDotsToggle {
-                                Toggle("Hide Arabic Dots", isOn: Binding(
-                                    get: { shareSettings.hideArabicDots },
-                                    set: { shareSettings = updatedShareSettings(hideArabicDots: $0) }
-                                ).animation(.easeInOut))
-                                .tint(settings.accentColor.color)
-                                .scaleEffect(0.8)
-                                .padding(.horizontal, -24)
-                                .padding(.vertical, 2)
-                            }
-                        }
-
-                        Toggle("Show Ayah Information", isOn: $settings.showAyahInformation.animation(.easeInOut))
-                            .tint(settings.accentColor.color)
-                            .scaleEffect(0.8)
-                            .padding(.horizontal, -24)
-                            .padding(.vertical, 2)
-
-                        Toggle("Show Surah Information", isOn: $settings.showSurahInformation.animation(.easeInOut))
-                            .tint(settings.accentColor.color)
-                            .scaleEffect(0.8)
-                            .padding(.horizontal, -24)
-                            .padding(.vertical, 2)
-
-                        if settings.showQiraahDetails {
-                            Toggle(isOn: Binding(
-                                get: { shareSettings.includeQiraah },
-                                set: { newValue in
-                                    // On Hafs the flip IS the saved preference. On any other riwayah the
-                                    // flip is session-only - the next riwayah change re-resolves it, and
-                                    // the Hafs preference stays untouched.
-                                    if !Settings.isNonHafsQiraah(shareQiraah) {
-                                        shareIncludeRiwayah = newValue
-                                    }
-                                    shareSettings = updatedShareSettings(includeQiraah: newValue)
-                                }
-                            )
-                                .animation(.easeInOut)) {
-                                Label("Show Riwayah/Qiraah", systemImage: "character.book.closed.fill.ar")
-                            }
-                            .tint(settings.accentColor.color)
-                            .scaleEffect(0.8)
-                            .padding(.horizontal, -24)
-                            .padding(.vertical, 2)
-
-                            // Last in the list, by request: which riwayah the shared Arabic is taken from.
-                            //
-                            // `useMenuRow`, NOT the bare glass chip. The chip form wraps its label in
-                            // `conditionalGlassEffect()`, which on iOS 26 is INTERACTIVE Liquid Glass - the
-                            // glass takes the touch to play its own press response, so the chip lit up like
-                            // a button and the menu never opened ("I touch it and it acts like a button not
-                            // a picker"). The row form's label is plain, with the whole row as one
-                            // `contentShape` tap target - the same form the Settings screen and
-                            // `SelectAyahTextSheet` use, where the picker has always opened correctly.
-                            ArabicTextRiwayahPicker(
-                                selection: $shareQiraah.animation(.easeInOut),
-                                useMenuRow: true
-                            )
-                            .padding(.horizontal, 20)
-                            .padding(.top, 6)
-                            .padding(.bottom, 4)
-
-                            // The same words across riwayat (anchored through Hafs, like the comparison
-                            // sheet) vs. whatever verse sits at the raw tapped number. Only shown once the
-                            // picker has moved off the riwayah the ayah was tapped under - on the same
-                            // riwayah the resolution is the identity.
-                            if shareQiraahDiffersFromOrigin {
-                                Toggle(isOn: $smartAyahMatching.animation(.easeInOut)) {
-                                    Label("Smart Ayah Matching", systemImage: "wand.and.stars")
-                                }
-                                .tint(settings.accentColor.color)
-                                .scaleEffect(0.8)
-                                .padding(.horizontal, -24)
-                                .padding(.vertical, 2)
-
-                                Text(riwayahFooterText)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 20)
-                                    .padding(.bottom, 4)
-                            }
-                        }
+                        // Everything that shapes the card rather than choosing what goes on it (the
+                        // face, tajweed, the cleanup switches, the information lines, the riwayah) is
+                        // in the toolbar menu: `optionsMenu`.
                     }
                 }
                 .frame(maxHeight: 200)
@@ -664,11 +729,11 @@ struct ShareAyahSheet: View {
                 .padding(.vertical, 4)
 
                 HStack(spacing: 12) {
-                    actionButton("Copy") {
+                    actionButton(String(localized: "Copy")) {
                         performCopyOrGenerate()
                     }
 
-                    actionButton("Share", isAnimating: isSharing)  {
+                    actionButton(String(localized: "Share"), isAnimating: isSharing)  {
                         performShareOrGenerate()
                     }
                 }
@@ -687,13 +752,15 @@ struct ShareAyahSheet: View {
             }
             .navigationTitle(ayahSheetTitle(surahNumber: surahNumber, ayahNumber: ayahNumber))
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) { optionsMenu }
+            }
             // This sheet had no dismiss control at all - you could only swipe it away or complete a share.
             .sheetDismissToolbar()
             // Full-size before the wash so the background always covers the whole sheet.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accentWashedBackground()
         }
-        .navigationViewStyle(.stack)
         .accentColor(settings.accentColor.color)
         .onAppear {
             guard !didInit else { return }
@@ -901,7 +968,9 @@ struct ShareAyahSheet: View {
             UIPasteboard.general.string = shareText
             presentationMode.wrappedValue.dismiss()
         case .image:
-            if let img = generatedImage {
+            // Not while a render is in flight: the image on screen then predates the last toggle, and
+            // the fresh render below supersedes the one running.
+            if !isGeneratingImage, let img = generatedImage {
                 UIPasteboard.general.image = img
                 presentationMode.wrappedValue.dismiss()
             } else {
@@ -918,7 +987,8 @@ struct ShareAyahSheet: View {
         case .text:
             presentShareSheet(with: [shareText])
         case .image:
-            if let img = generatedImage {
+            // Same rule as Copy: never the dimmed image of a render still running.
+            if !isGeneratingImage, let img = generatedImage {
                 presentShareSheet(with: [img])
             } else {
                 generatePreviewImage { img in
@@ -932,7 +1002,8 @@ struct ShareAyahSheet: View {
         // Snapshot EVERY main-actor input on main, before hopping to the render queue: the queue must never
         // read view state (shareSettings, shareQiraah, the note) that a later toggle could be rewriting.
         let snapshot = shareSettings
-        let qiraahSnapshot = shareQiraah
+        // The riwayah the Arabic is READ in (Hafs where the share riwayah does not number the words).
+        let qiraahSnapshot = arabicQiraah
         let includeNoteSnapshot = includeNote
         let noteSnapshot = noteText
         let backdropSnapshot = ShareBackdrop(rawValue: storedBackdrop) ?? .classic
@@ -942,6 +1013,7 @@ struct ShareAyahSheet: View {
         let surahSnapshot = surah
         let ayahSnapshot = ayah
         let hafsAyahSnapshot = translationAyah
+        let tailSnapshot = arabicSplitTail
         let generationID = imageGenerationID + 1
         imageGenerationID = generationID
         // The previous image deliberately STAYS visible (dimmed via isGeneratingImage) while this render
@@ -966,6 +1038,7 @@ struct ShareAyahSheet: View {
                     surah: surahSnapshot,
                     ayah: ayahSnapshot,
                     hafsAyah: hafsAyahSnapshot,
+                    arabicTail: tailSnapshot,
                     shareSettings: snapshot,
                     qiraah: qiraahSnapshot,
                     includeNote: includeNoteSnapshot,
@@ -992,19 +1065,19 @@ struct ShareAyahSheet: View {
 
     /// Runs on the render queue - `surah`/`ayah`/`hafsAyah` are passed in as main-thread snapshots,
     /// never resolved here (resolution touches the main-actor alignment cache).
-    private func drawImage(surah: Surah?, ayah: Ayah?, hafsAyah hafsAyahSnapshot: Ayah?, shareSettings: ShareSettings, qiraah shareQiraah: String, includeNote: Bool, noteText: String?, screenWidth: CGFloat, backdrop: ShareBackdrop) -> UIImage {
+    private func drawImage(surah: Surah?, ayah: Ayah?, hafsAyah hafsAyahSnapshot: Ayah?, arabicTail: [Ayah], shareSettings: ShareSettings, qiraah shareQiraah: String, includeNote: Bool, noteText: String?, screenWidth: CGFloat, backdrop: ShareBackdrop) -> UIImage {
         guard let surah, let ayah else { return UIImage() }
-        return Self.composeCard(surah: surah, ayah: ayah, hafsAyah: hafsAyahSnapshot ?? ayah, shareSettings: shareSettings,
+        return Self.composeCard(surah: surah, ayah: ayah, hafsAyah: hafsAyahSnapshot ?? ayah, arabicTail: arabicTail, shareSettings: shareSettings,
                                 settings: settings, qiraah: shareQiraah, includeNote: includeNote, noteText: noteText,
                                 screenWidth: screenWidth, backdrop: backdrop)
     }
 
     /// The editorial backdrop's watermark: the shared Arabic, marks stripped, in the chosen face,
     /// sized down for long ayahs. Nil for every other design.
-    static func backdropWatermark(backdrop: ShareBackdrop, surah: Surah, ayah: Ayah, shareSettings: ShareSettings,
+    static func backdropWatermark(backdrop: ShareBackdrop, surah: Surah, ayah: Ayah, tail: [Ayah] = [], shareSettings: ShareSettings,
                                   qiraah: String?, fontName: String, width: CGFloat, color: UIColor) -> NSAttributedString? {
         guard backdrop == .editorial, shareSettings.arabic else { return nil }
-        let plain = shareArabicText(surah: surah, ayah: ayah, cleanArabic: true, hideArabicDots: false, qiraahOverride: qiraah)
+        let plain = shareArabicText(surah: surah, ayah: ayah, cleanArabic: true, hideArabicDots: false, qiraahOverride: qiraah, tail: tail)
         let words = max(1, plain.split(whereSeparator: { $0.isWhitespace }).count)
         let scale = min(1, max(0.46, 30 / CGFloat(words)))
         let size = max(26, (width * 0.18 * scale).rounded())
@@ -1029,7 +1102,7 @@ extension ShareAyahSheet {
     /// and the share sheet's own copy of this label is the only other place that says which it is.
     static var copyModeLabel: String {
         let raw = UserDefaults.standard.string(forKey: copyActionModeKey) ?? ActionMode.image.rawValue
-        return (ActionMode(rawValue: raw) ?? .image) == .image ? "as image" : "as text"
+        return (ActionMode(rawValue: raw) ?? .image) == .image ? String(localized: "as image") : String(localized: "as text")
     }
 
     /// - Parameter mode: what to put on the pasteboard. Nil follows the share sheet's remembered
@@ -1067,28 +1140,31 @@ extension ShareAyahSheet {
             return ActionMode(rawValue: raw) ?? .image
         }()
 
+        // The Hafs ayah whose transliteration and translations the copy prints, for the text and the
+        // card alike. With Smart Ayah Matching on (the share sheet's switch, on by default) it is the
+        // anchor of the tapped WORDS, so under a merged or shifted riwayah numbering the English
+        // matches the Arabic rather than Hafs's verse of the same number (the sheet's
+        // `translationAyah`; both paths passed the ayah itself and printed Hafs 2:9's translation
+        // under Warsh 2:9's words, the text path until 2026-10-28). A static path, so the sheet's
+        // `@AppStorage` is out of reach: the same key, read raw.
+        let smartMatching = UserDefaults.standard.object(forKey: qiraahSmartComparisonKey) as? Bool ?? true
+        let hafsAyah: Ayah = {
+            guard smartMatching else { return ayah }
+            let anchor = QiraahComparison.hafsAnchor(surahID: surah.id, ayahNumber: ayah.id,
+                                                     tag: Settings.normalizeLegacyRiwayahTag(settings.displayQiraah),
+                                                     quranData: QuranData.shared)
+            return surah.ayahs.first(where: { $0.id == anchor }) ?? ayah
+        }()
+
         switch actionMode {
         case .text:
-            let text = buildShareText(surah: surah, ayah: ayah, shareSettings: shareSettings, settings: settings, includeNote: includeNote, noteText: noteText)
+            let text = buildShareText(surah: surah, ayah: ayah, hafsAyah: hafsAyah, shareSettings: shareSettings, settings: settings, includeNote: includeNote, noteText: noteText)
             UIPasteboard.general.string = text
+            CopyConfirmation.shared.show()
         case .image:
             // UIScreen.main is main-thread-only; capture the width here (still on main) for the queue below.
             // Same phone-like clamp as the share-sheet render - see `ShareAyahRender.maxImageWidth`.
             let screenWidth = min(UIScreen.main.bounds.width, ShareAyahRender.maxImageWidth)
-            // The Hafs ayah whose transliteration and translations the card prints. With Smart Ayah
-            // Matching on (the share sheet's switch, on by default) it is the anchor of the tapped WORDS,
-            // so under a merged or shifted riwayah numbering the English matches the Arabic on the card
-            // rather than Hafs's verse of the same number (the sheet's `translationAyah`; this path
-            // passed the ayah itself and printed Hafs 2:9's translation under Warsh 2:9's words).
-            // A static path, so the sheet's `@AppStorage` is out of reach: the same key, read raw.
-            let smartMatching = UserDefaults.standard.object(forKey: qiraahSmartComparisonKey) as? Bool ?? true
-            let hafsAyah: Ayah = {
-                guard smartMatching else { return ayah }
-                let anchor = QiraahComparison.hafsAnchor(surahID: surah.id, ayahNumber: ayah.id,
-                                                         tag: Settings.normalizeLegacyRiwayahTag(settings.displayQiraah),
-                                                         quranData: QuranData.shared)
-                return surah.ayahs.first(where: { $0.id == anchor }) ?? ayah
-            }()
             DispatchQueue.global(qos: .userInitiated).async {
                 // The remembered backdrop (the share sheet's chips), so Copy Image matches the last share.
                 let img = composeCard(surah: surah, ayah: ayah, hafsAyah: hafsAyah, shareSettings: shareSettings, settings: settings,
@@ -1097,6 +1173,7 @@ extension ShareAyahSheet {
                                       backdrop: .stored)
                 DispatchQueue.main.async {
                     UIPasteboard.general.image = img
+                    CopyConfirmation.shared.show()
                 }
             }
         }
@@ -1116,7 +1193,8 @@ extension ShareAyahSheet {
         shareSettings.hideArabicDots
     }
 
-    private static func buildShareText(surah: Surah, ayah: Ayah, shareSettings: ShareSettings, settings: Settings, includeNote: Bool, noteText: String?) -> String {
+    /// `hafsAyah` carries the transliteration and translations, as on the card (`composeCard`).
+    private static func buildShareText(surah: Surah, ayah: Ayah, hafsAyah: Ayah, shareSettings: ShareSettings, settings: Settings, includeNote: Bool, noteText: String?) -> String {
         var s = ""
         func sepIfNeeded() { if !s.isEmpty { s += "\n\n" } }
         func appendBlock(label: String?, text: String?) {
@@ -1138,32 +1216,32 @@ extension ShareAyahSheet {
         }
         if shareSettings.transliteration {
             let trLabelName = (!shareSettings.englishSaheeh && !shareSettings.englishMustafa) ? combinedName(translit: surah.nameTransliteration, english: surah.nameEnglish) : surah.nameTransliteration
-            let header: String? = settings.showAyahInformation ? "[\(trLabelName) \(surah.id):\(ayah.id)]" : nil
-            appendBlock(label: header, text: settings.showAyahInformation ? ayah.textTransliteration : "\(ayah.textTransliteration) (\(ayah.id))")
+            let header: String? = settings.showAyahInformation ? "[\(trLabelName) \(surah.id):\(hafsAyah.id)]" : nil
+            appendBlock(label: header, text: settings.showAyahInformation ? hafsAyah.textTransliteration : "\(hafsAyah.textTransliteration) (\(hafsAyah.id))")
         }
         let wantsAnyEnglish = shareSettings.englishSaheeh || shareSettings.englishMustafa
         if wantsAnyEnglish {
             let headerName = (!shareSettings.transliteration) ? combinedName(translit: surah.nameTransliteration, english: surah.nameEnglish) : surah.nameEnglish
             sepIfNeeded()
-            if settings.showAyahInformation { s += "[\(headerName) \(surah.id):\(ayah.id)]\n" }
+            if settings.showAyahInformation { s += "[\(headerName) \(surah.id):\(hafsAyah.id)]\n" }
             if shareSettings.englishSaheeh {
                 if settings.showAyahInformation { s += "- Saheeh International\n" }
-                s += settings.showAyahInformation ? ayah.textEnglishSaheeh : "\(ayah.textEnglishSaheeh) (\(ayah.id))"
+                s += settings.showAyahInformation ? hafsAyah.textEnglishSaheeh : "\(hafsAyah.textEnglishSaheeh) (\(hafsAyah.id))"
             }
             if shareSettings.englishMustafa {
                 if shareSettings.englishSaheeh { s += "\n\n" }
                 if settings.showAyahInformation { s += "- Mustafa Khattab\n" }
-                s += settings.showAyahInformation ? ayah.textEnglishMustafa : "\(ayah.textEnglishMustafa) (\(ayah.id))"
+                s += settings.showAyahInformation ? hafsAyah.textEnglishMustafa : "\(hafsAyah.textEnglishMustafa) (\(hafsAyah.id))"
             }
         }
-        if includeNote, let note = noteText { appendBlock(label: "Note", text: note) }
+        if includeNote, let note = noteText { appendBlock(label: String(localized: "Note"), text: note) }
         if shareSettings.includeQiraah {
             let labels = qiraahLabels(displayQiraah: settings.displayQiraah)
-            appendBlock(label: nil, text: "Riwayah: \(labels.english) – \(labels.arabic)")
+            appendBlock(label: nil, text: String(localized: "Riwayah: \(labels.english) – \(labels.arabic)"))
         }
         if settings.showSurahInformation {
             if shareSettings.includeQiraah, !s.isEmpty { s += "\n" } else { sepIfNeeded() }
-            s += "\(surah.ayahCountLabel()) – \(surah.pageCountLabel) – \(surah.type.capitalized) \(surah.type == "makkan" ? "🕋" : "🕌")"
+            s += "\(surah.ayahCountLabel()) – \(surah.pageCountLabel) – \(surah.type.capitalized.localizedDisplay) \(surah.type == "makkan" ? "🕋" : "🕌")"
         }
         return s
     }
@@ -1173,8 +1251,9 @@ extension ShareAyahSheet {
     /// (the copy path was a second, drifting copy until 2026-09-29: tajweed's plain letters took the
     /// translation's white on the Nature card and its Arabic header lost the accent).
     /// `hafsAyah` carries the transliteration and translations (the sheet's smart matching); `qiraah`
-    /// is the riwayah the Arabic, its face and the riwayah line follow. Safe off the main thread.
-    static func composeCard(surah: Surah, ayah: Ayah, hafsAyah: Ayah, shareSettings: ShareSettings, settings: Settings,
+    /// is the riwayah the Arabic, its face and the riwayah line follow; `arabicTail` the rest of a split
+    /// ayah (the sheet's `arabicSplitTail`, resolved on main). Safe off the main thread.
+    static func composeCard(surah: Surah, ayah: Ayah, hafsAyah: Ayah, arabicTail: [Ayah] = [], shareSettings: ShareSettings, settings: Settings,
                             qiraah: String, includeNote: Bool, noteText: String?, screenWidth: CGFloat,
                             backdrop: ShareBackdrop) -> UIImage {
         // Rounded, to match the app's system-font design (the `fontDesign` environment does not reach this
@@ -1223,6 +1302,13 @@ extension ShareAyahSheet {
             shadow.shadowColor = UIColor(white: 0, alpha: 0.55)
             bodyAttr[.shadow] = shadow
         }
+        // The transliteration and the translations: an explicit left-to-right paragraph, because the
+        // default (natural) one resolves to the right edge when the interface is Arabic.
+        let englishParagraph = NSMutableParagraphStyle()
+        englishParagraph.alignment = .left
+        englishParagraph.baseWritingDirection = .leftToRight
+        var englishBodyAttr = bodyAttr
+        englishBodyAttr[.paragraphStyle] = englishParagraph
         let arAttr = [NSAttributedString.Key.font: arabicFont, .foregroundColor: arabicColor, .paragraphStyle: right] as [NSAttributedString.Key: Any]
         let arNumberAttr = [NSAttributedString.Key.font: arabicNumberFont, .foregroundColor: arabicColor, .paragraphStyle: right] as [NSAttributedString.Key: Any]
         let accentAttr = [NSAttributedString.Key.font: bodyFont, .foregroundColor: accent, .paragraphStyle: left] as [NSAttributedString.Key: Any]
@@ -1246,7 +1332,8 @@ extension ShareAyahSheet {
                 ayah: ayah,
                 cleanArabic: effectiveCleanArabic(shareSettings),
                 hideArabicDots: effectiveHideArabicDots(shareSettings),
-                qiraahOverride: qiraah
+                qiraahOverride: qiraah,
+                tail: arabicTail
             )
 
             if settings.showAyahInformation {
@@ -1288,7 +1375,7 @@ extension ShareAyahSheet {
                 append("\n", bodyAttr, highlightAllah: false)
             }
 
-            append(settings.showAyahInformation ? hafsAyah.textTransliteration : "\(hafsAyah.textTransliteration) (\(hafsAyah.id))", bodyAttr)
+            append(settings.showAyahInformation ? hafsAyah.textTransliteration : "\(hafsAyah.textTransliteration) (\(hafsAyah.id))", englishBodyAttr)
         }
 
         let wantsAnyEnglish = shareSettings.englishSaheeh || shareSettings.englishMustafa
@@ -1309,7 +1396,7 @@ extension ShareAyahSheet {
                     append("- Saheeh International", captionAttr, highlightAllah: false)
                     append("\n", bodyAttr, highlightAllah: false)
                 }
-                append(settings.showAyahInformation ? hafsAyah.textEnglishSaheeh : "\(hafsAyah.textEnglishSaheeh) (\(hafsAyah.id))", bodyAttr)
+                append(settings.showAyahInformation ? hafsAyah.textEnglishSaheeh : "\(hafsAyah.textEnglishSaheeh) (\(hafsAyah.id))", englishBodyAttr)
             }
 
             if shareSettings.englishMustafa {
@@ -1319,13 +1406,13 @@ extension ShareAyahSheet {
                     append("- Clear Quran (Mustafa Khattab)", captionAttr, highlightAllah: false)
                     append("\n", bodyAttr, highlightAllah: false)
                 }
-                append(settings.showAyahInformation ? hafsAyah.textEnglishMustafa : "\(hafsAyah.textEnglishMustafa) (\(hafsAyah.id))", bodyAttr)
+                append(settings.showAyahInformation ? hafsAyah.textEnglishMustafa : "\(hafsAyah.textEnglishMustafa) (\(hafsAyah.id))", englishBodyAttr)
             }
         }
 
         if includeNote, let note = noteText {
             sepIfNeeded()
-            append("- Note", captionAttr, highlightAllah: false)
+            append("- \(String(localized: "Note"))", captionAttr, highlightAllah: false)
             append("\n", bodyAttr, highlightAllah: false)
             append(note, bodyAttr)
         }
@@ -1333,11 +1420,11 @@ extension ShareAyahSheet {
         if shareSettings.includeQiraah {
             sepIfNeeded()
             let labels = Self.qiraahLabels(displayQiraah: qiraah)
-            append("Riwayah: \(labels.english) – \(labels.arabic)", captionCentAttr, highlightAllah: false)
+            append(String(localized: "Riwayah: \(labels.english) – \(labels.arabic)"), captionCentAttr, highlightAllah: false)
         }
         if settings.showSurahInformation {
             if shareSettings.includeQiraah { append("\n", bodyAttr, highlightAllah: false) } else { sepIfNeeded() }
-            append("\(surah.ayahCountLabel()) – \(surah.pageCountLabel) – \(surah.type.capitalized) \(surah.type == "makkan" ? "🕋" : "🕌")", captionCentAttr, highlightAllah: false)
+            append("\(surah.ayahCountLabel()) – \(surah.pageCountLabel) – \(surah.type.capitalized.localizedDisplay) \(surah.type == "makkan" ? "🕋" : "🕌")", captionCentAttr, highlightAllah: false)
         }
         // Every run on the card's ground at 3:1 or better: the tajweed colors (made for the reader's
         // white or black page) and any custom ones, which the designs' own inks already clear.
@@ -1371,7 +1458,7 @@ extension ShareAyahSheet {
 
         let canvas = CGRect(origin: .zero, size: CGSize(width: maxWidth, height: textRect.height + headroom.top + headroom.bottom))
         // The editorial card's watermark: the ayah itself, faint and large, behind the words.
-        let watermark = Self.backdropWatermark(backdrop: backdrop, surah: surah, ayah: ayah, shareSettings: shareSettings,
+        let watermark = Self.backdropWatermark(backdrop: backdrop, surah: surah, ayah: ayah, tail: arabicTail, shareSettings: shareSettings,
                                                qiraah: qiraah, fontName: arabicFontName, width: maxWidth, color: arabicColor)
 
         let r1 = UIGraphicsImageRenderer(size: canvas.size)
