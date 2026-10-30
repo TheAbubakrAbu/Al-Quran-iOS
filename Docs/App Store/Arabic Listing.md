@@ -20,8 +20,8 @@ Modeled on Al-Islam's `Docs/App Store/Arabic Listing.md`, whose style and glossa
 
 - **Counts are Python `len()`** of the exact text inside each code block (the bold tally lines are for this
   file, not the store). Re-check after any edit:
-  `python3 -c 'import re;f=chr(96)*3;t=open("Docs/Arabic Listing.md").read();[print(len(b)) for b in re.findall(f+"\n(.*?)\n"+f,t,re.S)]'`
-- **Modern Standard Arabic as Apple's own Arabic pages read it**, with the respectful register (النبي ﷺ).
+  `python3 -c 'import re;f=chr(96)*3;t=open("Docs/App Store/Arabic Listing.md").read();[print(len(b)) for b in re.findall(f+"\n(.*?)\n"+f,t,re.S)]'`
+- **Modern Standard Arabic as Apple's own Arabic pages read it**, with the respectful register (النبي صلى الله عليه وسلم). The honorific is always spelled out: App Store Connect rejects the one-glyph ligature (U+FDFA) as an invalid character.
   Feature names are the labels the app shows (Al-Islam's `Resources/Localizable.xcstrings`, which Al-Quran
   receives in its sync; see the glossary below).
 - **Inside a sentence the app is تطبيق القرآن.** A bare القرآن in running text reads as the Quran itself;
@@ -209,16 +209,15 @@ short Arabic headings on their own lines. Three differences from the English:
 
 ## 6. What's New
 
-The release that adds the Arabic interface. The Arabic interface comes first; below it are the English notes
-at the top of `Whats New.md` (Version 2.6.5), translated under the same headings, with three changes:
-- **Tajweed Foundations:** the English line "Tajweed Foundations is now a 58-lesson course with quizzes and
-  Quran examples" is dropped. The course is a separate Tajweed Course tile, and Tajweed Foundations did not
-  become it.
-- **Wallpapers:** the English says "Two new wallpapers", the second a Free Palestine poster with the Dome of
-  the Rock. That poster is not new (the photo wallpaper has shipped since 2025), so only OC Ummah's desert
-  night is listed.
-- **Tips & Tricks:** the English "150 Tips & Tricks" is not true of Al-Quran, which shows fewer of them (the
-  catalogue is filtered per app). No count is given.
+Version 2.6.6, the release that adds the Arabic interface. The Arabic interface and the choice of
+language come first, unchanged; the language section gains one line saying the app speaks Urdu too
+(the English "Languages" line). Below them are the English notes at the top of `Whats New.md`
+(Version 2.6.6), translated under the same headings, with Islamic Tools as تبويب الإسلام. Version 2.6.5 went live on 2026-10-15 with English notes only, so nothing from it is repeated here.
+
+Translation notes:
+- **The juz rail** is on "the edge" of the Quran tab, not "the right edge": the Arabic layout mirrors the
+  screen, so the rail is on the left there.
+- **Sunnahs of the Prophet:** the catalog's label ends in the one-glyph honorific; the store spells it out.
 
 ```
 تطبيق القرآن كله الآن بالعربية، بواجهة من اليمين إلى اليسار في القراءة والاستماع وتبويب الإسلام والإعدادات.
@@ -234,43 +233,36 @@ at the top of `Whats New.md` (Version 2.6.5), translated under the same headings
 
 اختيار اللغة:
 - يتبع التطبيق اللغة التي تختارها له في إعدادات iOS، ويوصلك إليها صف «اللغة» في إعدادات التطبيق.
+- التطبيق متاح بالأردية أيضًا.
 - عند تغيير اللغة تُعاد جدولة إشعاراتك باللغة الجديدة.
 - تبقى المقالات المفصّلة في تبويب الإسلام بالإنجليزية حاليًا.
 
-الحفظ:
-- «وضع الاختبار» يُخفي النص حتى تضغط، فتتلو من حفظك وتتحقق من كل آية.
-- يضيف «مخطِّط القرآن» خطة «المراجعة»: نطاق من الأجزاء أو سور تختارها، تراجعها كل بضعة أيام، مع تذكير واحد للخطتين.
-
 القرآن:
-- «دراسة الكلمة»: اضغط على أي كلمة مرتين لمعناها وإعرابها وجذرها وموضوعاتها وتجويدها وقراءاتها.
-- «التشغيل من الآية» يستمر حتى آخر الصفحة أو السورة أو الجزء أو القرآن كله.
-- «تكرار بلا توقف» لآية أو سورة أو نطاق تختاره، يُنزَّل مرة واحدة ويُعاد دون اتصال.
-- صفحتان من المصحف متجاورتان في الوضع الأفقي، ووضعا القراءة كلاهما يملآن عرض الشاشة.
-- يلوّن التجويد تفخيم اللام وترقيقها في لفظ الجلالة، ويمكنك اختيار لون لكل حكم.
-- «مستكشف القراءات» بتصميم جديد: اعرض الروايات كلها معًا، أو قارن بين روايتين.
-- لخّص أي آية مع Apple Intelligence.
-- تبقى الشاشة مضاءة وأنت تتابع الآية المظلَّلة.
-
-الأدوات:
-- أداة «الآية المختارة»: ثبّت أي آية أو علامة على الشاشة الرئيسية أو شاشة القفل.
-- أداة «آخر استماع» فيها الآن زر تشغيل.
+- همزة الوصل كما تريد: «كما في المطبوع»، أو بصاد، أو بنقطة، في الروايات العشرين كلها.
+- شريط للأجزاء على حافة تبويب القرآن، وأشرطة مرقمة في القوائم الطويلة.
+- نافذة «تشغيل النطاق» بتصميم جديد: آيات أو صفحات، وتكرار بعدد أو بلا توقف، والقارئ، كلها في مكان واحد.
+- اضغط على الآية مرتين لتشغيلها، وزر التشغيل يفتح قائمة التشغيل.
+- صفحة كل رواية تذكر الآن ما يميزها.
+- تقليب أنعم للصفحات في وضع المصحف، وشريط بحث في سطر واحد.
+- إصلاح ألوان التجويد داخل الحروف المتشابكة وعلى الراء في آخر الكلمة.
 
 تبويب الإسلام:
-- «اليوم»: آية اليوم وكلمة اليوم ودعاء اليوم واسم من أسماء الله الحسنى في شاشة واحدة.
-- «اختبار القراءة» في ٢١ مستوًى، من الحروف المفردة إلى النص بلا تشكيل.
-- مكتبات جديدة بالإنجليزية: «إثبات الإسلام» و«معجزات الأنبياء» و«نبوءات النبي ﷺ».
-- «اسأل الذكاء الاصطناعي» يذكر مصادره في بطاقات مرقّمة تفتحها بضغطة.
-- خلفية جديدة: ليلة الصحراء من OC Ummah.
+- «سنن النبي صلى الله عليه وسلم»: ١٢٩ سنة يومية مع مصادرها.
+- «الأبجدية العربية»: همزة الوصل، وحروف العلة، والألف المقصورة والياء، وقسم «الإعراب»، ولكل منها تدريبات.
+- «اختبار التجويد»: أسئلة متدرجة في ١٠ فصول، مأخوذة من دورة التجويد.
+- أدلة جديدة للخطبة والرقية، ودليل أوفى لصلاة الجمعة.
+- طي أقسام أي تبويب أو إخفاؤها، وشريط بحث في كل مصدر.
 
 الإعدادات:
-- «الوضع المبسّط» يُبقي الأساسيات فقط على الشاشة، وبإمكانك التبديل إلى الوضع الكامل متى شئت.
-- شريط بحث في كل صفحة إعدادات، وقسم «نصائح وحيل».
+- صفحات الإعدادات كلها بأسلوب واحد، مع شرح تحت كل خيار.
+- «إعدادات الإسلام»، ومعها «تذكيرات السنة».
+- تنبيه «يتوفر تحديث» عند صدور إصدار أحدث في App Store.
 
 إصلاحات وتحسينات:
-- بحث أسرع، وتشغيل أكثر سلاسة، وإصلاح عشرات الأعطال على iPhone وiPad وMac وApple Watch.
+- شاشات إعدادات أسرع، وقوائم بلا تأخير، وإصلاحات على iPhone وiPad وMac وApple Watch.
 ```
 
-**2,446 / 4,000 characters.**
+**2,063 / 4,000 characters.**
 
 ## Glossary
 
@@ -303,7 +295,12 @@ pages use.
 | Tajweed Course, Tajweed Foundations | دورة التجويد، أساسيات التجويد |
 | How-To Guides | الأدلة العملية |
 | Proving Islam, Miracles of the Quran | إثبات الإسلام، معجزات القرآن |
-| Miracles of the Prophets, Prophecies of the Prophet | معجزات الأنبياء، نبوءات النبي ﷺ |
+| Miracles of the Prophets, Prophecies of the Prophet | معجزات الأنبياء، نبوءات النبي صلى الله عليه وسلم |
 | Tips & Tricks, Language (Settings row) | نصائح وحيل، اللغة |
 | Accent Color, Lock Screen | لون التمييز، شاشة القفل |
 | widgets* | الأدوات |
+| Play Range, Riwayah | تشغيل النطاق، الرواية |
+| Hamzat al-Wasl: Follow the Print, Saad, Dot | همزة الوصل: كما في المطبوع، الصاد، النقطة |
+| Sunnahs of the Prophet (the honorific spelled out) | سنن النبي صلى الله عليه وسلم |
+| Arabic Alphabet, Vowel Letters, Grammar, Tajweed Test | الأبجدية العربية، حروف العلة، الإعراب، اختبار التجويد |
+| Islam Settings, Sunnah Reminders, Update Available | إعدادات الإسلام، تذكيرات السنة، يتوفر تحديث |

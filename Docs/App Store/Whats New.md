@@ -1,3 +1,34 @@
+# Version 2.6.6
+
+Arabic and Urdu, Hamzat al-Wasl your way, a rebuilt Play Range sheet, a juz rail, and a Tajweed Test.
+
+Languages:
+- Al-Quran now speaks Arabic and Urdu: the whole app follows your iPhone's language, from the Quran reader to the widgets. The Islam tab's long articles stay English for now.
+
+Al-Quran:
+- Hamzat al-Wasl your way: follow the print, or show a saad or a dot, in all 20 riwayat.
+- A juz rail on the right edge of the Quran tab, and numbered rails on long lists.
+- The Play Range sheet rebuilt: ayahs or pages, repeats or forever, and your reciter in one place.
+- Double tap an ayah to play it; the play button opens the playback menu.
+- Each riwayah's profile now says what stands out in it.
+- Smoother page turns in page mode, and a one-row find bar.
+- Tajweed colors fixed inside ligatures and on a final raa.
+
+Islamic Tools:
+- Sunnahs of the Prophet: 129 daily sunnahs with their sources.
+- Arabic Alphabet: Hamzat al-Wasl, Vowel Letters, Alif Maqsurah or Yaa, and a Grammar section, each with drills.
+- Tajweed Test: a 10-chapter ladder of questions generated from the course.
+- New guides for the Khutbah and Ruqyah, and a fuller Jumuah guide.
+- Fold or hide a tab's sections, and a search bar on every resource.
+
+Settings:
+- Every settings page in one grammar, with a caption under each control.
+- Islam Settings, with Sunnah Reminders.
+- An Update Available notice when a newer version is on the App Store.
+
+Bug fixes and optimizations:
+- Faster settings screens, lag-free menus, and fixes across iPhone, iPad, Mac and Apple Watch.
+
 # Version 2.6.5
 
 Test Mode and a Revision plan for memorizing, Word Study for every word, Simple Mode, and recitation that plays as far as you want.
