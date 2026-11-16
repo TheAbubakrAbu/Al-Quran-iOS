@@ -1452,7 +1452,7 @@ struct SettingsView: View {
                 .frame(width: glyphWidth)
             #endif
 
-            Text("ammelmallah@icloud.com")
+            Text("contact@abubakrelmallah.com")
                 .font(.subheadline)
                 .foregroundColor(settings.accentColor.color)
                 .multilineTextAlignment(.leading)
@@ -1467,7 +1467,7 @@ struct SettingsView: View {
 
             Button {
                 settings.hapticFeedback()
-                UIPasteboard.general.string = "ammelmallah@icloud.com"
+                UIPasteboard.general.string = "contact@abubakrelmallah.com"
             } label: {
                 HStack {
                     Image(systemName: "doc.on.doc")
